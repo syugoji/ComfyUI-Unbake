@@ -49,9 +49,9 @@ const HOST_PROVIDED_PYTHON = new Set(['folder_paths', 'PIL', 'server', 'aiohttp'
 const PY_STDLIB = new Set([
     '__future__', 'asyncio', 'base64', 'collections', 'contextlib', 'copy', 'csv',
     'dataclasses', 'datetime', 'enum', 'functools', 'glob', 'hashlib', 'inspect',
-    'io', 'itertools', 'json', 'logging', 'math', 'os', 'pathlib', 'random', 're',
-    'shutil', 'struct', 'subprocess', 'sys', 'tempfile', 'time', 'traceback', 'types',
-    'typing', 'urllib', 'uuid', 'zipfile',
+    'importlib', 'io', 'itertools', 'json', 'logging', 'math', 'os', 'pathlib',
+    'random', 're', 'shutil', 'struct', 'subprocess', 'sys', 'tempfile', 'threading',
+    'time', 'traceback', 'types', 'typing', 'urllib', 'uuid', 'zipfile',
 ]);
 
 async function filesUnder(dir, exts) {
@@ -522,4 +522,48 @@ test('同梱した同期スクリプトの出所が NOTICE に書いてある', 
     assert.match(notice, /\bMIT\b/, 'NOTICE が同梱物のライセンス（MIT）に触れていない');
     const license = await readFile(join(ROOT, 'civitai-recipe-sync', 'LICENSE'), 'utf8');
     assert.match(license, /MIT License/, '同梱スクリプトの LICENSE が MIT の正文でない');
+});
+
+test('子プロセスを起こさない（同期は同一プロセスで動く）', async () => {
+    // **これは 2026-08-25 に手で消した性質なので、戻ったら赤くなるべきである。**
+    //
+    // Comfy Registry の自動走査が v0.1.0 と v0.1.1 を `Flagged` にした。理由は
+    // 通知されなかったが、0.1.1 で「設定から来た任意のパスを実行する」分岐を
+    // 消しても結果が変わらなかったので、**子プロセスを起こすこと自体**が
+    // 引っかかっていると判断して `sync_script_runner.py` へ作り替えた。
+    //
+    // **`subprocess` を標準ライブラリ一覧から外す形では守れない。** あれは
+    // 「標準ライブラリかどうか」の判定で、使ってよいかとは別の話だから。
+    const offenders = [];
+    for (const f of await pyFiles()) {
+        const text = await readFile(f, 'utf8');
+        // 散文で経緯を説明している箇所（まさにこのファイルの上の方）で誤検出しないよう、
+        // **コメントと docstring を落としてから**見る。
+        const code = text
+            .replace(/^\s*#.*$/gm, ' ')
+            .replace(/"""[\s\S]*?"""/g, ' ')
+            .replace(/'''[\s\S]*?'''/g, ' ');
+        for (const pat of [/\bcreate_subprocess_exec\b/, /\bcreate_subprocess_shell\b/,
+                           /\bsubprocess\.(?:run|Popen|call|check_output|check_call)\b/,
+                           /\bos\.(?:system|popen|exec[lv]p?e?)\b/]) {
+            if (pat.test(code)) offenders.push(rel(f) + ': ' + pat.source);
+        }
+    }
+    assert.deepEqual(offenders, [], '子プロセスを起こす経路が戻っている');
+});
+
+test('同期は同梱スクリプトを「差し替えたうえで」呼ぶ', async () => {
+    // 素朴に `main()` を呼ぶだけだと **`apply_cli_flags()` が一度も走らない**
+    // （スクリプト側でそれを呼ぶのは `if __name__ == "__main__":` の中だけ）。
+    // 走らないと **Civitai ToS §11.9 の分岐**——無人実行時に不足 LoRA の
+    // 自動ダウンロードを止める処理——が発火しない。**しかも無言で。**
+    const runner = await readFile(
+        join(ROOT, 'unbake', 'services', 'sync_script_runner.py'), 'utf8');
+    for (const needed of ['apply_cli_flags', 'emit_event', 'module.print', '--unattended']) {
+        assert.ok(runner.includes(needed), 'sync_script_runner.py が ' + needed + ' を扱っていない');
+    }
+    // **`sys.stdout` を差し替えない。** 差し替えると ComfyUI の他のスレッドの
+    // 出力まで巻き込む。モジュール大域の `print` を置くのが正しい。
+    assert.ok(!/sys\.stdout\s*=/.test(runner),
+        'sys.stdout を差し替えている（他のスレッドの出力まで奪う）');
 });

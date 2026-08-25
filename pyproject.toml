@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-unbake"
 description = "Rebuild the ComfyUI workflow behind an image, then sweep one axis at a time and compare."
-version = "0.1.1"
+version = "0.1.2"
 license = { file = "LICENSE" }
 # **依存は無い。** `folder_paths` は ComfyUI 本体が、`PIL` は ComfyUI の環境が供給する。
 # ここへ何か足すときは、そのライセンスが配布物へ乗ることを先に確かめること。

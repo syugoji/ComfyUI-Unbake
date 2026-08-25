@@ -3,21 +3,37 @@
 #
 # ComfyUI-Unbake の一部。著作権の所在を明示してあることが、
 # 後から別のライセンスを足せる唯一の担保になる。
-"""Raindrop → Civitai → レシピ の同期スクリプトを別プロセスとして起動する。
+"""Raindrop → Civitai → レシピ の同期スクリプトを**同一プロセスで**動かす。
 
-## ライセンス境界について（重要）
+## なぜ子プロセスをやめたか（2026-08-25）
 
-同期スクリプト本体（配布ツリーの ``civitai-recipe-sync/``）は **MIT**、
-このディレクトリ（フォーク）は **GPL-3.0** で、境界はディレクトリそのもの。
+Comfy Registry の自動走査が v0.1.0 と v0.1.1 を `Flagged` にした。理由は通知
+されないが、**0.1.1 で「設定から来た任意のパスを実行する」分岐を消しても結果が
+変わらなかった**ので、`create_subprocess_exec` そのものが引っかかっていると判断した。
+カスタムノードが Python の子プロセスを起こす形は、走査器から見れば
+任意コード実行と区別が付かない。
 
-このサービスは同期スクリプトを **import しない**。子プロセスとして起動し、
-標準出力に流れるイベント行を読むだけの arm's-length な結合に留める。
-同期の実体は最初から最後まで別プロセスの中にあり、スクリプト側は従来どおり
-HTTP でこのサーバの ``/api/lm/recipes/*`` を叩く。
+実行の詳細は `sync_script_runner.py` にある。**同梱スクリプトは1文字も変えない。**
 
-**同期ロジックをこのプロセスへ取り込む（import・コピー）と、
-配布ツリー ``README.md`` の「HTTP API 越しの別プロセスなので別ライセンスにできる」
-という記述が成り立たなくなる。** 変更する場合は README も同時に直すこと。
+## ライセンス境界について（**論拠が変わった。重要**）
+
+同期スクリプト（``civitai-recipe-sync/``）は **MIT**、この拡張は **GPL-3.0**。
+
+**以前の説明は「import しない・別プロセスだから arm's-length」だった。
+同一プロセスで読み込む以上、その論拠はもう使えない。** ただし**結論は変わらない**。
+向きが逆だからである:
+
+  * GPL のコピーレフトが縛るのは「**GPL の成果物から派生した**もの」。
+  * ここで起きているのは **GPL の側（この拡張）が MIT の成果物を取り込む**こと。
+    MIT は GPL 適合の寛容型ライセンスなので、この組み合わせは明示的に許される。
+    **結合物は GPL-3.0** になり、**取り込まれた MIT ファイルは MIT のまま**
+    （``civitai-recipe-sync/LICENSE`` が引き続きそれらを支配する）。
+  * 危ないのは逆向き——GPL のライブラリを非公開のコードが読み込む形。
+    ここには当たらない。
+
+**どちらの著作権も同一人物にあるので、そもそも当事者間の争点は無い。**
+それでも書いておくのは、**将来この境界を読む人が「別プロセスだから安全」
+という消えた論拠を根拠に判断しないため**である。
 """
 
 from __future__ import annotations
@@ -32,6 +48,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from ..environment import UnbakeEnvironment, require_environment
+from .sync_script_runner import SyncCancelled, SyncScriptRunner
 
 logger = logging.getLogger(__name__)
 
@@ -99,10 +116,10 @@ def _package_root() -> Path:
 
 
 class RaindropSyncService:
-    """同期スクリプトの起動・進捗集約・中断を担う。
+    """同期スクリプトの実行・進捗集約・中断を担う。
 
-    進捗はメモリ上にだけ持つ。プロセスが落ちれば消えるが、同期そのものは
-    子プロセス側で完結しているのでレシピの保存結果は残る。
+    進捗はメモリ上にだけ持つ。ComfyUI が落ちれば消えるが、**書き終えたレシピは
+    ディスクに残る**（同期は1件ずつ保存していく）。
     """
 
     def __init__(
@@ -124,7 +141,7 @@ class RaindropSyncService:
         self._python = python_executable or sys.executable
         self._logger = logger_override or logger
 
-        self._process: Optional[asyncio.subprocess.Process] = None
+        self._runner: Optional[SyncScriptRunner] = None
         self._task: Optional[asyncio.Task] = None
         self._cancel_requested = False
         self._state: Dict[str, Any] = self._initial_state()
@@ -218,7 +235,7 @@ class RaindropSyncService:
         *,
         require_sync_targets: bool = True,
     ) -> Dict[str, str]:
-        """子プロセスへ渡す環境変数を組み立てる。
+        """スクリプトへ渡す環境変数を組み立てる。
 
         同期スクリプトは「環境変数 > config.json > 既定値」の順で設定を読むので、
         ここで渡した値が最優先になる。**戻り値は秘匿値を含むのでログへ出さない。**
@@ -264,7 +281,12 @@ class RaindropSyncService:
                 "前後や途中に余計な文字が混ざっていないか確認してください。"
             )
 
-        env = dict(os.environ)
+        # **`os.environ` を複製しない。** 子プロセスへ渡していた頃は「親の環境＋上書き」
+        # を作るのが正しかったが、いまは**同じプロセスの環境を一時的に書き換える**ので、
+        # 複製すると全部の変数を置き直して元へ戻す羽目になる。
+        # ここで返すのは**このスクリプトのために足す分だけ**でよい——
+        # 残りは書き換えないので、そのまま見える。
+        env: Dict[str, str] = {}
         env["RAINDROP_TOKEN"] = token
         # 未設定のまま空文字を渡すと、スクリプト側が config.json の古い値へ
         # フォールバックする。設定されている時だけ上書きする。
@@ -275,9 +297,13 @@ class RaindropSyncService:
         env["COMFY_BASE_URL"] = self._resolve_comfy_base_url(base_url_hint)
         env["CIVITAI_SYNC_EVENT_STREAM"] = "1"
         env["CIVITAI_SYNC_NON_INTERACTIVE"] = "1"
-        # Windows で日本語のログが化けると進捗行のJSONごと壊れる。
-        env["PYTHONIOENCODING"] = "utf-8"
-        env["PYTHONUNBUFFERED"] = "1"
+        # **`PYTHONIOENCODING` と `PYTHONUNBUFFERED` は置かない。**
+        # どちらも**インタプリタの起動時**に読まれる変数で、既に走っている
+        # プロセスへ後から置いても効かない。子プロセスの頃は必要だった
+        # （Windows で日本語のログが化けると進捗行の JSON ごと壊れた）が、
+        # いまは文字列がそのまま Python のオブジェクトとして渡るので
+        # エンコードの問題自体が起こらない。**効かない設定を残すと、
+        # 「置いてあるから大丈夫」と読んで別の原因を探しに行く。**
 
         api_key = str(self._settings.get("civitai_api_key", "") or "").strip()
         if api_key:
@@ -332,10 +358,8 @@ class RaindropSyncService:
 
         script_path = self.resolve_script_path()
         env = self._build_environment(base_url_hint)
-        extra_args: List[str] = []
         if unattended:
             env["CIVITAI_SYNC_UNATTENDED"] = "1"
-            extra_args.append("--unattended")
         else:
             env.pop("CIVITAI_SYNC_UNATTENDED", None)
 
@@ -345,27 +369,12 @@ class RaindropSyncService:
         self._state["started_at"] = time.time()
         self._cancel_requested = False
 
-        try:
-            self._process = await asyncio.create_subprocess_exec(
-                self._python,
-                "-u",
-                str(script_path),
-                "--events",
-                "--non-interactive",
-                *extra_args,
-                cwd=str(script_path.parent),
-                env=env,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-        except Exception as exc:
-            self._state["status"] = "failed"
-            self._state["stage"] = "spawn"
-            self._state["message"] = f"同期スクリプトを起動できませんでした: {exc}"
-            self._state["finished_at"] = time.time()
-            raise RaindropSyncError(self._state["message"]) from exc
-
-        self._task = asyncio.create_task(self._pump())
+        self._runner = SyncScriptRunner(
+            script_path,
+            on_event=self._consume_event,
+            on_log=self._append_log,
+        )
+        self._task = asyncio.create_task(self._pump(env, unattended=unattended))
         return self.get_progress()
 
     # -- 自動同期（無人実行） -------------------------------------------
@@ -461,9 +470,9 @@ class RaindropSyncService:
     async def list_collections(self, timeout: float = 30.0) -> List[Dict[str, Any]]:
         """Raindrop のコレクション一覧を取得する（読み取り専用・同期はしない）。
 
-        同期本体と同じく **スクリプトを import せず子プロセスとして起動する**。
-        結合は標準出力の ``@@RDSYNC@@`` 行を読むことだけに留め、
-        ライセンス境界（フォーク=GPL-3.0 / スクリプト=MIT）を保つ。
+        同期本体と同じ経路で回す（`SyncScriptRunner`）。**同梱スクリプトは
+        1文字も変えず**、`emit_event` を差し替えて進捗だけを受け取るので、
+        ライセンス境界（この拡張=GPL-3.0 / スクリプト=MIT）は保たれる。
 
         Raindrop 側は2リクエストしか発生しない（ルートと配下）ので、
         規約上の「過度に頻繁なリクエスト」には当たらない。
@@ -479,47 +488,34 @@ class RaindropSyncService:
         script_path = self.resolve_script_path()
         env = self._build_environment(require_sync_targets=False)
 
-        try:
-            process = await asyncio.create_subprocess_exec(
-                self._python,
-                "-u",
-                str(script_path),
-                "--list-collections",
-                "--events",
-                "--non-interactive",
-                cwd=str(script_path.parent),
-                env=env,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-        except Exception as exc:
-            raise RaindropSyncError(
-                f"同期スクリプトを起動できませんでした: {exc}"
-            ) from exc
+        # **受け皿を先に作る。** 差し込む出口が閉じ込めるので、順序を逆にすると
+        # 未定義の名前を掴むラムダができる。
+        found: List[Dict[str, Any]] = []
+        runner = SyncScriptRunner(
+            script_path,
+            on_event=found.append,
+            on_log=lambda line: None,   # 一覧の取得ではログを溜めない
+        )
 
         try:
-            stdout_raw, stderr_raw = await asyncio.wait_for(
-                process.communicate(), timeout=timeout
-            )
+            await asyncio.wait_for(runner.run_list_collections(env), timeout=timeout)
         except asyncio.TimeoutError as exc:
-            try:
-                process.terminate()
-            except Exception:  # pragma: no cover - OS 依存
-                pass
+            # **止まるよう頼むだけ。** 走っているのは同じプロセスの worker なので、
+            # 途中で殺す手段は無い。次の区切りで自分から降りる。
+            runner.request_cancel()
             raise RaindropSyncError(
                 f"コレクション一覧の取得が {timeout:.0f} 秒で完了しませんでした。"
             ) from exc
+        except SyncCancelled as exc:   # pragma: no cover - 一覧では起こらない
+            raise RaindropSyncError("コレクション一覧の取得を中断しました。") from exc
+        except RaindropSyncError:
+            raise
+        except Exception as exc:
+            raise RaindropSyncError(f"コレクション一覧を取得できませんでした: {exc}") from exc
 
         collections: Optional[List[Dict[str, Any]]] = None
         error_message = ""
-        for raw_line in (stdout_raw or b"").decode("utf-8", errors="replace").splitlines():
-            line = raw_line.strip()
-            if not line.startswith(EVENT_PREFIX):
-                continue
-            try:
-                payload = json.loads(line[len(EVENT_PREFIX):].strip())
-            except (ValueError, TypeError):
-                continue
+        for payload in found:
             if not isinstance(payload, dict):
                 continue
             if payload.get("event") == "collections":
@@ -543,58 +539,61 @@ class RaindropSyncService:
         raise RaindropSyncError(f"コレクション一覧を取得できませんでした{detail}")
 
     async def cancel(self) -> Dict[str, Any]:
-        if not self.is_running() or self._process is None:
+        """中断を頼む。**即座には止まらない。**
+
+        子プロセスの頃はプロセスを終わらせれば済んだ。同一プロセスでは協調
+        するしかないので、**次の区切り（画像1枚の切れ目）まで進んでから**止まる。
+        画面には「中断を要求した」と出し、**止まったことにしない**。
+        """
+        if not self.is_running() or self._runner is None:
             return self.get_progress()
 
         self._cancel_requested = True
-        try:
-            self._process.terminate()
-        except ProcessLookupError:  # pragma: no cover - 競合時のみ
-            pass
-        except Exception as exc:  # pragma: no cover - OS 依存
-            self._logger.warning("Failed to terminate raindrop sync process: %s", exc)
+        self._runner.request_cancel()
+        self._state["stage"] = "cancelling"
         return self.get_progress()
 
-    # -- 出力の取り込み -----------------------------------------------
+    # -- 実行と取り込み -------------------------------------------------
 
-    async def _pump(self) -> None:
-        process = self._process
-        assert process is not None
+    async def _pump(self, env: Dict[str, str], *, unattended: bool) -> None:
+        """スクリプトを回し、終わったら状態を確定する。
 
-        stderr_lines: List[str] = []
+        **進捗は戻り値ではなく差し込んだ出口から届く**（`_consume_event` /
+        `_append_log`）ので、ここでは終わり方だけを見る。
+        """
+        runner = self._runner
+        assert runner is not None
 
-        async def drain_stderr() -> None:
-            if process.stderr is None:
-                return
-            while True:
-                raw = await process.stderr.readline()
-                if not raw:
-                    break
-                text = raw.decode("utf-8", errors="replace").rstrip("\r\n")
-                if text:
-                    stderr_lines.append(text[:MAX_LOG_LINE_CHARS])
-                    del stderr_lines[:-20]
-
-        stderr_task = asyncio.create_task(drain_stderr())
-
+        errors: List[str] = []
         try:
-            if process.stdout is not None:
-                while True:
-                    raw = await process.stdout.readline()
-                    if not raw:
-                        break
-                    self._consume_line(raw.decode("utf-8", errors="replace").rstrip("\r\n"))
-            return_code = await process.wait()
-        except Exception as exc:  # pragma: no cover - 読み取り側の異常
-            self._logger.error("Raindrop sync output pump failed: %s", exc, exc_info=True)
+            return_code = await runner.run_sync(env, unattended=unattended)
+        except SyncCancelled:
+            # **失敗ではない。** `_finalize` が `_cancel_requested` を見て cancelled にする。
+            self._cancel_requested = True
+            return_code = 0
+        except Exception as exc:
+            self._logger.error("Raindrop sync failed: %s", exc, exc_info=True)
             return_code = -1
-            self._append_log(f"[!] 進捗の取り込みに失敗しました: {exc}")
-        finally:
-            await asyncio.gather(stderr_task, return_exceptions=True)
+            message = f"{type(exc).__name__}: {exc}"
+            errors.append(message[:MAX_LOG_LINE_CHARS])
+            self._append_log(f"[!] 同期が異常終了しました: {message}")
 
-        self._finalize(return_code, stderr_lines)
+        self._finalize(return_code, errors)
+
+    def _consume_event(self, event: Dict[str, Any]) -> None:
+        """差し込んだ `emit_event` から直接届く進捗。
+
+        **worker スレッドから呼ばれる。** ここでやるのは状態の辞書を書き換える
+        ことだけで、`await` も I/O もしない——GIL の下の単純な代入なので、
+        読む側（`get_progress`）が壊れた値を見ることはない。
+        """
+        if isinstance(event, dict):
+            self._apply_event(event)
 
     def _consume_line(self, line: str) -> None:
+        """**行として届いたときの経路。** いまは使っていないが消していない——
+        スクリプトが接頭辞つきの行を素の `print` で出す形へ戻ることがありうる。
+        """
         stripped = line.strip()
         if stripped.startswith(EVENT_PREFIX):
             payload = stripped[len(EVENT_PREFIX):].strip()
@@ -710,7 +709,7 @@ class RaindropSyncService:
                 self._append_log(f"[stderr] {line}")
 
         self._update_percent()
-        self._process = None
+        self._runner = None
 
 
 _service: Optional[RaindropSyncService] = None
