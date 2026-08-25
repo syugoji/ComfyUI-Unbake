@@ -1,4 +1,4 @@
-# ComfyUI-Unbake
+0.# ComfyUI-Unbake
 
 *[English → `README.md`](README.md)*
 
@@ -11,19 +11,6 @@ Civitai の画像でも、手元の PNG でも、ComfyUI 自身の出力でも�
 パネルへ落とすところから始まる。
 
 ---
-
-## モデル管理は [ComfyUI-Lora-Manager](https://github.com/willmiao/ComfyUI-Lora-Manager) を
-
-**Unbake はモデルを管理しない。** 手元のモデルを見る・落とす・整理する・プレビューする
-——それは LoRA Manager の仕事で、あちらのほうが圧倒的に良い。
-
-Unbake は**その下流に立つ**。入力は LoRA Manager が書き出した Generation Record であり、
-LoRA Manager を使う理由がむしろ増えるように作ってある。
-
-**上流を支援してほしい。** LoRA Manager の作者は
-[ko-fi](https://ko-fi.com/pixelpawsai) / [Patreon](https://www.patreon.com/c/pixelpaws) /
-PayPal / afdian で支援を受け付けている（リンクは上流リポジトリの `FUNDING.yml` が正）。
-**このツールを使うなら、まず上流へ。**
 
 ## やらないこと
 
