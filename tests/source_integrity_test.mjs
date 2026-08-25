@@ -567,3 +567,45 @@ test('同期は同梱スクリプトを「差し替えたうえで」呼ぶ', as
     assert.ok(!/sys\.stdout\s*=/.test(runner),
         'sys.stdout を差し替えている（他のスレッドの出力まで奪う）');
 });
+
+test('README に書いた判定名が、画面のカタログと一致する', async () => {
+    // **2026-08-25 に利用者が見つけた食い違い。** README は
+    // 「そのまま再現できる／近似になる（理由つき）／足りない」の**3つ**を挙げていたが、
+    // 画面に出るのは **5つ**で、しかも**どの語も一致していなかった**
+    // （実物は「再現性 高／再現性 中／再現不可／落とせば試せる／未確認」）。
+    //
+    // **読者は画面で同じ文字列を探す。** 説明と画面が違うと、探して見つからない。
+    // 散文の側だけを直しても、次にカタログを変えた日に同じ状態へ戻るので、
+    // **カタログを出典にして機械で照合する**。
+    const keys = ['reproducible', 'approximate', 'blocked', 'downloadable', 'pending'];
+    const pairs = [['README.ja.md', 'ja'], ['README.md', 'en']];
+    for (const [file, locale] of pairs) {
+        const catalogue = await readFile(join(ROOT, 'web', 'i18n', 'locales', `${locale}.js`), 'utf8');
+        const readme = await readFile(join(ROOT, file), 'utf8');
+        const missing = [];
+        for (const key of keys) {
+            // **`String.raw` で書く。** 素のテンプレートリテラルだと `\.` が `.` へ、
+            // `\s` が `s` へ潰れて、**正規表現が黙って別物になる**（一度そうなった）。
+            const m = new RegExp(String.raw`"verdict\.${key}\.short":\s*"([^"]+)"`).exec(catalogue);
+            assert.ok(m, `${locale}.js に verdict.${key}.short が無い`);
+            if (!readme.includes(m[1])) missing.push(`${key}="${m[1]}"`);
+        }
+        assert.deepEqual(missing, [],
+            `${file} が画面に出る判定名を載せていない（読者が画面で探して見つからない）`);
+    }
+});
+
+test('README に利用者の手元でしか意味を持たない数値を書かない', async () => {
+    // **2026-08-25 に利用者が指摘。** 「346件」は書き手のレシピ本数で、
+    // 読者の環境とは何の関係も無い。**測ったこと自体は正しくても、
+    // 読む人にとっては意味のない数字**なので、一般的な主張の側だけを残した。
+    //
+    // 実測値そのものは捨てていない——`_Planning` の決定文書と `tests/` が持っている。
+    // ここで禁じるのは**着地ページに置くこと**だけ。
+    const banned = [/\b346\b/, /13,251/, /\b508\b/, /\b317\b/];
+    for (const file of ['README.md', 'README.ja.md']) {
+        const readme = await readFile(join(ROOT, file), 'utf8');
+        const hits = banned.filter(re => re.test(readme)).map(re => re.source);
+        assert.deepEqual(hits, [], `${file} に書き手の環境の数値が残っている: ${hits.join(', ')}`);
+    }
+});

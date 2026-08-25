@@ -1,6 +1,6 @@
 # ComfyUI-Unbake
 
-*[日本語版はこちら → `README.ja.md`](README.ja.md)*
+[日本語版はこちら → `README.ja.md`](README.ja.md)
 
 > "You can't unbake a cake." — this node does the thing that isn't supposed to work.
 
@@ -42,7 +42,9 @@ These are not "not yet" — they are **"never"**.
 ### 1. Reproduce
 
 Drop an image and it reads the record and builds the workflow. Having built it, it
-returns a verdict: **reproducible as-is / approximate (with reasons) / blocked.**
+returns a verdict. There are five, and they are worded on screen as
+**high / medium / cannot / download to try / unchecked** — how likely the picture
+is to come back the same, not whether the workflow could be assembled.
 
 The verdict is produced by checking against what is actually installed (`/object_info`).
 **A name matching and ComfyUI being able to accept it are two different things**, so it
@@ -127,7 +129,7 @@ each of them**.
 
 **"Capture" and "reproduce" are qualitatively different.** An image ComfyUI produced has
 the graph that ran embedded in it, so it only needs reading. A recipe, on the other hand
-— **of 346 on this machine, only 48 (14%) carried an execution graph** — mostly needs
+— **most recipes do not carry an execution graph at all** — mostly needs
 assembling, and doing that assembly is the core of this tool.
 
 The capture route closes the loop: **your own output → record → Sweep → record again.**
@@ -141,14 +143,13 @@ the image you want, and drop *that* page URL (`/images/…`).
 
 Point the settings at a folder and it scans the `*.recipe.json` files there, along with
 **their paired reference images**, and lists them. "Empty until you drop something" would
-mean dropping 346 files every time, which is not usable in practice.
+mean dropping every file again on every launch, which is not usable in practice.
 
 - **The source folder is read-only.** Point it at LoRA Manager's recipes folder and it
   **never writes there.** Anything Unbake creates goes to a separate folder (configurable).
-- **The list appears without verdicts** (`not built yet`). A verdict for 346 records only
-  exists once each graph has been built (measured: about 8 seconds for all of them), and
-  doing that on open would freeze the screen. Building happens when you open a Sweep,
-  where one record is enough.
+- **The list appears without verdicts** (`not built yet`). A verdict only exists once
+  that record's graph has been built, and building every one of them on open would
+  freeze the screen. Building happens when you open a Sweep, where one record is enough.
 - **A running LoRA Manager is only a supplement.** The records on disk always win, and the
   API may only add **ids that are not in the folder**. Every record carries its origin
   (`folder` / `lora-manager`) — if you cannot read where something came from, a discrepancy
@@ -198,10 +199,9 @@ It carries four safety rules. Every one of them fails quietly rather than throwi
   array but **the order you rearranged them into**.
 - **Model sharing** answers "how many other records ask for this model". It is needed to
   sort missing models by **how many records get unblocked if you download it**.
-  Measured (346 records, 2026-08-20): **317 counted, 508 distinct models, 173 of them
-  shared by two or more records.** **The 29 that could not be counted are not treated as
-  zero** — dropping them silently understates the sharing count and quietly smuggles in an
-  unmeasured claim that "nobody else wants this one".
+  **Records whose models could not be counted are not treated as zero** — dropping them
+  silently understates the sharing count and quietly smuggles in an unmeasured claim that
+  "nobody else wants this one".
 
 > **"Core" does not mean "usable".** The things in these two sections live in `web/core/`
 > and their tests pass (including against real data), but **the panel cannot call them.**
@@ -261,8 +261,8 @@ from understanding each other.
 twelve.** "Why can't this be reproduced" and "what was used instead" are the most-read text
 in this tool, and having that in only one language makes the tool run on one lung.
 
-> That the port changed no wording was verified by **comparing 13,251 strings across 346
-> real recipes before and after the refactor** (zero differences on the Japanese side).
+> That the port changed no wording is checked against real data rather than asserted;
+> `tests/` carries the comparison.
 
 ## Installing
 
