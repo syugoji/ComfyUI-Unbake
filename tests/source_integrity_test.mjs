@@ -469,3 +469,57 @@ test('検査自体が発火することを確かめる（沈黙する検査を�
     assert.equal(write.test('canonical = json.dumps(manifest, sort_keys=True)'), false);
     assert.equal(write.test('entries = sorted(os.scandir(root))'), false);
 });
+
+/**
+ * **子プロセスの起動先は同梱物1点だけ。**
+ *
+ * v0.1.0 が Comfy Registry で `Flagged` になった（2026-08-25）。理由は通知されなかったが、
+ * 実測でコード側に見つかったのは**設定から来た任意のパスを Python として実行する分岐**で、
+ * `settings.py` の既知キーに無く UI からも触れない**到達不能な分岐**だった。
+ * **走査器はコードを読むのであって到達可能性を見ない。** 消したうえで、戻らないよう見張る。
+ *
+ * あわせて**同梱されていること自体**も見る——以前の既定パスは `..` で
+ * パッケージの外を指しており、**Registry から入れた人はこの機能を一度も使えなかった**。
+ * 「配線が正しい」と「配布物に入っている」は別で、前者だけ見ていると後者が抜ける。
+ */
+test('同期スクリプトは同梱されており、起動先を外から差し替えられない', async () => {
+    const rel = join('civitai-recipe-sync', 'civitai_image_download.py');
+    const script = await readFile(join(ROOT, rel), 'utf8');
+    assert.ok(script.length > 10000, rel + ' が同梱されていない（または中身が空）');
+
+    const service = await readFile(join(ROOT, 'unbake', 'services', 'raindrop_sync_service.py'), 'utf8');
+
+    // ① 既定パスが `..` でパッケージの外へ出ない
+    const decl = /DEFAULT_SCRIPT_RELATIVE_PATH\s*=\s*\(([^)]*)\)/.exec(service);
+    assert.ok(decl, 'DEFAULT_SCRIPT_RELATIVE_PATH の宣言が読めない');
+    assert.ok(!decl[1].includes('..'),
+        '起動先がパッケージの外を指している（配布物に入らないので誰も使えない）');
+
+    // ② 設定からパスを受ける口が無い
+    assert.ok(!service.includes('raindrop_sync_script_path'),
+        '設定から実行パスを受ける口が戻っている（任意のファイルを Python として実行できる）');
+
+    // ③ 起動しているのは「同梱物を指す変数」だけ。生のパス文字列を渡していない。
+    for (const m of service.matchAll(/create_subprocess_exec\(\s*([^)]*?)\)/gs)) {
+        assert.ok(/self\._python/.test(m[1]),
+            'create_subprocess_exec が self._python 以外を起動している');
+        assert.ok(/script_path/.test(m[1]),
+            'create_subprocess_exec が script_path 以外を実行している');
+    }
+});
+
+test('同梱した同期スクリプトの出所が NOTICE に書いてある', async () => {
+    // **同梱物が増えたら NOTICE も増える。** MIT を GPL-3.0 の配布物へ入れるのは
+    // 適合するが、**適合することと表示しなくてよいことは別**。
+    // **ファイル名ではなくディレクトリ名で見る。** NOTICE 自身が
+    // 「ファイル一覧を散文へ書かない（1つ足した瞬間に陳腐化する）」と宣言しているので、
+    // 名指しを要求すると**この文書の方針と喧嘩する**検査になる。
+    // 見たいのは「別ライセンスの同梱物が在ることが書いてあるか」であって、
+    // 中身が何ファイルかではない。
+    const notice = await readFile(join(ROOT, 'NOTICE'), 'utf8');
+    assert.match(notice, /civitai-recipe-sync/,
+        'NOTICE が同梱の civitai-recipe-sync/ に触れていない');
+    assert.match(notice, /\bMIT\b/, 'NOTICE が同梱物のライセンス（MIT）に触れていない');
+    const license = await readFile(join(ROOT, 'civitai-recipe-sync', 'LICENSE'), 'utf8');
+    assert.match(license, /MIT License/, '同梱スクリプトの LICENSE が MIT の正文でない');
+});

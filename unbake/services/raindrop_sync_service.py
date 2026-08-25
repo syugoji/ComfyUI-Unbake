@@ -45,8 +45,19 @@ MAX_LOG_LINES = 300
 # 1行あたりの上限。長大な行で画面と応答を膨らませない。
 MAX_LOG_LINE_CHARS = 500
 
-# 配布ツリー内での同期スクリプトの位置（このパッケージのルートから見た相対）
-DEFAULT_SCRIPT_RELATIVE_PATH = ("..", "civitai-recipe-sync", "civitai_image_download.py")
+# 同期スクリプトの位置。**このパッケージの中だけを指す。**
+#
+# **`..` を含めてはいけない。** 以前は `("..", "civitai-recipe-sync", …)` で
+# `custom_nodes/` の隣を見ており、配布物には入っていなかった——つまり
+# **Registry から入れた人はこの機能を一度も使えなかった**（必ず
+# 「同期スクリプトが見つかりません」で終わる）。同梱して中を指すようにした。
+#
+# **設定から任意のパスを受けるのもやめた。** 受けると
+# 「設定に書かれたファイルを Python として実行する口」になり、
+# 自動走査が止める（2026-08-25 に v0.1.0 が `Flagged` になった）。
+# 実際には `settings.py` の既知キーに無く UI からも触れない**到達不能な分岐**
+# だったが、走査器はコードを読むのであって到達可能性は見ない。
+DEFAULT_SCRIPT_RELATIVE_PATH = ("civitai-recipe-sync", "civitai_image_download.py")
 
 # 自動同期の既定間隔（時間）
 DEFAULT_AUTO_SYNC_INTERVAL_HOURS = 24
@@ -78,7 +89,11 @@ class RaindropSyncConfigError(RaindropSyncError):
 
 
 def _package_root() -> Path:
-    """``comfyui-lora-manager/`` の絶対パス。"""
+    """``ComfyUI-Unbake/`` の絶対パス。
+
+    **旧い docstring は ``comfyui-lora-manager/`` と書いていた**（切り出し前の名残）。
+    指している場所は当時から変わっていないが、名前が違うと読む側が別の場所だと思う。
+    """
 
     return Path(__file__).resolve().parents[2]
 
@@ -162,23 +177,23 @@ class RaindropSyncService:
     # -- 設定の解決 ---------------------------------------------------
 
     def resolve_script_path(self) -> Path:
-        """同期スクリプトの場所を決める。設定 > 配布ツリーの既定位置。"""
+        """同期スクリプトの場所を決める。**同梱物の1点だけ。**
 
-        configured = self._settings.get("raindrop_sync_script_path", "") or ""
-        if isinstance(configured, str) and configured.strip():
-            candidate = Path(os.path.expanduser(configured.strip())).resolve()
-            if not candidate.is_file():
-                raise RaindropSyncConfigError(
-                    f"設定された同期スクリプトが見つかりません: {candidate}"
-                )
-            return candidate
+        **外から場所を差し替える口を持たない。** 設定でパスを受けていた頃は、
+        ここが「設定に書かれたファイルを Python として実行する口」だった。
+        機能としては1行の分岐でも、配布物としては別物になる。
+
+        **見つからないのは異常事態である。** 同梱しているので、欠けているなら
+        導入が壊れている（部分展開・ウイルス対策による削除など）。
+        「置いてください」ではなく「入れ直してください」と言う。
+        """
 
         candidate = _package_root().joinpath(*DEFAULT_SCRIPT_RELATIVE_PATH).resolve()
         if not candidate.is_file():
             raise RaindropSyncConfigError(
-                "同期スクリプト civitai_image_download.py が見つかりません。"
-                "配布ツリーの civitai-recipe-sync/ を隣に置くか、"
-                "設定 raindrop_sync_script_path でパスを指定してください。"
+                "同期スクリプト civitai-recipe-sync/civitai_image_download.py が"
+                "パッケージ内に見つかりません。本来は同梱されているものなので、"
+                "この拡張を入れ直してください。"
             )
         return candidate
 

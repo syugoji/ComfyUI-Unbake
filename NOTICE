@@ -25,6 +25,22 @@ can mean two very different things.
     and GPL is the licence that keeps someone else from folding this work into
     a closed paid product.
 
+  * One further directory is bundled under a DIFFERENT licence, also written
+    by this package's author:
+
+        civitai-recipe-sync/             (MIT, Copyright (c) 2026 syugoji)
+
+    A standalone script that syncs Raindrop bookmarks through Civitai into
+    recipe files, plus its own LICENSE, README and example config. Unbake runs
+    it as a separate Python process; it is not imported, and nothing in
+    `unbake/` or `web/` derives from it.
+
+    MIT is compatible with GPL-3.0, and bundling it does not relicense it —
+    `civitai-recipe-sync/LICENSE` continues to govern those files. It is
+    included because the previous release pointed at a sibling directory
+    OUTSIDE this package, which meant the feature could never work for anyone
+    who installed from the registry.
+
 The file list is not repeated here in prose. A list written into a document is
 a copy of a fact that lives in the tree, and it goes stale the first time a
 file is added. `tests/source_integrity_test.mjs` reads the tree instead, and

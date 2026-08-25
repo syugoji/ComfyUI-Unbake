@@ -1,10 +1,20 @@
 [project]
 name = "comfyui-unbake"
 description = "Rebuild the ComfyUI workflow behind an image, then sweep one axis at a time and compare."
-version = "0.1.0"
+version = "0.1.1"
 license = { file = "LICENSE" }
 # **依存は無い。** `folder_paths` は ComfyUI 本体が、`PIL` は ComfyUI の環境が供給する。
 # ここへ何か足すときは、そのライセンスが配布物へ乗ることを先に確かめること。
+#
+# **同梱の `civitai-recipe-sync/` は `requests` を使うが、ここには足さない。**
+# ComfyUI 本体の `requirements.txt` に `requests` が在る（実測 2026-08-25・27行目）ので、
+# `PIL` と同じ「宿主が供給するもの」に当たる。**名前だけ見て宿主だと決めない**——
+# 足す前に本体の `requirements.txt` を実際に見ること（別の拡張が入れたものを
+# 宿主のものだと思い込む事故が起こりうる）。
+#
+# なお同梱スクリプトは**別プロセスで動く独立した実行ファイル**で、`unbake/` からは
+# import しない。だから `tests/source_integrity_test.mjs` の import 検査は
+# `unbake/` だけを走査しており、同梱物は対象外になっている。
 dependencies = []
 
 [project.urls]

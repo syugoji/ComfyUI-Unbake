@@ -1,0 +1,30 @@
+{
+  "_comment": "このファイルを config.json へコピーして値を埋めてください。config.json は .gitignore 済みです。各項目は同名の環境変数でも渡せます（環境変数が優先）。",
+
+  "raindrop_token": "",
+  "collection_id": "",
+  "recipe_dir": "",
+
+  "civitai_api_key": "",
+  "comfy_base_url": "http://127.0.0.1:8188",
+  "lora_models_dir": "",
+  "checkpoint_models_dir": "",
+
+  "_include_adult_content_comment": "Civitai の公開APIへ nsfw=X&browsingLevel=255 を付けるかどうか。既定 false（付けない）。true にすると、あなたが Civitai 側で成人向けを非表示にしていても、このツールだけは取りに行きます。ブックマークに成人向け画像が含まれていて再現できない場合だけ true にしてください。",
+  "include_adult_content": false,
+
+  "_auto_download_missing_loras_comment": "プロンプトにしか痕跡が無い LoRA を prompt_lora_fallbacks から自動ダウンロードするかどうか。既定 true。ただし無人実行（--unattended / 自動同期）では、設定に関わらず強制的に無効になります。Civitai 利用規約 §11.9 が自動化によるシステム・統計の操作を禁じており、無人でのモデル取得はダウンロード数へ自動加算される唯一の経路にあたるためです。",
+  "auto_download_missing_loras": true,
+
+  "_rate_limit_comment": "外部APIへのアクセス間隔。Civitai 利用規約 §11.4 は自動アクセスを『適用されるレート制限の範囲内で』に限っていますが、Civitai は公開APIの上限値を公表していません。守るべき数字が無い以上、保守的な間隔を置き、429 を受けたら必ず下がる方針にしています。Raindrop は上限 120 req/min（= 0.5 秒間隔で上限ちょうど）を明示し、濫用や過度に頻繁なリクエストで『アカウントの API アクセスを一時的または恒久的に停止することがある』と規約に定めています。止まるのはあなたのアカウントです。速くしたい場合も、この既定より短くすることは勧めません。",
+  "civitai_min_interval_sec": 1.0,
+  "raindrop_min_interval_sec": 1.0,
+  "http_max_retries": 3,
+  "http_backoff_base_sec": 2.0,
+  "http_backoff_cap_sec": 60.0,
+  "http_abort_after_denials": 5,
+  "raindrop_remaining_floor": 5,
+
+  "_prompt_lora_fallbacks_comment": "プロンプトの <lora:名前:強度> にしか痕跡が無く、Civitai からも消えた LoRA を、自分で用意したミラーから復元するための枠です。既定は空。url と sha256 の両方が必要で、ダウンロード後にハッシュを照合し、一致しないものは破棄します。何を登録するかは利用者の責任です。",
+  "prompt_lora_fallbacks": {}
+}
