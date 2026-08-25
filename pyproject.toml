@@ -1,0 +1,20 @@
+[project]
+name = "comfyui-unbake"
+description = "Rebuild the ComfyUI workflow behind an image, then sweep one axis at a time and compare."
+version = "0.1.0"
+license = { file = "LICENSE" }
+# **依存は無い。** `folder_paths` は ComfyUI 本体が、`PIL` は ComfyUI の環境が供給する。
+# ここへ何か足すときは、そのライセンスが配布物へ乗ることを先に確かめること。
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/syugoji/ComfyUI-Unbake"
+
+[tool.comfy]
+PublisherId = "syugoji"
+DisplayName = "Unbake"
+# Registry のカードに出る絵。**サイドバーと同じ卵**を指す（`web/icon.svg`）。
+# **相対パスではなく URL でなければならない**——Registry はリポジトリを clone せず、
+# この URL をそのまま読みに行く。だから `main` が動くと絵も動く。
+# 版で固定したければ `main` をタグ名に変える。
+Icon = "https://raw.githubusercontent.com/syugoji/ComfyUI-Unbake/main/web/icon.svg"

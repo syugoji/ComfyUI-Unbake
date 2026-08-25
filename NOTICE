@@ -1,0 +1,130 @@
+ComfyUI-Unbake
+Copyright (C) 2026 syugoji
+
+Licensed under the GNU General Public License v3.0 or later (see LICENSE).
+
+================================================================================
+What this package contains, and who wrote it
+================================================================================
+
+Unbake was extracted from an unofficial fork of ComfyUI-Lora-Manager (GPL-3.0).
+That is unusual enough to state precisely, because "extracted from a GPL fork"
+can mean two very different things.
+
+  * All but ONE source file here was written by this package's author. Those
+    files do not exist upstream, and no six consecutive lines of them match
+    upstream text.
+
+  * ONE file is upstream's and is redistributed unchanged:
+
+        web/core/genParamsMapper.js      (ComfyUI-Lora-Manager, GPL-3.0)
+
+    It maps A1111 sampler/scheduler display names onto ComfyUI's internal
+    values. Keeping it is a deliberate choice: this package is distributed
+    free of charge under GPL-3.0, so there is nothing to gain by rewriting it,
+    and GPL is the licence that keeps someone else from folding this work into
+    a closed paid product.
+
+The file list is not repeated here in prose. A list written into a document is
+a copy of a fact that lives in the tree, and it goes stale the first time a
+file is added. `tests/source_integrity_test.mjs` reads the tree instead, and
+`UPSTREAM_FILES` in that test is the single place the exception is declared.
+
+--------------------------------------------------------------------------------
+How to verify the separation yourself
+--------------------------------------------------------------------------------
+
+Do not take any of the above on trust. All of it is mechanically checkable.
+
+  1. Confirm nothing reaches outside this package:
+
+       grep -rn "^import\|^export.*from\|from '\|require(" web/
+
+     Every specifier resolves to a sibling inside `web/`. Nothing points at
+     `comfyui-lora-manager`, at `../../..`, or at an npm package.
+
+     The Python side is checked the same way:
+
+       python -c "import ast,pathlib;print(sorted({(('.'*n.level)+(n.module or '')) if isinstance(n,ast.ImportFrom) else a.name for p in pathlib.Path('unbake').rglob('*.py') for n in ast.walk(ast.parse(p.read_text(encoding='utf-8'))) if isinstance(n,(ast.Import,ast.ImportFrom)) for a in (n.names if isinstance(n,ast.Import) else [None]) if True}))"
+
+     Everything printed is a Python standard-library module, a sibling inside
+     `unbake`, `folder_paths` (supplied by ComfyUI itself), or `PIL` (shipped
+     with ComfyUI, imported lazily inside the two functions that read PNG
+     metadata).
+
+  2. Confirm the analysis core never reaches the network on its own:
+
+       node --test tests/source_integrity_test.mjs
+
+     `web/core/` contains zero references to the global `fetch` identifier.
+     The one place that talks to ComfyUI is `web/host/comfyHost.js`, and the
+     core reaches it only through the environment it is handed.
+
+     This mattered before extraction: `/object_info` was fetched from inside
+     the capability module, which is precisely what tied the analysis to the
+     fork's own web page. The boundary is now held by a test rather than by a
+     sentence in a README.
+
+  3. Confirm the author's files are not upstream text under a new name:
+
+       node tests/upstream_copy_scan.mjs --upstream <path-to-upstream-checkout>
+
+     This indexes every six-line block of an upstream checkout (whitespace
+     normalised, comments removed) and reports any match.
+
+     Run it with a control. The scan is only meaningful if it can fire, and a
+     result of zero is otherwise indistinguishable from a broken scanner.
+     `web/core/genParamsMapper.js` is upstream's file and is therefore the
+     control: it must report matches. When this was measured against upstream
+     v1.1.6 and v1.1.9, the author's files reported 0 blocks and the control
+     reported hundreds.
+
+     Get an upstream checkout with:
+
+       gh api repos/willmiao/ComfyUI-Lora-Manager/tarball/v1.1.9 > upstream.tar.gz
+
+  4. Confirm the copyright notices are complete:
+
+       node --test tests/source_integrity_test.mjs
+
+     Every file the author wrote carries `Copyright (C) 2026 syugoji`, and the
+     upstream file does not. This is the only thing that keeps a different
+     licence available later; a file distributed without a notice is harder to
+     claim afterwards.
+
+--------------------------------------------------------------------------------
+Relationship to genrecord
+================================================================================
+
+`genrecord` (AGPL-3.0 + commercial) shares this project's vocabulary — it also
+speaks of a Generation Record — and shares none of its code. The two do
+different jobs and the split is intentional:
+
+    genrecord   decides whether a record could be reproduced. It never runs
+                anything, has no dependencies, and is deterministic.
+    Unbake      builds the graph and runs it, then sweeps parameters and puts
+                the results side by side.
+
+Neither imports the other. If you want the judgement without the runtime, take
+genrecord; if you want the workbench, take this.
+
+================================================================================
+Third-party material
+================================================================================
+
+  ComfyUI-Lora-Manager (GPL-3.0) — `web/core/genParamsMapper.js`, unchanged.
+    https://github.com/willmiao/ComfyUI-Lora-Manager
+
+Nothing else. This package bundles no npm dependency and no Python dependency;
+`folder_paths` and `PIL` come from the ComfyUI installation it runs inside.
+
+No licence data obtained from any distributor is included.
+
+A small built-in catalogue IS included: `unbake/services/known_model_catalog.py`
+lists 26 upscaler and auxiliary models by filename, alias, and download URL. It
+exists because A1111 and ComfyUI name the same file differently (for example
+"R-ESRGAN 4x+ Anime6B" is `RealESRGAN_x4plus_anime_6B.pth`), and without the
+alias table a model that is already installed reads as missing. The entries are
+names and public URLs written by this project; no model weights and no
+distributor data are bundled. Callers may supply a different catalogue at
+runtime, and the code works with an empty one.

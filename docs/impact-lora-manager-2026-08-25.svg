@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 660" width="980" height="660" font-family="'Yu Gothic UI','Meiryo','Noto Sans JP',sans-serif">
+  <rect width="980" height="660" fill="#15181d"/>
+
+  <text x="36" y="52" fill="#e8ecf2" font-size="26" font-weight="700">①の影響範囲 — LoRA Manager 依存の解消</text>
+  <text x="36" y="80" fill="#9aa6b6" font-size="14">運搬ノード `Lora Loader (LoraManager)` を、標準 LoraLoader の連なりへ開く（2026-08-25 実測・全350件）</text>
+
+  <!-- 絞り込み -->
+  <text x="36" y="126" fill="#c8d2e0" font-size="15" font-weight="700">どこまで届くか</text>
+
+  <rect x="36" y="140" width="300" height="58" rx="8" fill="#1e2430" stroke="#39435a"/>
+  <text x="52" y="166" fill="#e8ecf2" font-size="15">記録ぜんぶ</text>
+  <text x="320" y="172" fill="#e8ecf2" font-size="26" font-weight="700" text-anchor="end">350</text>
+
+  <path d="M186 198 L186 216" stroke="#4a5670" stroke-width="2"/>
+  <rect x="66" y="216" width="270" height="58" rx="8" fill="#1e2430" stroke="#39435a"/>
+  <text x="82" y="242" fill="#e8ecf2" font-size="15">埋め込みグラフを持つ</text>
+  <text x="320" y="248" fill="#e8ecf2" font-size="26" font-weight="700" text-anchor="end">49</text>
+
+  <path d="M186 274 L186 292" stroke="#4a5670" stroke-width="2"/>
+  <rect x="96" y="292" width="240" height="72" rx="8" fill="#243244" stroke="#5b7fb0"/>
+  <text x="112" y="318" fill="#cfe0f5" font-size="15">運搬ノードを持つ＝対象</text>
+  <text x="320" y="326" fill="#7fb2ff" font-size="30" font-weight="700" text-anchor="end">16</text>
+  <text x="112" y="346" fill="#9aa6b6" font-size="13">運ばれている LoRA 合計 119本</text>
+
+  <!-- あなたの環境 -->
+  <rect x="380" y="140" width="564" height="150" rx="10" fill="#1b2a20" stroke="#3f7a52"/>
+  <text x="400" y="170" fill="#bfe8cd" font-size="16" font-weight="700">あなたの環境（LoRA Manager 導入あり）＝ 絵は変わらない</text>
+  <text x="400" y="200" fill="#d7e6dd" font-size="14">直す前と後で、組み上がったグラフを全件つき合わせた結果:</text>
+  <text x="400" y="232" fill="#8ee0a8" font-size="28" font-weight="700">322 / 322 一致</text>
+  <text x="616" y="232" fill="#d7e6dd" font-size="14">（差分 0 件・片方だけ失敗 0 件）</text>
+  <text x="400" y="262" fill="#9aa6b6" font-size="13">残り28件は前も後も組めない記録（元から生成情報が足りない）。この変更とは無関係</text>
+  <text x="400" y="282" fill="#9aa6b6" font-size="13">運搬ノードが在る環境では、そのまま使う道を通るので手を触れない。</text>
+
+  <!-- 導入していない環境 -->
+  <rect x="380" y="306" width="564" height="266" rx="10" fill="#1e2430" stroke="#39435a"/>
+  <text x="400" y="336" fill="#cfe0f5" font-size="16" font-weight="700">LoRA Manager が無い環境（対象16件の内訳）</text>
+
+  <rect x="400" y="352" width="524" height="66" rx="8" fill="#232b3a" stroke="#4a5670"/>
+  <text x="416" y="376" fill="#ffd08a" font-size="22" font-weight="700">5件</text>
+  <text x="470" y="376" fill="#e8ecf2" font-size="14">前: 組み立てが落ちて 1枚も出せない</text>
+  <text x="470" y="400" fill="#8ee0a8" font-size="14">後: 組める（15節・LoRA 8節）</text>
+  <text x="908" y="376" fill="#9aa6b6" font-size="12" text-anchor="end">ComfyUI_00040〜00044</text>
+
+  <rect x="400" y="428" width="524" height="66" rx="8" fill="#232b3a" stroke="#4a5670"/>
+  <text x="416" y="452" fill="#ffd08a" font-size="22" font-weight="700">10件</text>
+  <text x="470" y="452" fill="#e8ecf2" font-size="14">前: 埋め込みを捨てて標準構成へ組み直し（構図が別物）</text>
+  <text x="470" y="476" fill="#8ee0a8" font-size="14">後: 埋め込みのまま・LoRA だけ連なりへ（8本 → 8節）</text>
+  <text x="908" y="452" fill="#9aa6b6" font-size="12" text-anchor="end">Civitai_Recipe 系</text>
+
+  <rect x="400" y="504" width="524" height="52" rx="8" fill="#20242c" stroke="#39435a"/>
+  <text x="416" y="536" fill="#9aa6b6" font-size="22" font-weight="700">1件</text>
+  <text x="470" y="528" fill="#9aa6b6" font-size="14">運搬ノードは2つあるが、有効な LoRA が0本</text>
+  <text x="470" y="548" fill="#9aa6b6" font-size="14">前後とも標準構成のまま＝変化なし</text>
+
+  <!-- 絵を変えない条件 -->
+  <rect x="36" y="392" width="300" height="180" rx="10" fill="#1e2430" stroke="#39435a"/>
+  <text x="52" y="420" fill="#cfe0f5" font-size="15" font-weight="700">絵を変えない条件（3つ）</text>
+  <text x="52" y="450" fill="#e8ecf2" font-size="14">1. 当てる順番</text>
+  <text x="52" y="476" fill="#e8ecf2" font-size="14">2. 強さ（model と clip を別に）</text>
+  <text x="52" y="502" fill="#e8ecf2" font-size="14">3. 切ってある分は当てない</text>
+  <text x="52" y="532" fill="#9aa6b6" font-size="12.5">LoRA は重みを順に当てる操作なので、</text>
+  <text x="52" y="551" fill="#9aa6b6" font-size="12.5">同じ順・同じ強さなら1節でも連なりでも同じ。</text>
+
+  <text x="36" y="608" fill="#7f8b9c" font-size="12">実測 2026-08-25 ／ ComfyUI v0.28.3・frontend 1.42.15 ／ 前 = f7939037^ ・ 後 = f7939037（全350件を両方で組み直して比較）</text>
+  <text x="36" y="630" fill="#7f8b9c" font-size="12">変異試験10本すべて発火（順番・強さ・clip の口・繋ぎ替え・呼ぶ位置・沈黙）。</text>
+</svg>

@@ -1,0 +1,203 @@
+/*
+ * Copyright (C) 2026 syugoji
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+/**
+ * 面の検査で使う最小の DOM。
+ *
+ * **jsdom を持ち込まない。** 面は `documentRef` を受け取る形にしてあり、
+ * 使うのは `createElement` / `append` / `replaceChildren` / イベントだけなので、
+ * その面だけを満たす偽物で足りる——依存を1つ足すと、配布物の依存0という
+ * 主張を検査するときに毎回この例外を説明することになる。
+ */
+// --- 最小 DOM ------------------------------------------------------------
+
+export class FakeClassList {
+    constructor(node) { this.node = node; }
+    add(...names) {
+        const set = new Set(String(this.node.className || '').split(/\s+/).filter(Boolean));
+        for (const name of names) set.add(name);
+        this.node.className = [...set].join(' ');
+    }
+}
+
+export class FakeNode {
+    constructor(tag, doc) {
+        this.tagName = String(tag).toUpperCase();
+        this.ownerDocument = doc;
+        this.children = [];
+        this.parentNode = null;
+        this.attributes = new Map();
+        this.listeners = new Map();
+        this.style = {};
+        this.textContent = '';
+        this.rawValue = '';
+        this.disabled = false;
+        this.classList = new FakeClassList(this);
+    }
+
+    get className() { return this.attributes.get('class') || ''; }
+    set className(value) { this.attributes.set('class', String(value)); }
+
+    setAttribute(name, value) {
+        if (name === 'class') { this.className = value; return; }
+        this.attributes.set(name, String(value));
+        if (name === 'value') this.rawValue = String(value);
+    }
+
+    /**
+     * `<select>` は**選択肢に無い値を受け付けない。**
+     *
+     * ここを素通しにしていたせいで、中核へ回し方を1つ足したのに面の選択肢へ
+     * 足し忘れた事故を、検査が緑のまま通した（実機で初めて
+     * 「Unsupported sweep mode」として出た・2026-08-20）。
+     * **ダブルがブラウザより寛容だと、その差の分だけ検査が嘘になる。**
+     */
+    get value() {
+        return this.rawValue ?? '';
+    }
+
+    set value(next) {
+        if (this.tagName === 'SELECT') {
+            const options = this.children
+                .filter(child => child.tagName === 'OPTION')
+                .map(child => child.getAttribute('value'));
+            // 選択肢が1つも無いうちは素通し（構築中に値を入れる形を壊さない）。
+            if (options.length > 0 && !options.includes(String(next))) {
+                this.rawValue = '';
+                return;
+            }
+        }
+        this.rawValue = String(next);
+    }
+
+    removeAttribute(name) {
+        if (name === 'class') { this.className = ''; return; }
+        this.attributes.delete(name);
+    }
+
+    getAttribute(name) {
+        if (name === 'class') return this.className;
+        return this.attributes.has(name) ? this.attributes.get(name) : null;
+    }
+
+    append(...nodes) {
+        for (const node of nodes) {
+            if (!node) continue;
+            node.parentNode = this;
+            this.children.push(node);
+        }
+    }
+
+    replaceChildren(...nodes) {
+        this.children = [];
+        this.append(...nodes);
+    }
+
+    remove() {
+        if (!this.parentNode) return;
+        this.parentNode.children = this.parentNode.children.filter(child => child !== this);
+        this.parentNode = null;
+    }
+
+    addEventListener(type, handler) {
+        if (!this.listeners.has(type)) this.listeners.set(type, []);
+        this.listeners.get(type).push(handler);
+    }
+
+    removeEventListener(type, handler) {
+        this.listeners.set(type, (this.listeners.get(type) || []).filter(item => item !== handler));
+    }
+
+    dispatch(type, event = {}) {
+        // **disabled な相手は押せない。** 本物のブラウザは disabled 要素へ click を配らない。
+        // ここで配ってしまうと、**押せない口を「押せる」と証言するテスト**ができる
+        // （2026-08-24 実機：待機中の ⏸ が押せないのにテストは通っていた）。
+        const pointerish = type === 'click' || type === 'dblclick' || type.startsWith('pointer')
+            || type.startsWith('mouse');
+        if (pointerish && this.disabled) return Promise.resolve([]);
+        return Promise.all((this.listeners.get(type) || []).map(handler => handler(event)));
+    }
+
+    getBoundingClientRect() { return { width: 900, height: 600 }; }
+
+    /** 深さ優先で全部。 */
+    *walk() {
+        yield this;
+        for (const child of this.children) yield* child.walk();
+    }
+
+    find(predicate) {
+        for (const node of this.walk()) if (node !== this && predicate(node)) return node;
+        return null;
+    }
+
+    findAll(predicate) {
+        return [...this.walk()].filter(node => node !== this && predicate(node));
+    }
+
+    byClass(name) {
+        return this.find(node => String(node.className).split(/\s+/).includes(name));
+    }
+
+    allByClass(name) {
+        return this.findAll(node => String(node.className).split(/\s+/).includes(name));
+    }
+
+    get text() {
+        return [this.textContent, ...this.children.map(child => child.text)].filter(Boolean).join(' ');
+    }
+}
+
+/**
+ * `querySelector` の**ごく狭い**実装。当たるのは3つの形だけ:
+ * `tag[attr="value"]` / `.class` / `#id`。
+ *
+ * **無いことを「無い」と読ませないため**に足した（2026-08-25）。
+ * ここが未実装だった間、`querySelector` を使う製品側の道は
+ * `if (!doc?.querySelector) return 'unavailable'` で**必ず早退**していて、
+ * 検査からは一度も踏めていなかった（Dark Reader の錠を外す道がそれ）。
+ * **踏めない道は、壊れても赤くならない。**
+ *
+ * 対応していない形（子孫・複合セレクタ等）は `null` ではなく**投げる**
+ * ——静かに `null` を返すと、また「無い」と読める嘘に戻る。
+ */
+function matchOne(root, selector) {
+    const text = String(selector || '').trim();
+    let test = null;
+    const attr = text.match(/^([a-zA-Z][\w-]*)\[([\w-]+)="([^"]*)"\]$/);
+    if (attr) {
+        const [, tag, name, value] = attr;
+        const wanted = tag.toUpperCase();
+        test = (node) => node.tagName === wanted && node.getAttribute(name) === value;
+    } else if (/^\.[\w-]+$/.test(text)) {
+        const name = text.slice(1);
+        test = (node) => String(node.className).split(/\s+/).includes(name);
+    } else if (/^#[\w-]+$/.test(text)) {
+        const id = text.slice(1);
+        test = (node) => node.getAttribute('id') === id;
+    } else {
+        throw new Error(`fake_dom: この形の querySelector は未対応です: ${text}`);
+    }
+    for (const start of root) {
+        const hit = start.find(test);
+        if (hit) return hit;
+    }
+    return null;
+}
+
+export function fakeDocument() {
+    const doc = {
+        createElement: (tag) => new FakeNode(tag, doc),
+        getElementById: () => null,
+        querySelector: (selector) => matchOne([doc.head, doc.body].filter(Boolean), selector),
+        head: null,
+        body: null,
+        addEventListener() {},
+        removeEventListener() {},
+    };
+    doc.head = new FakeNode('head', doc);
+    doc.body = new FakeNode('body', doc);
+    return doc;
+}
+

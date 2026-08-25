@@ -1,0 +1,779 @@
+/*
+ * テーマ2「prism」— 光と奥行きの作り。
+ *
+ * Copyright (C) 2026 syugoji
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * ---------------------------------------------------------------------------
+ * **この紙は、いつでも捨てられる。**（2026-08-25 利用者の指示「却下する可能性
+ * もあるため、可塑性を持たせて作成してください」）
+ *
+ * **外すのは1命令**（手順書は腐るので、道具として持っている）:
+ *
+ *     node tools/remove-skin.mjs prism            # 何が変わるかだけ出す
+ *     node tools/remove-skin.mjs prism --apply    # 実際に外す
+ *
+ * テーマを全部外して**枠組みごと**捨てるなら、さらに
+ * `web/panel/skin.js` と `unbake/settings.py` の `ui_skin`、
+ * `panel.js` の呼び出し2箇所を消す。
+ *
+ * テーマ1（classic）の指定は**1行も触っていない**。ここの規則は全て
+ * `.unbake-root[data-skin="prism"]` の下に在り、選ばれていない間は
+ * **紙自体が読み込まれない**。「閉じ込めてある」は意図ではなく、
+ * `tests/skin_test.mjs` が全規則を走査して固定している。
+ * ---------------------------------------------------------------------------
+ *
+ * **既存の約束は、こちらでも守る。**
+ *
+ *   - **判定済みを薄くしない。** `opacity: 0.x` は1つも使わない
+ *     （薄い＝見直せない）。透けは色そのものの alpha で作る。
+ *   - **一覧はカード格子にしない。** `grid-template-columns` を1つも足さない。
+ *     絵で比べる面（Sweep・出た絵）の格子は、テーマ1の器をそのまま使う。
+ *   - **色は自分で決めない。** `--unbake-*` から作る。だから配色（琥珀・炭・苔・紙）
+ *     と判定の色分けは、テーマ2でもそのまま効く。
+ *   - **動きは切れる。** OS の「動きを減らす」と、設定の「見た目を厚くする」を
+ *     切った状態では、**動く指定を1つも出さない**。
+ *
+ * **作りの狙い**（テーマ1との違い）:
+ *   テーマ1は「平らな紙に、線で仕切る」。テーマ2は「**暗い硝子の層を重ね、
+ *   光で仕切る**」——境界を線でなく、明るさの差と影で作る。
+ *   だから枠線は細く沈め、代わりに面へ内側の照り返しと外側の落ち影を置く。
+ */
+
+/* =========================================================================
+   1. 層の材料
+   ========================================================================= */
+
+.unbake-root[data-skin="prism"] {
+    /* **面の丸みを大きく取る。** 硝子板の積み重ねに見せるには、角が要る。 */
+    --unbake-radius: 13px;
+    --unbake-radius-sm: 9px;
+
+    /* 硝子の地。**不透明で塗らない**——下の層が透けることが、この作りの主語。 */
+    --prism-glass: color-mix(in oklab, var(--unbake-panel) 78%, transparent);
+    --prism-glass-strong: color-mix(in oklab, var(--unbake-panel) 92%, transparent);
+    /* 縁。**線ではなく「照り返し」**として置く（上辺が明るく、下辺が沈む）。 */
+    --prism-edge: color-mix(in oklab, var(--unbake-text) 14%, transparent);
+    --prism-edge-soft: color-mix(in oklab, var(--unbake-text) 7%, transparent);
+    /* 光。アクセントから作るので、配色を変えると光の色も一緒に変わる。 */
+    --prism-glow: color-mix(in oklab, var(--unbake-accent) 55%, transparent);
+    --prism-glow-soft: color-mix(in oklab, var(--unbake-accent) 22%, transparent);
+    /* 対の色。**アクセントの反対側**を混ぜて、単色に見えないようにする。 */
+    --prism-second: color-mix(in oklab, var(--unbake-ok) 60%, var(--unbake-accent));
+    --prism-third: color-mix(in oklab, var(--unbake-warn) 45%, var(--unbake-accent));
+    /* 落ち影。テーマ1の `--unbake-shadow` より深く、広く。 */
+    --prism-shadow: 0 10px 30px rgba(0, 0, 0, 0.42), 0 2px 8px rgba(0, 0, 0, 0.3);
+    --prism-shadow-sm: 0 4px 14px rgba(0, 0, 0, 0.32);
+    --prism-inset: inset 0 1px 0 var(--prism-edge), inset 0 -1px 0 rgba(0, 0, 0, 0.28);
+
+    /* **靄は地に直接描く**（2026-08-25 利用者の指摘「設定ポップアップが狭くなる」）。
+     *
+     * 元は `::before` を1枚敷き、**直下の子を全部 `position: relative` に**して
+     * その上へ載せていた。それが覆い（`.unbake-popup-layer`）にも当たり、
+     * **`position: fixed` を打ち消して器の幅に閉じ込めていた**
+     * ——実測: 設定の面が 720px → 376px。テーマ3・4と同じく、
+     * **地を塗り替えるだけ**にすれば、位置の指定を1つも触らない。 */
+    background:
+        radial-gradient(46% 34% at 12% 2%, color-mix(in oklab, var(--unbake-accent) 34%, transparent), transparent 68%),
+        radial-gradient(40% 30% at 92% 14%, color-mix(in oklab, var(--prism-second) 24%, transparent), transparent 70%),
+        radial-gradient(52% 40% at 58% 98%, color-mix(in oklab, var(--prism-third) 20%, transparent), transparent 74%),
+        var(--unbake-bg);
+    background-repeat: no-repeat;
+    background-size: 150% 150%, 150% 150%, 150% 150%, auto;
+    background-position: 0% 0%, 100% 0%, 50% 100%, 0 0;
+    /* **ゆっくり漂わせる。** 速い動きは作業の邪魔になるだけなので、
+       1周 42秒・振れ幅も小さく取る。 */
+    animation: unbake-prism-drift 42s ease-in-out infinite alternate;
+}
+
+@keyframes unbake-prism-drift {
+    from { background-position: 0% 0%, 100% 0%, 50% 100%, 0 0; }
+    to   { background-position: 8% 6%, 92% 8%, 58% 94%, 0 0; }
+}
+
+/* =========================================================================
+   2. 見出しと帯
+   ========================================================================= */
+
+.unbake-root[data-skin="prism"] .unbake-header {
+    padding: 9px 12px;
+    border-bottom: 1px solid var(--prism-edge-soft);
+    background:
+        linear-gradient(180deg,
+            color-mix(in oklab, var(--unbake-panel) 96%, var(--unbake-text)) 0%,
+            var(--prism-glass) 100%);
+    box-shadow: var(--prism-inset), 0 6px 18px rgba(0, 0, 0, 0.28);
+    backdrop-filter: blur(14px) saturate(1.25);
+}
+
+/* **題は光の帯で書く。** 単色の見出しと、ここが一番はっきり違う。 */
+.unbake-root[data-skin="prism"] .unbake-title {
+    letter-spacing: 0.16em;
+    background: linear-gradient(96deg,
+        var(--unbake-accent) 0%,
+        color-mix(in oklab, var(--prism-second) 70%, var(--unbake-text)) 52%,
+        var(--unbake-accent) 100%);
+    background-size: 220% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    animation: unbake-prism-sheen 9s linear infinite;
+}
+
+@keyframes unbake-prism-sheen {
+    from { background-position: 0% 50%; }
+    to   { background-position: 220% 50%; }
+}
+
+/* 印は、脈打つ暈をまとう。**大きさは変えない**（並びが揺れると読みにくい）。 */
+.unbake-root[data-skin="prism"] .unbake-title-icon,
+.unbake-root[data-skin="prism"] .unbake-icon {
+    border-radius: 50%;
+    box-shadow: 0 0 0 0 var(--prism-glow);
+    animation: unbake-prism-pulse 3.6s ease-out infinite;
+}
+
+@keyframes unbake-prism-pulse {
+    0%   { box-shadow: 0 0 0 0 var(--prism-glow); }
+    70%  { box-shadow: 0 0 0 9px transparent; }
+    100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+.unbake-root[data-skin="prism"] .unbake-mode {
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    font-size: var(--unbake-font-xs);
+    color: color-mix(in oklab, var(--unbake-muted) 82%, var(--unbake-accent));
+}
+
+/* **働く面にも光を置く。** 器の外周だけを光らせても、実際に目が居るのは
+   一覧の側で、そこは行が敷き詰められて背景が見えない。だから面そのものへ
+   薄い光を敷く——**行の地は塗らない**ので、判定の色は今までどおり読める。 */
+.unbake-root[data-skin="prism"] .unbake-body {
+    background-image:
+        radial-gradient(72% 38% at 6% 0%, color-mix(in oklab, var(--unbake-accent) 22%, transparent), transparent 70%),
+        radial-gradient(60% 44% at 100% 12%, color-mix(in oklab, var(--prism-second) 18%, transparent), transparent 72%),
+        linear-gradient(180deg, transparent 45%, color-mix(in oklab, var(--prism-third) 14%, transparent) 100%);
+    background-repeat: no-repeat;
+}
+
+/* 見出しの下に光の細線を1本。**線で仕切らず、明るさで仕切る。** */
+.unbake-root[data-skin="prism"] .unbake-header {
+    background-image:
+        linear-gradient(180deg,
+            color-mix(in oklab, var(--unbake-panel) 96%, var(--unbake-text)) 0%,
+            var(--prism-glass) 100%),
+        linear-gradient(to right,
+            var(--prism-glow) 0%,
+            color-mix(in oklab, var(--prism-second) 45%, transparent) 38%,
+            transparent 88%);
+    background-repeat: no-repeat;
+    background-size: 100% 100%, 100% 1px;
+    background-position: top left, bottom left;
+}
+
+/* =========================================================================
+   3. 入力と操作
+   ========================================================================= */
+
+.unbake-root[data-skin="prism"] .unbake-search,
+.unbake-root[data-skin="prism"] .unbake-settings-input,
+.unbake-root[data-skin="prism"] .unbake-sweep-picker-search,
+.unbake-root[data-skin="prism"] .unbake-detail-input {
+    border: 1px solid var(--prism-edge-soft);
+    border-radius: 999px;
+    background:
+        linear-gradient(180deg, rgba(0, 0, 0, 0.22), transparent 60%),
+        var(--prism-glass);
+    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.38);
+    transition: box-shadow 160ms var(--unbake-ease), border-color 160ms var(--unbake-ease);
+}
+
+.unbake-root[data-skin="prism"] .unbake-settings-input,
+.unbake-root[data-skin="prism"] .unbake-detail-input {
+    /* 数や語を入れる欄まで丸めると、押す物と見分けが付かない。 */
+    border-radius: var(--unbake-radius-sm);
+}
+
+.unbake-root[data-skin="prism"] .unbake-search:focus,
+.unbake-root[data-skin="prism"] .unbake-settings-input:focus,
+.unbake-root[data-skin="prism"] .unbake-sweep-picker-search:focus,
+.unbake-root[data-skin="prism"] .unbake-detail-input:focus {
+    outline: none;
+    border-color: color-mix(in oklab, var(--unbake-accent) 70%, transparent);
+    box-shadow:
+        inset 0 1px 3px rgba(0, 0, 0, 0.38),
+        0 0 0 3px var(--prism-glow-soft);
+}
+
+/* 押せる四角。**面を塗ったうえで、上端に照り返しを1本入れる。** */
+.unbake-root[data-skin="prism"] .unbake-act,
+.unbake-root[data-skin="prism"] .unbake-view-toggle,
+.unbake-root[data-skin="prism"] .unbake-selection button,
+.unbake-root[data-skin="prism"] .unbake-sweep-actions button,
+.unbake-root[data-skin="prism"] .unbake-settings-open,
+.unbake-root[data-skin="prism"] .unbake-raindrop-open,
+.unbake-root[data-skin="prism"] .unbake-donate-open,
+.unbake-root[data-skin="prism"] .unbake-fullscreen-open,
+.unbake-root[data-skin="prism"] .unbake-batch-run,
+.unbake-root[data-skin="prism"] .unbake-batch-stop {
+    border: 1px solid var(--prism-edge-soft);
+    background:
+        linear-gradient(180deg,
+            color-mix(in oklab, var(--unbake-button) 88%, var(--unbake-text)) 0%,
+            var(--unbake-button) 100%);
+    box-shadow: var(--prism-inset), var(--prism-shadow-sm);
+    transition:
+        transform 120ms var(--unbake-ease),
+        box-shadow 160ms var(--unbake-ease),
+        border-color 160ms var(--unbake-ease);
+}
+
+.unbake-root[data-skin="prism"] .unbake-act:hover:not(:disabled),
+.unbake-root[data-skin="prism"] .unbake-view-toggle:hover,
+.unbake-root[data-skin="prism"] .unbake-selection button:hover:not(:disabled),
+.unbake-root[data-skin="prism"] .unbake-settings-open:hover,
+.unbake-root[data-skin="prism"] .unbake-raindrop-open:hover,
+.unbake-root[data-skin="prism"] .unbake-donate-open:hover,
+.unbake-root[data-skin="prism"] .unbake-fullscreen-open:hover,
+.unbake-root[data-skin="prism"] .unbake-batch-run:hover:not(:disabled) {
+    transform: translateY(-1px);
+    border-color: color-mix(in oklab, var(--unbake-accent) 55%, transparent);
+    box-shadow: var(--prism-inset), 0 6px 18px rgba(0, 0, 0, 0.4), 0 0 14px var(--prism-glow-soft);
+}
+
+.unbake-root[data-skin="prism"] .unbake-act:active:not(:disabled) {
+    transform: translateY(1px);
+    box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.45);
+}
+
+/* 主の口（再現を回す）は、アクセントで塗って一段強くする。 */
+.unbake-root[data-skin="prism"] .unbake-act-replay {
+    border-color: color-mix(in oklab, var(--unbake-accent) 60%, transparent);
+    background:
+        linear-gradient(180deg,
+            color-mix(in oklab, var(--unbake-accent) 34%, var(--unbake-button)) 0%,
+            color-mix(in oklab, var(--unbake-accent) 16%, var(--unbake-button)) 100%);
+    color: color-mix(in oklab, var(--unbake-text) 88%, var(--unbake-accent));
+}
+
+.unbake-root[data-skin="prism"] .unbake-act-replay:hover:not(:disabled) {
+    box-shadow: var(--prism-inset), 0 6px 20px rgba(0, 0, 0, 0.42), 0 0 18px var(--prism-glow);
+}
+
+/* 待っている口は、光を往復させる。**色を薄くしない**（薄い＝押せないに見える）。 */
+.unbake-root[data-skin="prism"] .unbake-act[data-busy="true"],
+.unbake-root[data-skin="prism"] .unbake-act[data-held="true"] {
+    background:
+        linear-gradient(100deg,
+            var(--unbake-button) 0%,
+            color-mix(in oklab, var(--unbake-accent) 30%, var(--unbake-button)) 50%,
+            var(--unbake-button) 100%);
+    background-size: 260% 100%;
+    animation: unbake-prism-scan 1.5s linear infinite;
+}
+
+@keyframes unbake-prism-scan {
+    from { background-position: 260% 50%; }
+    to   { background-position: 0% 50%; }
+}
+
+/* =========================================================================
+   4. 絞り込みの札
+   ========================================================================= */
+
+.unbake-root[data-skin="prism"] .unbake-chip {
+    border: 1px solid var(--prism-edge-soft);
+    border-radius: 999px;
+    padding: 4px 11px 4px 14px;
+    padding-inline: 14px 11px;
+    background: var(--prism-glass);
+    box-shadow: var(--prism-inset);
+    transition:
+        box-shadow 160ms var(--unbake-ease),
+        border-color 160ms var(--unbake-ease),
+        transform 120ms var(--unbake-ease);
+}
+
+/* **判定の帯は、丸めて光らせる。** テーマ1は角の直線、こちらは灯。 */
+.unbake-root[data-skin="prism"] .unbake-chip::before {
+    top: 50%;
+    bottom: auto;
+    left: 5px;
+    inset-inline-start: 5px;
+    width: 6px;
+    inline-size: 6px;
+    height: 6px;
+    block-size: 6px;
+    border-radius: 50%;
+    transform: translateY(-50%);
+    background: var(--unbake-chip-band);
+    box-shadow: 0 0 8px var(--unbake-chip-band);
+}
+
+.unbake-root[data-skin="prism"] .unbake-chip:hover {
+    transform: translateY(-1px);
+    border-color: color-mix(in oklab, var(--unbake-accent) 45%, transparent);
+    box-shadow: var(--prism-inset), 0 0 12px var(--prism-glow-soft);
+}
+
+/* 切ってある札。**薄くはしない**——枠と地だけ沈めて、字はそのまま読める。 */
+.unbake-root[data-skin="prism"] .unbake-chip[data-on="false"] {
+    background: color-mix(in oklab, var(--unbake-bg) 70%, transparent);
+    border-color: color-mix(in oklab, var(--unbake-text) 4%, transparent);
+}
+
+.unbake-root[data-skin="prism"] .unbake-chip[data-on="false"]::before {
+    box-shadow: none;
+}
+
+/* =========================================================================
+   5. 表（この道具の主画面）
+   ========================================================================= */
+
+.unbake-root[data-skin="prism"] .unbake-table {
+    border-collapse: separate;
+    border-spacing: 0;
+}
+
+.unbake-root[data-skin="prism"] .unbake-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-size: var(--unbake-font-xs);
+    color: color-mix(in oklab, var(--unbake-muted) 76%, var(--unbake-accent));
+    border-bottom: 1px solid var(--prism-edge);
+    background:
+        linear-gradient(180deg, var(--prism-glass-strong), var(--prism-glass));
+    backdrop-filter: blur(10px);
+}
+
+.unbake-root[data-skin="prism"] .unbake-table td {
+    border-bottom: 1px solid var(--prism-edge-soft);
+    /* 数字が並ぶ列で桁がずれない（件数・寸法・種）。 */
+    font-variant-numeric: tabular-nums;
+}
+
+/* **行に触れたら、手前から光が差す。** 全面を塗るテーマ1と違い、
+   始点側から減衰させるので、視線の始まりと一致する。 */
+.unbake-root[data-skin="prism"] .unbake-table tbody tr {
+    transition: background 160ms var(--unbake-ease);
+}
+
+.unbake-root[data-skin="prism"] .unbake-table tbody tr:hover {
+    background: linear-gradient(
+        to right,
+        color-mix(in oklab, var(--unbake-accent) 24%, transparent) 0%,
+        transparent 72%);
+}
+
+.unbake-root[data-skin="prism"] .unbake-table tbody tr[data-selected="true"] {
+    background: linear-gradient(
+        to right,
+        color-mix(in oklab, var(--unbake-accent) 34%, transparent) 0%,
+        color-mix(in oklab, var(--unbake-accent) 8%, transparent) 60%,
+        transparent 100%);
+    box-shadow: inset 3px 0 0 var(--unbake-accent);
+}
+
+/* 判定の丸は、同じ色の暈をまとう。**色だけに頼らない語はそのまま。** */
+.unbake-root[data-skin="prism"] .unbake-verdict::before {
+    box-shadow: 0 0 8px var(--unbake-verdict-color);
+}
+
+.unbake-root[data-skin="prism"] .unbake-thumb {
+    border-radius: var(--unbake-radius-sm);
+    box-shadow: var(--prism-shadow-sm);
+}
+
+/* =========================================================================
+   6. 絵で選ぶ面（タイル）
+   ========================================================================= */
+
+.unbake-root[data-skin="prism"] .unbake-tile {
+    border: 1px solid var(--prism-edge-soft);
+    box-shadow: var(--prism-shadow-sm);
+    transition:
+        transform 180ms var(--unbake-ease),
+        box-shadow 180ms var(--unbake-ease),
+        border-color 180ms var(--unbake-ease);
+}
+
+/* 判定は左の帯のまま。**光らせて、絵の明るさに負けないようにする。** */
+.unbake-root[data-skin="prism"] .unbake-tile[data-verdict]::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    inset-inline-start: 0;
+    width: 3px;
+    inline-size: 3px;
+    z-index: 3;
+    pointer-events: none;
+    /* **帯そのものを塗る。** テーマ1は `border-left` で出しているが、
+       こちらは枠を 1px の縁にしたので上書きで消える——実機で消えた
+       （2026-08-25 見比べ台で発見）。**判定は主語なので、消してはいけない。** */
+    background: currentColor;
+    box-shadow: 0 0 10px 1px currentColor;
+}
+
+.unbake-root[data-skin="prism"] .unbake-tile[data-verdict="reproducible"]::after { color: var(--unbake-ok); }
+.unbake-root[data-skin="prism"] .unbake-tile[data-verdict="approximate"]::after  { color: var(--unbake-warn); }
+.unbake-root[data-skin="prism"] .unbake-tile[data-verdict="blocked"]::after      { color: var(--unbake-bad); }
+.unbake-root[data-skin="prism"] .unbake-tile[data-verdict="pending"]::after      { color: var(--unbake-muted); }
+
+.unbake-root[data-skin="prism"] .unbake-tile:hover,
+.unbake-root[data-skin="prism"] .unbake-tile:focus-within {
+    transform: translateY(-3px);
+    box-shadow:
+        0 14px 34px rgba(0, 0, 0, 0.5),
+        0 0 0 1px color-mix(in oklab, var(--unbake-accent) 65%, transparent),
+        0 0 22px var(--prism-glow-soft);
+}
+
+/* **絵の側を寄せる。** 枠を動かすと並びが揺れるので、動かすのは中身だけ。 */
+.unbake-root[data-skin="prism"] .unbake-tile-image {
+    transition: transform 420ms var(--unbake-ease), filter 420ms var(--unbake-ease);
+}
+
+.unbake-root[data-skin="prism"] .unbake-tile:hover .unbake-tile-image,
+.unbake-root[data-skin="prism"] .unbake-tile:focus-within .unbake-tile-image {
+    transform: scale(1.045);
+    filter: saturate(1.08) contrast(1.03);
+}
+
+/* 上下の帯は硝子に。**字の下に敷く影は残す**（明るい絵の上で読めなくなる）。 */
+.unbake-root[data-skin="prism"] .unbake-tile-head,
+.unbake-root[data-skin="prism"] .unbake-tile-foot {
+    backdrop-filter: blur(8px) saturate(1.2);
+}
+
+.unbake-root[data-skin="prism"] .unbake-tile-foot {
+    background: linear-gradient(0deg,
+        color-mix(in oklab, var(--unbake-bg) 88%, transparent) 0%,
+        color-mix(in oklab, var(--unbake-bg) 40%, transparent) 70%,
+        transparent 100%);
+}
+
+.unbake-root[data-skin="prism"] .unbake-tile-head {
+    background: linear-gradient(180deg,
+        color-mix(in oklab, var(--unbake-bg) 82%, transparent) 0%,
+        transparent 100%);
+}
+
+.unbake-root[data-skin="prism"] .unbake-tile-mark {
+    text-shadow: 0 0 10px rgba(0, 0, 0, 0.7);
+}
+
+/* =========================================================================
+   7. 浮かせる面（詳細・ポップアップ・確認・明かり箱）
+   ========================================================================= */
+
+.unbake-root[data-skin="prism"] .unbake-popup,
+.unbake-root[data-skin="prism"] .unbake-detail,
+.unbake-root[data-skin="prism"] .unbake-sweep,
+.unbake-root[data-skin="prism"] .unbake-variants,
+.unbake-root[data-skin="prism"] .unbake-toast {
+    border: 1px solid var(--prism-edge);
+    background:
+        linear-gradient(180deg,
+            color-mix(in oklab, var(--unbake-overlay) 94%, var(--unbake-text)) 0%,
+            var(--unbake-overlay) 42%,
+            color-mix(in oklab, var(--unbake-overlay) 96%, #000) 100%);
+    box-shadow: var(--prism-shadow), var(--prism-inset);
+    backdrop-filter: blur(18px) saturate(1.2);
+}
+
+/* 覆いは**濃さだけ**で作る。
+   **すりガラスは使わない**——テーマ1が 2026-08-23 に決めていて、
+   こちらもそれに従う（書けるかと効くかが別で、効いても背面の色を持ち込む）。 */
+.unbake-root[data-skin="prism"] .unbake-popup-layer {
+    background: rgba(0, 0, 0, 0.62);
+    animation: unbake-prism-fade 180ms var(--unbake-ease) both;
+}
+
+.unbake-root[data-skin="prism"] .unbake-popup,
+.unbake-root[data-skin="prism"] .unbake-detail {
+    animation: unbake-prism-rise 220ms var(--unbake-ease) both;
+}
+
+@keyframes unbake-prism-fade {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+
+@keyframes unbake-prism-rise {
+    from { transform: translateY(10px) scale(0.985); opacity: 0; }
+    to   { transform: translateY(0) scale(1); opacity: 1; }
+}
+
+/* 見出しの下に、光の細線を1本。**線で仕切らずに、明るさで仕切る。** */
+.unbake-root[data-skin="prism"] .unbake-sweep-head,
+.unbake-root[data-skin="prism"] .unbake-detail-head {
+    border-bottom: 1px solid transparent;
+    background-image: linear-gradient(
+        to right,
+        var(--prism-glow) 0%,
+        color-mix(in oklab, var(--prism-second) 40%, transparent) 40%,
+        transparent 100%);
+    background-repeat: no-repeat;
+    background-size: 100% 1px;
+    background-position: bottom left;
+}
+
+.unbake-root[data-skin="prism"] .unbake-toast {
+    border-radius: 999px;
+    box-shadow: var(--prism-shadow), 0 0 20px var(--prism-glow-soft);
+}
+
+/* =========================================================================
+   8. 記録欄・空の面・落とし込み
+   ========================================================================= */
+
+.unbake-root[data-skin="prism"] .unbake-log {
+    border: 1px solid var(--prism-edge-soft);
+    border-radius: var(--unbake-radius-sm);
+    background:
+        repeating-linear-gradient(
+            0deg,
+            rgba(255, 255, 255, 0.014) 0px,
+            rgba(255, 255, 255, 0.014) 1px,
+            transparent 1px,
+            transparent 3px),
+        color-mix(in oklab, var(--unbake-bg) 88%, transparent);
+    box-shadow: inset 0 1px 6px rgba(0, 0, 0, 0.4);
+}
+
+.unbake-root[data-skin="prism"] .unbake-empty {
+    border: 1px dashed color-mix(in oklab, var(--unbake-accent) 30%, transparent);
+    border-radius: var(--unbake-radius);
+    background: radial-gradient(60% 100% at 50% 0%, var(--prism-glow-soft), transparent 70%);
+}
+
+.unbake-root[data-skin="prism"] .unbake-dropzone[data-active="true"] {
+    border-color: var(--unbake-accent);
+    box-shadow: 0 0 0 3px var(--prism-glow-soft), 0 0 26px var(--prism-glow);
+    background: radial-gradient(70% 120% at 50% 0%, var(--prism-glow-soft), transparent 72%);
+}
+
+/* =========================================================================
+   8.5 判定・要約・受け口
+   ========================================================================= */
+
+/* **判定は札に。** テーマ1は「左に6pxの帯＋薄い地」。こちらは丸い札の頭に灯を置き、
+   同じ色の暈で締める——**色だけに頼らない語はそのまま**なので、読み方は変わらない。 */
+.unbake-root[data-skin="prism"] .unbake-verdict {
+    border-radius: 999px;
+    border-left: 0;
+    border-inline-start: 0;
+    padding: 1px 10px 1px 18px;
+    padding-inline: 18px 10px;
+    position: relative;
+    background: color-mix(in oklab, var(--unbake-verdict-color) 18%, transparent);
+    box-shadow:
+        inset 0 0 0 1px color-mix(in oklab, var(--unbake-verdict-color) 45%, transparent),
+        0 0 10px color-mix(in oklab, var(--unbake-verdict-color) 22%, transparent);
+}
+
+.unbake-root[data-skin="prism"] .unbake-verdict::before {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 7px;
+    inset-inline-start: 7px;
+    width: 6px;
+    inline-size: 6px;
+    height: 6px;
+    block-size: 6px;
+    border-radius: 50%;
+    transform: translateY(-50%);
+    background: var(--unbake-verdict-color);
+    box-shadow: 0 0 8px var(--unbake-verdict-color);
+}
+
+/* 要約と操作の帯は、硝子の盆に載せる。 */
+.unbake-root[data-skin="prism"] .unbake-selection {
+    border: 1px solid var(--prism-edge-soft);
+    background: var(--prism-glass);
+    box-shadow: var(--prism-inset), var(--prism-shadow-sm);
+}
+
+.unbake-root[data-skin="prism"] .unbake-selection[data-active="true"] {
+    border-color: color-mix(in oklab, var(--unbake-accent) 60%, transparent);
+    background:
+        linear-gradient(120deg,
+            color-mix(in oklab, var(--unbake-accent) 20%, transparent) 0%,
+            var(--prism-glass) 60%);
+    box-shadow: var(--prism-inset), 0 0 18px var(--prism-glow-soft);
+}
+
+.unbake-root[data-skin="prism"] .unbake-counts {
+    letter-spacing: 0.04em;
+    font-variant-numeric: tabular-nums;
+}
+
+/* 選ぶ枡は、宿主の色でなくこちらのアクセントで塗る。 */
+.unbake-root[data-skin="prism"] .unbake-pick {
+    accent-color: var(--unbake-accent);
+}
+
+/* 落とし込みの案内は、光る破線に。 */
+.unbake-root[data-skin="prism"] .unbake-dropzone {
+    border-style: dashed;
+    border-color: color-mix(in oklab, var(--unbake-accent) 24%, transparent);
+    border-radius: var(--unbake-radius);
+    background: color-mix(in oklab, var(--unbake-bg) 55%, transparent);
+}
+
+/* 絵の名は、光の上でも読めるように締める。 */
+.unbake-root[data-skin="prism"] .unbake-tile-name {
+    letter-spacing: 0.02em;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
+}
+
+/* =========================================================================
+   9. 焦点と巻き取り
+   ========================================================================= */
+
+.unbake-root[data-skin="prism"] :focus-visible {
+    outline: 2px solid var(--unbake-accent);
+    outline-offset: 2px;
+    border-radius: var(--unbake-radius-sm);
+}
+
+.unbake-root[data-skin="prism"] ::-webkit-scrollbar {
+    width: 11px;
+    height: 11px;
+}
+
+.unbake-root[data-skin="prism"] ::-webkit-scrollbar-track {
+    background: color-mix(in oklab, var(--unbake-bg) 60%, transparent);
+}
+
+.unbake-root[data-skin="prism"] ::-webkit-scrollbar-thumb {
+    border: 3px solid transparent;
+    border-radius: 999px;
+    background: color-mix(in oklab, var(--unbake-text) 22%, transparent);
+    background-clip: content-box;
+}
+
+.unbake-root[data-skin="prism"] ::-webkit-scrollbar-thumb:hover {
+    background: color-mix(in oklab, var(--unbake-accent) 60%, transparent);
+    background-clip: content-box;
+}
+
+/* =========================================================================
+   10. 退き方（動きを減らす・厚みを切る・硝子が使えない）
+   ========================================================================= */
+
+/* **「見た目を厚くする」を切ったら、動く指定を1つも出さない。**
+   テーマ2でも旗は同じもの1本で効く——テーマごとに別の切り方を作らない。 */
+.unbake-root[data-skin="prism"][data-rich="off"] .unbake-title,
+.unbake-root[data-skin="prism"][data-rich="off"] .unbake-title-icon,
+.unbake-root[data-skin="prism"][data-rich="off"] .unbake-icon,
+.unbake-root[data-skin="prism"][data-rich="off"] .unbake-act[data-busy="true"],
+.unbake-root[data-skin="prism"][data-rich="off"] .unbake-act[data-held="true"],
+.unbake-root[data-skin="prism"][data-rich="off"] .unbake-popup,
+.unbake-root[data-skin="prism"][data-rich="off"] .unbake-detail,
+.unbake-root[data-skin="prism"][data-rich="off"] .unbake-popup-layer,
+.unbake-root[data-skin="prism"][data-rich="off"] {
+    animation: none;
+}
+
+.unbake-root[data-skin="prism"][data-rich="off"] .unbake-tile:hover,
+.unbake-root[data-skin="prism"][data-rich="off"] .unbake-tile:focus-within,
+.unbake-root[data-skin="prism"][data-rich="off"] .unbake-chip:hover {
+    transform: none;
+}
+
+.unbake-root[data-skin="prism"][data-rich="off"] .unbake-tile:hover .unbake-tile-image,
+.unbake-root[data-skin="prism"][data-rich="off"] .unbake-tile:focus-within .unbake-tile-image {
+    transform: none;
+    filter: none;
+}
+
+/* 題の光の帯は止めるが、**字は必ず読める色に戻す**
+   （`color: transparent` のままだと、動きを切った人の画面から題が消える）。 */
+.unbake-root[data-skin="prism"][data-rich="off"] .unbake-title {
+    background: none;
+    -webkit-background-clip: border-box;
+    background-clip: border-box;
+    color: var(--unbake-accent);
+}
+
+/* OS の設定は、こちらの旗より強い。 */
+@media (prefers-reduced-motion: reduce) {
+    .unbake-root[data-skin="prism"] .unbake-title,
+    .unbake-root[data-skin="prism"] .unbake-title-icon,
+    .unbake-root[data-skin="prism"] .unbake-icon,
+    .unbake-root[data-skin="prism"] .unbake-act[data-busy="true"],
+    .unbake-root[data-skin="prism"] .unbake-act[data-held="true"],
+    .unbake-root[data-skin="prism"] .unbake-popup,
+    .unbake-root[data-skin="prism"] .unbake-detail,
+    .unbake-root[data-skin="prism"] .unbake-popup-layer,
+    .unbake-root[data-skin="prism"] {
+        animation: none;
+    }
+
+    .unbake-root[data-skin="prism"] .unbake-title {
+        background: none;
+        -webkit-background-clip: border-box;
+        background-clip: border-box;
+        color: var(--unbake-accent);
+    }
+
+    .unbake-root[data-skin="prism"] .unbake-tile,
+    .unbake-root[data-skin="prism"] .unbake-tile-image,
+    .unbake-root[data-skin="prism"] .unbake-chip,
+    .unbake-root[data-skin="prism"] .unbake-act {
+        transition: none;
+    }
+}
+
+/* **硝子が使えない実装では、透けさせない。**
+   `backdrop-filter` が無いまま半透明にすると、後ろの字と重なって読めなくなる。 */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    .unbake-root[data-skin="prism"] .unbake-header,
+    .unbake-root[data-skin="prism"] .unbake-popup,
+    .unbake-root[data-skin="prism"] .unbake-detail,
+    .unbake-root[data-skin="prism"] .unbake-sweep,
+    .unbake-root[data-skin="prism"] .unbake-variants,
+    .unbake-root[data-skin="prism"] .unbake-toast,
+    .unbake-root[data-skin="prism"] .unbake-table thead th {
+        background: var(--unbake-panel);
+    }
+}
+
+/* **色の混合が使えない実装への後退。** `color-mix` が無い所では、この紙の
+   変数は*計算時に無効*になり、面が透明になる（テーマ1が踏んだ落とし穴と同じ）。
+   素の値を先に置いておく。 */
+@supports not (color: color-mix(in oklab, red, blue)) {
+    .unbake-root[data-skin="prism"] {
+        --prism-glass: var(--unbake-panel);
+        --prism-glass-strong: var(--unbake-panel);
+        --prism-edge: var(--unbake-line);
+        --prism-edge-soft: var(--unbake-line);
+        --prism-glow: var(--unbake-accent-dim);
+        --prism-glow-soft: var(--unbake-accent-dim);
+        --prism-second: var(--unbake-accent);
+        --prism-third: var(--unbake-accent);
+    }
+}
+
+/* =========================================================================
+   ComfyUI のツール列に居る印
+   =========================================================================
+
+   **面の外なので、色は宿主から借りる。** 配色（`--unbake-*`）は
+   `.unbake-root` の上にしか無く、ここには届かない——`currentColor`
+   （宿主が印に与えている色）を種にして、形と濃淡だけで見分けを付ける。 */
+
+html[data-unbake-skin="prism"] .unbake-icon {
+    /* 抜き型はそのまま。**中を光の階調で塗る**（面の題と同じ考え）。 */
+    background-image: linear-gradient(135deg,
+        currentColor 0%,
+        color-mix(in oklab, currentColor 52%, #000) 100%);
+}

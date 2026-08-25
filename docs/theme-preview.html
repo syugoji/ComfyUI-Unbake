@@ -1,0 +1,195 @@
+<!doctype html>
+<!--
+  テーマの見比べ台（2026-08-25）。
+
+  **ComfyUI を起動せずに面を出す。** 見た目を直すたびに宿主を上げ下げするのは
+  現実的でないし、宿主が落ちている間は確かめる手段が無くなる
+  ——実際にそうなった日に作った。
+
+  使い方: このファイルをブラウザで開くだけ（サーバ不要）。
+  出るのは**作り物の記録4件**で、通信は1本も出ない。
+
+  SPDX-License-Identifier: GPL-3.0-or-later
+-->
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>Unbake — テーマ見比べ台</title>
+<link rel="stylesheet" href="../web/panel/theme.css">
+<style>
+    html, body { margin: 0; height: 100%; background: #0f1114; color: #e8ecf2;
+        font-family: "Yu Gothic UI", Meiryo, system-ui, sans-serif; }
+    .stage { display: flex; flex-direction: column; height: 100%; }
+    .bar { display: flex; align-items: center; gap: 14px; padding: 10px 14px;
+        border-bottom: 1px solid #2b3038; background: #171a1f; }
+    .bar h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .04em; }
+    .bar button { font: inherit; font-size: 13px; padding: 5px 12px; border-radius: 8px;
+        border: 1px solid #3a4250; background: #20242c; color: #e8ecf2; cursor: pointer; }
+    .bar button[data-on="true"] { border-color: #6aa6ff; background: #24344d; }
+    .panes { flex: 1 1 auto; display: flex; min-height: 0; }
+    .pane { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column;
+        border-inline-end: 1px solid #2b3038; }
+    .pane:last-child { border-inline-end: none; }
+    .pane > .cap { padding: 6px 10px; font-size: 12px; color: #9aa6b6; background: #14171b; }
+    .pane > .host { flex: 1 1 auto; min-height: 0; display: flex; }
+    .pane > .host > * { flex: 1 1 auto; min-width: 0; }
+</style>
+</head>
+<body>
+<div class="stage">
+    <div class="bar">
+        <h1>Unbake — テーマ見比べ台（作り物の記録4件・通信なし）</h1>
+        <button id="side" type="button" data-on="false">サイドバー幅で見る</button>
+        <button id="tiles" type="button" data-on="false">絵で並べる</button>
+        <button id="rich" type="button" data-on="true">見た目を厚くする</button>
+        <label style="font-size:13px;color:#9aa6b6">右の面
+            <select id="skin">
+                <option value="prism">テーマ2 ガラスと光</option>
+                <option value="vinyl">テーマ3 レコード盤</option>
+                <option value="kitchen">テーマ4 お菓子作り</option>
+            </select>
+        </label>
+        <label style="font-size:13px;color:#9aa6b6">配色
+            <select id="palette">
+                <option value="host">host</option>
+                <option value="amber">amber</option>
+                <option value="ember">ember</option>
+                <option value="moss">moss</option>
+                <option value="paper">paper</option>
+            </select>
+        </label>
+    </div>
+    <div class="panes">
+        <div class="pane"><div class="cap">テーマ1 シンプル（classic・現行）</div><div class="host" id="host-classic"></div></div>
+        <div class="pane"><div class="cap" id="cap-right">テーマ2（prism）</div><div class="host" id="host-right"></div></div>
+    </div>
+</div>
+
+<script type="module">
+import { createUnbakePanel } from '../web/panel/panel.js';
+import { normalizeSkin } from '../web/panel/skin.js';
+
+/** 作り物の絵（通信を出さないため、その場で描いた SVG を data: で渡す）。 */
+const preview = (hue, label) => 'data:image/svg+xml;utf8,' + encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 400">
+        <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="hsl(${hue} 45% 42%)"/>
+            <stop offset="1" stop-color="hsl(${(hue + 55) % 360} 40% 18%)"/>
+        </linearGradient></defs>
+        <rect width="300" height="400" fill="url(#g)"/>
+        <circle cx="150" cy="150" r="66" fill="hsl(${hue} 30% 82%)" opacity="0.85"/>
+        <rect x="60" y="240" width="180" height="120" rx="16" fill="hsl(${hue} 35% 72%)" opacity="0.7"/>
+        <text x="150" y="386" text-anchor="middle" font-size="20" fill="rgba(255,255,255,.85)">${label}</text>
+    </svg>`);
+
+/** **4件で固定**（規約: 実行時モックは3〜5件）。判定は4種を1つずつ。 */
+const RECORDS = [
+    { verdict: 'reproducible', title: 'Civitai_Recipe_137676446', hue: 210, checkpoint: 'hassakuXLIllustrious_v13StyleA', seed: 31020540093829, loras: 8 },
+    { verdict: 'approximate',  title: 'Civitai_Recipe_128202934', hue: 40,  checkpoint: 'fabricatedXL_v70', seed: 258644064321828, loras: 0 },
+    { verdict: 'blocked',      title: 'ComfyUI_00042_',           hue: 330, checkpoint: 'wai_illustrious_v14', seed: 173502072326292, loras: 3 },
+    { verdict: 'pending',      title: 'Civitai_Recipe_137796075', hue: 140, checkpoint: 'noobaiXL_v11', seed: 90210042000, loras: 2 },
+].map((row, index) => ({
+    id: `mock-${index}`,
+    libraryId: `mock-${index}`,
+    title: row.title,
+    verdict: row.verdict,
+    checkpoint: row.checkpoint,
+    positive: 'masterpiece, 1girl, detailed background',
+    negative_prompt: 'lowres, bad hands',
+    seed: row.seed,
+    steps: 28,
+    cfg_scale: 5,
+    sampler: 'dpmpp_2m',
+    size: '1024x1216',
+    loras: Array.from({ length: row.loras }, (_, i) => ({ name: `lora_${i}.safetensors`, strength: 0.5 })),
+    gen_params: {
+        prompt: 'masterpiece, 1girl, detailed background',
+        negative_prompt: 'lowres, bad hands',
+        seed: row.seed, steps: 28, cfg_scale: 5, sampler: 'dpmpp_2m', size: '1024x1216',
+    },
+    source: 'folder',
+    owner: 'lora-manager',
+    origin: { kind: 'library', url: null, filename: null, subfolder: null },
+    previewUrl: preview(row.hue, row.verdict),
+    hasGraph: true,
+}));
+
+const state = { side: false, tiles: false, rich: true, palette: 'host', right: 'prism' };
+const CAPTION = { prism: 'テーマ2 ガラスと光（prism）', vinyl: 'テーマ3 レコード盤（vinyl）', kitchen: 'テーマ4 お菓子作り（kitchen）' };
+const panels = {};
+
+function build() {
+    document.getElementById('cap-right').textContent = CAPTION[state.right] || state.right;
+    for (const [skin, hostId] of [['classic', 'host-classic'], [state.right, 'host-right']]) {
+        const host = document.getElementById(hostId);
+        panels[skin]?.destroy?.();
+        host.replaceChildren();
+        const panel = createUnbakePanel(host, {
+            mode: state.side ? 'sidebar' : 'fullscreen',
+            width: state.side ? 380 : 900,
+            // **設定の面も見たい**（浮かせた面はテーマの印象を決める）。
+            // 読み書きは作り物で、通信は出さない。
+            settingsIo: {
+                read: async () => ({ settings: {
+                    ui_skin: skin, rich_ui: state.rich, theme: state.palette,
+                    compact_width: 560, row_limit: 60, replay_max_megapixels: 4.5,
+                    verdict_palette: 'default', sidebar_overlay: true, sidebar_width: 0,
+                    mature_gate_level: 0, group_by_checkpoint: false, show_commercial_ok: true,
+                    confirm_before_delete: true, disable_dark_reader: true, language: 'ja',
+                } }),
+                write: async (patch) => ({ settings: patch }),
+            },
+            display: {
+                uiSkin: normalizeSkin(skin),
+                richUi: state.rich,
+                theme: state.palette,
+                listView: state.tiles ? 'tiles' : 'table',
+                tileSize: 3,
+            },
+        });
+        // **紙は skin.js が積む。** ここで別の積み方をすると、実機と違う物を見る。
+        // 台では2つの面を同時に出すので、右の紙は id を変えて別に積む
+        // （`applySkin` は1枚しか持たない——**実機の作りはそのまま**）。
+        if (skin !== 'classic') {
+            const id = `unbake-skin-preview-${skin}`;
+            for (const link of document.querySelectorAll('link[id^="unbake-skin-preview-"]')) {
+                if (link.id !== id) link.remove();
+            }
+            if (!document.getElementById(id)) {
+                const link = document.createElement('link');
+                link.id = id;
+                link.rel = 'stylesheet';
+                link.href = `../web/panel/skin-${skin}.css`;
+                document.head.append(link);
+            }
+        }
+        panel.setRecords(RECORDS);
+        panels[skin] = panel;
+    }
+}
+
+const toggle = (id, key) => {
+    const button = document.getElementById(id);
+    button.dataset.on = String(state[key]);
+    button.addEventListener('click', () => {
+        state[key] = !state[key];
+        button.dataset.on = String(state[key]);
+        build();
+    });
+};
+toggle('side', 'side');
+toggle('tiles', 'tiles');
+toggle('rich', 'rich');
+document.getElementById('skin').addEventListener('change', (event) => {
+    state.right = event.target.value;
+    build();
+});
+document.getElementById('palette').addEventListener('change', (event) => {
+    state.palette = event.target.value;
+    build();
+});
+
+build();
+</script>
+</body>
+</html>

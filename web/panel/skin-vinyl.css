@@ -1,0 +1,534 @@
+/*
+ * テーマ3「vinyl」— 盤として扱う。
+ *
+ * Copyright (C) 2026 syugoji
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * ---------------------------------------------------------------------------
+ * **外すのは1命令**: `node tools/remove-skin.mjs vinyl --apply`
+ * （紙・名簿の1語・12言語の訳語を、まとめて外す）。
+ * 規則は全て `.unbake-root[data-skin="vinyl"]` の下に在り、
+ * 選ばれていない間は紙自体が読み込まれない（`tests/skin_test.mjs` が固定）。
+ * ---------------------------------------------------------------------------
+ *
+ * **言葉から作った。** この道具が扱う物の名前は「記録（record）」で、
+ * それは**盤**でもある。だから面全体を**再生機**として組み直す:
+ *
+ *   一覧      → **曲目表**（A面の通し番号が付く／触れると針が降りる）
+ *   参照画像  → **レーベル面**（中心に芯穴、外周に溝）
+ *   タイル    → **ジャケット**（正方形。触れると中から盤が覗く）
+ *   判定      → 盤の状態（掛かる／針飛び／溝なし）
+ *   印        → **ターンテーブル**（走っている間だけ回る）
+ *   記録欄    → 溝
+ *
+ * **回るのは、実際に走っている時だけ。** 待たされているだけで回すと
+ * 「動いている＝進んでいる」という読みが嘘になる（待ちは `data-held`）。
+ *
+ * 守る約束はテーマ1と同じ:
+ * 判定を薄くしない／一覧をカード格子にしない／色は `--unbake-*` から作る／
+ * 動きは「見た目を厚くする」と OS の「動きを減らす」の両方で止まる。
+ */
+
+/* =========================================================================
+   1. 盤の材料
+   ========================================================================= */
+
+.unbake-root[data-skin="vinyl"] {
+    /* 角は落とす。**盤とジャケットは四角と円で、丸角の板ではない。** */
+    --unbake-radius: 4px;
+    --unbake-radius-sm: 3px;
+
+    /* 盤の黒。地より沈めて、**面の上に物が載っている**ように見せる。 */
+    --vinyl-disc: color-mix(in oklab, var(--unbake-bg) 82%, #000);
+    --vinyl-disc-edge: color-mix(in oklab, var(--unbake-text) 12%, transparent);
+    /* レーベル（中心の紙）。琥珀の札を既定に持つので、そこから採る。 */
+    --vinyl-label: var(--unbake-favorite, var(--unbake-warn));
+    --vinyl-label-dim: color-mix(in oklab, var(--vinyl-label) 26%, transparent);
+    /* 溝。**線を1本ずつ引かない**（重い）。繰り返しの階調で作る。 */
+    --vinyl-groove: repeating-radial-gradient(
+        circle at 50% 50%,
+        rgba(255, 255, 255, 0.09) 0 1px,
+        transparent 1px 4px);
+    --vinyl-groove-flat: repeating-linear-gradient(
+        180deg,
+        rgba(255, 255, 255, 0.04) 0 1px,
+        transparent 1px 5px);
+    /* **見える盤の面。**（2026-08-25 利用者の指摘「アイコンが小さすぎました」）
+       盤を `--vinyl-disc`（地に近い黒）で塗っていたので、**暗い画面では外周が
+       背景に溶け**、中央の明るい輪だけが見えていた——20px の印が実測 6px の点に
+       見えていたのはこれ。**盤の面は、地から必ず浮かせる。** */
+    --vinyl-disc-face: color-mix(in oklab, var(--unbake-text) 32%, var(--unbake-bg));
+    --vinyl-sleeve: color-mix(in oklab, var(--unbake-panel) 96%, var(--unbake-text));
+    --vinyl-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+
+    background:
+        /* 台の毛氈（スリップマット）。**平らな布**に見えるよう、光は弱く広く。 */
+        radial-gradient(120% 80% at 50% -10%, color-mix(in oklab, var(--unbake-text) 5%, transparent), transparent 60%),
+        var(--unbake-bg);
+}
+
+/* =========================================================================
+   2. 天板（見出し）とターンテーブル
+   ========================================================================= */
+
+.unbake-root[data-skin="vinyl"] .unbake-header {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--vinyl-disc-edge);
+    /* 削り出しの天板。**縦の細い筋**で金属の面を作る。 */
+    background:
+        repeating-linear-gradient(
+            90deg,
+            rgba(255, 255, 255, 0.028) 0 1px,
+            transparent 1px 3px),
+        linear-gradient(180deg,
+            color-mix(in oklab, var(--unbake-panel) 88%, var(--unbake-text)) 0%,
+            var(--unbake-panel) 100%);
+    box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.4);
+}
+
+.unbake-root[data-skin="vinyl"] .unbake-title {
+    letter-spacing: 0.28em;
+    text-transform: uppercase;
+    color: var(--unbake-text);
+    text-shadow: 0 1px 0 rgba(0, 0, 0, 0.6);
+}
+
+/* **印を盤にする。** 中心に芯穴、外周に溝。走っている間だけ回る。
+ *
+ * **元の印は形の抜き型（`mask-image`）で描かれている。** 抜き型は中身にも効くので、
+ * 残したまま円を描いても**ロゴの形に切り抜かれて盤にならない**（実測）。
+ * ここでは抜き型を外して盤にする——**名前の字（UNBAKE）は残る**ので、
+ * どの道具かは読める。テーマ3を切れば印も元へ戻る。 */
+.unbake-root[data-skin="vinyl"] .unbake-title-icon,
+.unbake-root[data-skin="vinyl"] .unbake-icon {
+    position: relative;
+    -webkit-mask-image: none;
+    mask-image: none;
+    width: 20px;
+    inline-size: 20px;
+    height: 20px;
+    block-size: 20px;
+    flex: none;
+    border-radius: 50%;
+    background:
+        radial-gradient(circle at 50% 50%,
+            var(--unbake-bg) 0 12%,
+            var(--vinyl-label) 12% 32%,
+            var(--vinyl-disc-face) 32% 100%),
+        var(--vinyl-groove);
+    box-shadow:
+        0 0 0 1px var(--vinyl-disc-edge),
+        var(--vinyl-shadow);
+    /* 止まっているのが既定。**回るのは走っている時だけ。** */
+    animation: unbake-vinyl-spin 3.4s linear infinite;
+    animation-play-state: paused;
+}
+
+.unbake-root[data-skin="vinyl"][data-running="true"] .unbake-title-icon,
+.unbake-root[data-skin="vinyl"][data-running="true"] .unbake-icon {
+    animation-play-state: running;
+}
+
+@keyframes unbake-vinyl-spin {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
+}
+
+/* 走っている間、天板の下に**水平の針**が伸びる（＝再生中の帯）。 */
+.unbake-root[data-skin="vinyl"] .unbake-header::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    inset-inline-start: 0;
+    bottom: 0;
+    height: 2px;
+    block-size: 2px;
+    width: 0;
+    inline-size: 0;
+    background: linear-gradient(to right, var(--vinyl-label), transparent);
+    box-shadow: 0 0 8px var(--vinyl-label-dim);
+    transition: width 240ms var(--unbake-ease);
+}
+
+.unbake-root[data-skin="vinyl"][data-running="true"] .unbake-header::after {
+    width: 100%;
+    inline-size: 100%;
+    animation: unbake-vinyl-sweep 2.8s ease-in-out infinite alternate;
+}
+
+@keyframes unbake-vinyl-sweep {
+    from { transform: translateX(-6%); }
+    to   { transform: translateX(6%); }
+}
+
+.unbake-root[data-skin="vinyl"] .unbake-header {
+    position: relative;
+}
+
+/* =========================================================================
+   3. 曲目表（一覧）
+   ========================================================================= */
+
+.unbake-root[data-skin="vinyl"] .unbake-table {
+    border-collapse: separate;
+    border-spacing: 0;
+    /* 通し番号を数え直す起点。 */
+    counter-reset: unbake-vinyl-track;
+}
+
+.unbake-root[data-skin="vinyl"] .unbake-table thead th {
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    font-size: var(--unbake-font-xs);
+    color: color-mix(in oklab, var(--unbake-muted) 70%, var(--vinyl-label));
+    border-bottom: 1px solid var(--vinyl-disc-edge);
+    background: transparent;
+}
+
+.unbake-root[data-skin="vinyl"] .unbake-table tbody tr {
+    counter-increment: unbake-vinyl-track;
+}
+
+.unbake-root[data-skin="vinyl"] .unbake-table td {
+    border-bottom: 1px solid color-mix(in oklab, var(--unbake-text) 6%, transparent);
+    font-variant-numeric: tabular-nums;
+}
+
+/* **A面の通し番号を打つ。** 記録の名前の前に置くので、一覧が曲目表に見える。 */
+.unbake-root[data-skin="vinyl"] .unbake-table td.unbake-col-title::before {
+    content: "A" counter(unbake-vinyl-track);
+    /* **場所は取らせない。** 名前が省略される分だけ、読めるものが減る。 */
+    margin-right: 6px;
+    margin-inline-end: 6px;
+    font-size: var(--unbake-font-xs);
+    color: color-mix(in oklab, var(--unbake-muted) 72%, var(--vinyl-label));
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.06em;
+}
+
+/* **触れたら針が降りる。** 始点から光の線が伸び、行が少しだけ手前へ出る。 */
+.unbake-root[data-skin="vinyl"] .unbake-table tbody tr:hover {
+    background: linear-gradient(
+        to right,
+        color-mix(in oklab, var(--vinyl-label) 18%, transparent) 0%,
+        transparent 60%);
+    box-shadow: inset 3px 0 0 var(--vinyl-label);
+}
+
+.unbake-root[data-skin="vinyl"] .unbake-table tbody tr[data-selected="true"] {
+    background: linear-gradient(
+        to right,
+        color-mix(in oklab, var(--unbake-accent) 26%, transparent) 0%,
+        transparent 70%);
+    box-shadow: inset 3px 0 0 var(--unbake-accent);
+}
+
+/* **参照画像はレーベル面。** 丸く抜いて、中心に芯穴を開ける。 */
+.unbake-root[data-skin="vinyl"] .unbake-thumb {
+    border-radius: 50%;
+    box-shadow:
+        0 0 0 1px var(--vinyl-disc-edge),
+        0 0 0 4px var(--vinyl-disc),
+        var(--vinyl-shadow);
+}
+
+.unbake-root[data-skin="vinyl"] .unbake-col-preview {
+    position: relative;
+}
+
+/* 芯穴（絵の中心に小さく開く）。 */
+.unbake-root[data-skin="vinyl"] .unbake-col-preview::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 4px;
+    inline-size: 4px;
+    height: 4px;
+    block-size: 4px;
+    margin: -2px 0 0 -2px;
+    border-radius: 50%;
+    background: var(--unbake-bg);
+    pointer-events: none;
+}
+
+/* =========================================================================
+   4. 判定 — 掛かるか、針が飛ぶか、溝が無いか
+   ========================================================================= */
+
+.unbake-root[data-skin="vinyl"] .unbake-verdict {
+    border-left: 0;
+    border-inline-start: 0;
+    border-radius: 2px;
+    padding: 1px 8px 1px 20px;
+    padding-inline: 20px 8px;
+    position: relative;
+    letter-spacing: 0.04em;
+    background: color-mix(in oklab, var(--unbake-verdict-color) 16%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--unbake-verdict-color) 40%, transparent);
+}
+
+/* 頭に小さな盤を置く。**語は変えない**——印は読み方を助けるだけ。 */
+.unbake-root[data-skin="vinyl"] .unbake-verdict::before {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 6px;
+    inset-inline-start: 6px;
+    width: 9px;
+    inline-size: 9px;
+    height: 9px;
+    block-size: 9px;
+    margin-top: -4.5px;
+    border-radius: 50%;
+    background:
+        radial-gradient(circle at 50% 50%,
+            var(--unbake-bg) 0 20%,
+            var(--unbake-verdict-color) 20% 55%,
+            color-mix(in oklab, var(--unbake-verdict-color) 62%, var(--unbake-text)) 55% 100%);
+}
+
+/* 掛かる盤だけ、走っている間に回る。 */
+.unbake-root[data-skin="vinyl"][data-running="true"] .unbake-verdict[data-verdict="reproducible"]::before {
+    animation: unbake-vinyl-spin 2.2s linear infinite;
+}
+
+/* =========================================================================
+   5. ジャケット（絵で並べる面）
+   ========================================================================= */
+
+.unbake-root[data-skin="vinyl"] .unbake-tile {
+    /* **正方形にする。** ジャケットは 12 インチの正方形で、縦長ではない。 */
+    aspect-ratio: 1 / 1;
+    border: 1px solid var(--vinyl-disc-edge);
+    border-radius: 2px;
+    background: var(--vinyl-sleeve);
+    box-shadow: var(--vinyl-shadow);
+    overflow: visible;
+    transition: transform 220ms var(--unbake-ease), box-shadow 220ms var(--unbake-ease);
+}
+
+/* 中身は角のまま切り落とす（覗く盤だけが外へ出る）。 */
+.unbake-root[data-skin="vinyl"] .unbake-tile-media {
+    overflow: hidden;
+    border-radius: 1px;
+}
+
+/* **角の盤は外した**（2026-08-25 利用者の指摘「右上のレコード盤は邪魔でした」）。
+ *
+ * ジャケットの角に盤を重ねていたが、**絵の上に常時載る飾り**で、
+ * 見たい物を隠していた。盤という主題は、曲目表の通し番号・レーベル面の参照画像・
+ * 天板のターンテーブルが既に担っている——**同じことを3箇所で言わない。**
+ *
+ * 戻したくなったときのために、何を置いていたかだけ残す:
+ * `.unbake-tile::before` に 25% の円（芯穴つき）、触れると 14% 右上へ滑って 10度傾いた。 */
+
+/* 判定は帯のまま（テーマ1と同じ位置）。**枠を細くしたので描き直す。** */
+.unbake-root[data-skin="vinyl"] .unbake-tile[data-verdict]::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    inset-inline-start: 0;
+    width: 3px;
+    inline-size: 3px;
+    z-index: 3;
+    pointer-events: none;
+    background: currentColor;
+}
+
+.unbake-root[data-skin="vinyl"] .unbake-tile[data-verdict="reproducible"]::after { color: var(--unbake-ok); }
+.unbake-root[data-skin="vinyl"] .unbake-tile[data-verdict="approximate"]::after  { color: var(--unbake-warn); }
+.unbake-root[data-skin="vinyl"] .unbake-tile[data-verdict="blocked"]::after      { color: var(--unbake-bad); }
+.unbake-root[data-skin="vinyl"] .unbake-tile[data-verdict="pending"]::after      { color: var(--unbake-muted); }
+
+/* 題は帯（スリーブの背）に。 */
+.unbake-root[data-skin="vinyl"] .unbake-tile-foot {
+    background: linear-gradient(0deg,
+        color-mix(in oklab, var(--unbake-bg) 92%, transparent) 0%,
+        transparent 100%);
+}
+
+.unbake-root[data-skin="vinyl"] .unbake-tile-name {
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    font-size: var(--unbake-font-xs);
+}
+
+/* =========================================================================
+   6. 操作（トランスポート）
+   ========================================================================= */
+
+.unbake-root[data-skin="vinyl"] .unbake-act,
+.unbake-root[data-skin="vinyl"] .unbake-view-toggle,
+.unbake-root[data-skin="vinyl"] .unbake-selection button,
+.unbake-root[data-skin="vinyl"] .unbake-settings-open,
+.unbake-root[data-skin="vinyl"] .unbake-raindrop-open,
+.unbake-root[data-skin="vinyl"] .unbake-donate-open,
+.unbake-root[data-skin="vinyl"] .unbake-fullscreen-open,
+.unbake-root[data-skin="vinyl"] .unbake-batch-run {
+    border: 1px solid var(--vinyl-disc-edge);
+    border-radius: 3px;
+    background: linear-gradient(180deg,
+        color-mix(in oklab, var(--unbake-button) 86%, var(--unbake-text)) 0%,
+        var(--unbake-button) 62%,
+        color-mix(in oklab, var(--unbake-button) 92%, #000) 100%);
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.09),
+        0 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+.unbake-root[data-skin="vinyl"] .unbake-act:active:not(:disabled) {
+    /* 機械の釦は沈む。 */
+    transform: translateY(1px);
+    box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.55);
+}
+
+.unbake-root[data-skin="vinyl"] .unbake-act-replay {
+    border-color: color-mix(in oklab, var(--vinyl-label) 50%, transparent);
+    color: color-mix(in oklab, var(--unbake-text) 82%, var(--vinyl-label));
+}
+
+/* 走っている釦は、盤の回転で示す（点滅させない——目に障る）。 */
+.unbake-root[data-skin="vinyl"] .unbake-act[data-busy="true"] {
+    background:
+        conic-gradient(from 0deg,
+            color-mix(in oklab, var(--vinyl-label) 40%, var(--unbake-button)) 0deg 40deg,
+            var(--unbake-button) 40deg 360deg);
+    animation: unbake-vinyl-spin 1.6s linear infinite;
+}
+
+/* =========================================================================
+   7. 受け口・記録欄・浮かせる面
+   ========================================================================= */
+
+/* 落とし込みは**盤を置く場所**。円で受ける。 */
+.unbake-root[data-skin="vinyl"] .unbake-dropzone {
+    border: 1px dashed color-mix(in oklab, var(--vinyl-label) 34%, transparent);
+    border-radius: 999px;
+    background:
+        radial-gradient(60% 140% at 50% 50%, color-mix(in oklab, var(--vinyl-label) 8%, transparent), transparent 70%);
+}
+
+.unbake-root[data-skin="vinyl"] .unbake-dropzone[data-active="true"] {
+    border-color: var(--vinyl-label);
+    box-shadow: 0 0 0 3px var(--vinyl-label-dim);
+}
+
+/* 記録欄は溝。**横筋**を敷いて、盤の面に見せる。 */
+.unbake-root[data-skin="vinyl"] .unbake-log {
+    border: 1px solid var(--vinyl-disc-edge);
+    background:
+        var(--vinyl-groove-flat),
+        var(--vinyl-disc);
+}
+
+.unbake-root[data-skin="vinyl"] .unbake-popup,
+.unbake-root[data-skin="vinyl"] .unbake-detail,
+.unbake-root[data-skin="vinyl"] .unbake-sweep,
+.unbake-root[data-skin="vinyl"] .unbake-variants {
+    border: 1px solid var(--vinyl-disc-edge);
+    border-radius: 3px;
+    background:
+        repeating-linear-gradient(
+            90deg,
+            rgba(255, 255, 255, 0.02) 0 1px,
+            transparent 1px 3px),
+        var(--unbake-overlay);
+    box-shadow: 0 18px 40px rgba(0, 0, 0, 0.55);
+}
+
+.unbake-root[data-skin="vinyl"] .unbake-chip {
+    border-radius: 2px;
+    letter-spacing: 0.04em;
+    background: color-mix(in oklab, var(--unbake-panel) 90%, #000);
+}
+
+.unbake-root[data-skin="vinyl"] .unbake-selection {
+    border-radius: 3px;
+    background:
+        repeating-linear-gradient(
+            90deg,
+            rgba(255, 255, 255, 0.022) 0 1px,
+            transparent 1px 3px),
+        var(--unbake-panel);
+}
+
+/* =========================================================================
+   8. 退き方
+   ========================================================================= */
+
+/* **走っている時だけの動きも、同じ旗で止める。**
+   `[data-running="true"]` が付いた分は選択子の強さが上がるので、
+   打ち消す側にも同じ条件を書かないと**負けて動き続ける**。 */
+.unbake-root[data-skin="vinyl"][data-rich="off"] .unbake-title-icon,
+.unbake-root[data-skin="vinyl"][data-rich="off"] .unbake-icon,
+.unbake-root[data-skin="vinyl"][data-rich="off"] .unbake-act[data-busy="true"],
+.unbake-root[data-skin="vinyl"][data-rich="off"][data-running="true"] .unbake-title-icon,
+.unbake-root[data-skin="vinyl"][data-rich="off"][data-running="true"] .unbake-icon,
+.unbake-root[data-skin="vinyl"][data-rich="off"][data-running="true"] .unbake-verdict[data-verdict="reproducible"]::before,
+.unbake-root[data-skin="vinyl"][data-rich="off"][data-running="true"] .unbake-header::after {
+    animation: none;
+}
+
+.unbake-root[data-skin="vinyl"][data-rich="off"] .unbake-tile:hover,
+.unbake-root[data-skin="vinyl"][data-rich="off"] .unbake-tile:focus-within {
+    transform: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .unbake-root[data-skin="vinyl"] .unbake-title-icon,
+    .unbake-root[data-skin="vinyl"] .unbake-icon,
+    .unbake-root[data-skin="vinyl"] .unbake-act[data-busy="true"],
+    .unbake-root[data-skin="vinyl"][data-running="true"] .unbake-title-icon,
+    .unbake-root[data-skin="vinyl"][data-running="true"] .unbake-icon,
+    .unbake-root[data-skin="vinyl"][data-running="true"] .unbake-verdict[data-verdict="reproducible"]::before,
+    .unbake-root[data-skin="vinyl"][data-running="true"] .unbake-header::after {
+        animation: none;
+    }
+
+    .unbake-root[data-skin="vinyl"] .unbake-tile,
+    .unbake-root[data-skin="vinyl"] .unbake-header::after {
+        transition: none;
+    }
+}
+
+/* 色の混合が使えない実装への後退（テーマ2と同じ落とし穴を踏まないため）。 */
+@supports not (color: color-mix(in oklab, red, blue)) {
+    .unbake-root[data-skin="vinyl"] {
+        --vinyl-disc: var(--unbake-bg);
+        --vinyl-disc-edge: var(--unbake-line);
+        --vinyl-label: var(--unbake-warn);
+        --vinyl-label-dim: var(--unbake-accent-dim);
+        --vinyl-sleeve: var(--unbake-panel);
+    }
+}
+
+/* =========================================================================
+   ComfyUI のツール列に居る印
+   =========================================================================
+
+   **面の外なので、色は宿主から借りる。** 配色（`--unbake-*`）は
+   `.unbake-root` の上にしか無く、ここには届かない——`currentColor`
+   （宿主が印に与えている色）を種にして、形と濃淡だけで見分けを付ける。 */
+
+html[data-unbake-skin="vinyl"] .unbake-icon {
+    /* **印を盤にする。** 抜き型を外して、芯穴つきの円を描く
+       （面の題と揃える——同じ道具だと一目で分かるように）。 */
+    -webkit-mask-image: none;
+    mask-image: none;
+    border-radius: 50%;
+    background-color: transparent;
+    /* **盤の面を明るい側で塗る。** 外周を暗くすると、暗い宿主の画面では
+       背景に溶けて**中央の輪だけの小さな点**に見える（実測 20px → 見かけ 6px）。 */
+    background-image:
+        radial-gradient(circle at 50% 50%,
+            transparent 0 11%,
+            color-mix(in oklab, currentColor 52%, transparent) 11% 33%,
+            currentColor 33% 100%),
+        repeating-radial-gradient(
+            circle at 50% 50%,
+            rgba(0, 0, 0, 0.16) 0 1px,
+            transparent 1px 3px);
+}

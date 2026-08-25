@@ -1,0 +1,21 @@
+# Python のバイトコード。**公開してはいけない。**
+# `.pyc` には**コンパイル時の絶対パスが埋まる**——実測で
+# `D:\...\ComfyUI-Unbake\unbake\services\recipes\sweep_service.py` が入っていた。
+# 中身は読めなくても `strings` で出るので、作者の環境がそのまま漏れる。
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Node の依存。配布物ではない。
+node_modules/
+
+# エディタ・OS が置くもの
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# 検査や実行が書き出すもの（**リポジトリの外に出す設計だが、念のため**）
+coverage/
+*.log

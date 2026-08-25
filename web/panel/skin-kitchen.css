@@ -1,0 +1,479 @@
+/*
+ * テーマ4「kitchen」— 焼き戻す台所。
+ *
+ * Copyright (C) 2026 syugoji
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * ---------------------------------------------------------------------------
+ * **外すのは1命令**: `node tools/remove-skin.mjs kitchen --apply`
+ * （紙・名簿の1語・12言語の訳語を、まとめて外す）。
+ * 規則は全て `.unbake-root[data-skin="kitchen"]` の下に在り、
+ * 選ばれていない間は紙自体が読み込まれない（`tests/skin_test.mjs` が固定）。
+ * ---------------------------------------------------------------------------
+ *
+ * **名前から作った。** `unbake` は「焼く（bake）」の逆——焼き上がった1枚から
+ * **材料と手順を取り出して、もう一度焼く**道具である。だから台所として組み直す:
+ *
+ *   面全体    → **調理台**（木口の天板と、貼った紙）
+ *   一覧      → **レシピ帳**（左端に綴じ穴、罫線の入った索引カード）
+ *   判定      → **焼き加減の目盛り**（しっかり／生／焦げ／未計測）
+ *   参照画像  → **皿に盛った一皿**（縁のある丸皿＋落ち影）
+ *   タイル    → **天板に並べた焼き菓子**（少し傾けて置いてある）
+ *   印        → **泡立て器**（走っている間だけ混ぜる）
+ *   走行中    → **湯気**が立つ
+ *   受け口    → **ボウル**（口が広く、底が丸い）
+ *
+ * **湯気が立つのは、実際に走っている時だけ。** 待たされているだけで立てると
+ * 「動いている＝進んでいる」という読みが嘘になる（待ちは `data-held`）。
+ *
+ * 守る約束はテーマ1と同じ:
+ * 判定を薄くしない／一覧をカード格子にしない／色は `--unbake-*` から作る／
+ * 動きは「見た目を厚くする」と OS の「動きを減らす」の両方で止まる。
+ */
+
+/* =========================================================================
+   1. 台所の材料
+   ========================================================================= */
+
+.unbake-root[data-skin="kitchen"] {
+    /* 紙と皿の丸み。**角の立った板ではなく、切り出した紙**に見せる。 */
+    --unbake-radius: 10px;
+    --unbake-radius-sm: 7px;
+
+    /* 木の天板。**色は焦げ色（warn）から作る**ので、配色を変えると木も変わる。 */
+    --kitchen-wood: color-mix(in oklab, var(--unbake-warn) 22%, var(--unbake-bg));
+    --kitchen-wood-dark: color-mix(in oklab, var(--unbake-warn) 13%, #000);
+    /* 木口の筋。**線を1本ずつ引かない**（重い）。繰り返しで作る。 */
+    --kitchen-grain: repeating-linear-gradient(
+        92deg,
+        rgba(255, 255, 255, 0.022) 0 2px,
+        transparent 2px 7px,
+        rgba(0, 0, 0, 0.05) 7px 8px,
+        transparent 8px 15px);
+    /* 貼った紙（レシピカード）。 */
+    --kitchen-paper: color-mix(in oklab, var(--unbake-panel) 92%, var(--unbake-text));
+    --kitchen-rule: color-mix(in oklab, var(--unbake-accent) 22%, transparent);
+    --kitchen-crust: color-mix(in oklab, var(--unbake-warn) 60%, var(--unbake-text));
+    --kitchen-shadow: 0 4px 10px rgba(0, 0, 0, 0.34);
+    --kitchen-steam: color-mix(in oklab, var(--unbake-text) 45%, transparent);
+
+    background:
+        var(--kitchen-grain),
+        linear-gradient(180deg, var(--kitchen-wood) 0%, var(--kitchen-wood-dark) 100%);
+}
+
+/* =========================================================================
+   2. 天板の縁（見出し）と泡立て器
+   ========================================================================= */
+
+.unbake-root[data-skin="kitchen"] .unbake-header {
+    position: relative;
+    padding: 9px 12px;
+    border-bottom: 2px solid color-mix(in oklab, var(--unbake-warn) 30%, transparent);
+    background:
+        var(--kitchen-grain),
+        linear-gradient(180deg,
+            color-mix(in oklab, var(--kitchen-wood) 70%, var(--unbake-text)) 0%,
+            var(--kitchen-wood) 100%);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+}
+
+.unbake-root[data-skin="kitchen"] .unbake-title {
+    letter-spacing: 0.1em;
+    color: color-mix(in oklab, var(--unbake-text) 88%, var(--unbake-warn));
+    text-shadow: 0 1px 0 rgba(0, 0, 0, 0.45);
+}
+
+/* **印は道具のまま、混ぜる動きだけ足す。** 元の印は形の抜き型で描かれているので、
+   抜き型を残したまま回すと「泡立て器を回している」ように読める
+   ——形を捨てずに動きだけ足せる、という点でテーマ3とは逆の選択。 */
+.unbake-root[data-skin="kitchen"] .unbake-title-icon,
+.unbake-root[data-skin="kitchen"] .unbake-icon {
+    transform-origin: 50% 70%;
+    animation: unbake-kitchen-whisk 900ms ease-in-out infinite;
+    animation-play-state: paused;
+}
+
+.unbake-root[data-skin="kitchen"][data-running="true"] .unbake-title-icon,
+.unbake-root[data-skin="kitchen"][data-running="true"] .unbake-icon {
+    animation-play-state: running;
+}
+
+@keyframes unbake-kitchen-whisk {
+    0%   { transform: rotate(-13deg) translateX(-1px); }
+    50%  { transform: rotate(13deg) translateX(1px); }
+    100% { transform: rotate(-13deg) translateX(-1px); }
+}
+
+/* **走っている間は湯気が立つ。** 見出しの右上から、細い筋が2本ゆれながら昇る。 */
+.unbake-root[data-skin="kitchen"] .unbake-header::after {
+    content: "";
+    position: absolute;
+    top: 1px;
+    right: 66px;
+    inset-inline-end: 66px;
+    width: 20px;
+    inline-size: 20px;
+    height: 22px;
+    block-size: 22px;
+    pointer-events: none;
+    background:
+        radial-gradient(closest-side at 30% 90%, var(--kitchen-steam), transparent 70%),
+        radial-gradient(closest-side at 70% 70%, var(--kitchen-steam), transparent 70%);
+    background-size: 11px 13px, 9px 11px;
+    background-repeat: no-repeat;
+    background-position: 0 100%, 100% 100%;
+    /* 立っていない時は**高さ0**で畳む（薄くしない——薄めは判定の話と混ざる）。 */
+    transform: scaleY(0);
+    transform-origin: 50% 100%;
+    transition: transform 200ms var(--unbake-ease);
+}
+
+.unbake-root[data-skin="kitchen"][data-running="true"] .unbake-header::after {
+    transform: scaleY(1);
+    animation: unbake-kitchen-steam 2.6s ease-in-out infinite;
+}
+
+@keyframes unbake-kitchen-steam {
+    0%   { background-position: 0 100%, 100% 100%; }
+    50%  { background-position: 2px 20%, calc(100% - 2px) 10%; }
+    100% { background-position: 0 100%, 100% 100%; }
+}
+
+/* =========================================================================
+   3. レシピ帳（一覧）
+   ========================================================================= */
+
+/* 一覧の面は、天板に貼った紙。 */
+.unbake-root[data-skin="kitchen"] .unbake-table {
+    border-collapse: separate;
+    border-spacing: 0;
+    background:
+        /* 罫線。**行の高さに合わせない**——紙の罫として一定間隔で敷く。 */
+        repeating-linear-gradient(
+            180deg,
+            transparent 0 33px,
+            var(--kitchen-rule) 33px 34px),
+        var(--kitchen-paper);
+    border: 1px solid color-mix(in oklab, var(--unbake-text) 10%, transparent);
+    border-radius: var(--unbake-radius-sm);
+    box-shadow: var(--kitchen-shadow);
+}
+
+.unbake-root[data-skin="kitchen"] .unbake-table thead th {
+    letter-spacing: 0.08em;
+    color: color-mix(in oklab, var(--unbake-muted) 60%, var(--kitchen-crust));
+    border-bottom: 2px solid color-mix(in oklab, var(--kitchen-crust) 40%, transparent);
+    background: transparent;
+}
+
+.unbake-root[data-skin="kitchen"] .unbake-table td {
+    border-bottom: 0;
+}
+
+/* **綴じ穴。** 左端の枡の列に、紙を綴じた穴を1つずつ開ける。 */
+.unbake-root[data-skin="kitchen"] .unbake-table td.unbake-col-pick {
+    position: relative;
+}
+
+.unbake-root[data-skin="kitchen"] .unbake-table td.unbake-col-pick::before {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 1px;
+    inset-inline-start: 1px;
+    width: 5px;
+    inline-size: 5px;
+    height: 5px;
+    block-size: 5px;
+    margin-top: -2.5px;
+    border-radius: 50%;
+    background: var(--kitchen-wood-dark);
+    box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.6);
+    pointer-events: none;
+}
+
+.unbake-root[data-skin="kitchen"] .unbake-table tbody tr:hover {
+    /* 紙を押さえた指の跡のように、うっすら温める。 */
+    background: color-mix(in oklab, var(--unbake-warn) 12%, transparent);
+}
+
+.unbake-root[data-skin="kitchen"] .unbake-table tbody tr[data-selected="true"] {
+    background: color-mix(in oklab, var(--unbake-accent) 18%, transparent);
+    box-shadow: inset 3px 0 0 var(--unbake-accent);
+}
+
+/* **参照画像は皿。** 丸皿に盛って、下に落ち影を置く。 */
+.unbake-root[data-skin="kitchen"] .unbake-thumb {
+    border-radius: 50%;
+    box-shadow:
+        0 0 0 2px color-mix(in oklab, var(--unbake-text) 16%, transparent),
+        0 0 0 4px color-mix(in oklab, var(--unbake-bg) 70%, transparent),
+        0 3px 6px rgba(0, 0, 0, 0.4);
+}
+
+/* =========================================================================
+   4. 判定 — 焼き加減の目盛り
+   ========================================================================= */
+
+.unbake-root[data-skin="kitchen"] .unbake-verdict {
+    position: relative;
+    border-left: 0;
+    border-inline-start: 0;
+    border-radius: 999px;
+    padding: 1px 10px;
+    background: color-mix(in oklab, var(--unbake-verdict-color) 15%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--unbake-verdict-color) 42%, transparent);
+    overflow: hidden;
+}
+
+/* 下端に「どこまで火が通ったか」の帯を敷く。**語はそのまま。** */
+.unbake-root[data-skin="kitchen"] .unbake-verdict::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    inset-inline-start: 0;
+    bottom: 0;
+    height: 3px;
+    block-size: 3px;
+    background: var(--unbake-verdict-color);
+    pointer-events: none;
+}
+
+.unbake-root[data-skin="kitchen"] .unbake-verdict[data-verdict="reproducible"]::after { width: 100%; inline-size: 100%; }
+.unbake-root[data-skin="kitchen"] .unbake-verdict[data-verdict="approximate"]::after  { width: 55%;  inline-size: 55%; }
+.unbake-root[data-skin="kitchen"] .unbake-verdict[data-verdict="blocked"]::after      { width: 18%;  inline-size: 18%; }
+.unbake-root[data-skin="kitchen"] .unbake-verdict[data-verdict="pending"]::after      { width: 6%;   inline-size: 6%; }
+
+/* =========================================================================
+   5. 天板に並べた焼き菓子（絵で並べる面）
+   ========================================================================= */
+
+.unbake-root[data-skin="kitchen"] .unbake-tiles {
+    /* 敷いたクッキングシート。**格子は足さない**（器はテーマ1のまま）。 */
+    padding: 10px;
+    border-radius: var(--unbake-radius-sm);
+    background:
+        repeating-linear-gradient(
+            45deg,
+            rgba(255, 255, 255, 0.018) 0 6px,
+            transparent 6px 12px),
+        color-mix(in oklab, var(--unbake-bg) 60%, transparent);
+}
+
+.unbake-root[data-skin="kitchen"] .unbake-tile {
+    border: 1px solid color-mix(in oklab, var(--kitchen-crust) 30%, transparent);
+    /* 焼き菓子の縁は、角が丸い。 */
+    border-radius: 18px;
+    background: var(--kitchen-paper);
+    box-shadow: var(--kitchen-shadow);
+    /* **少し傾けて置く。** 並べた物が手で置かれたように見える。 */
+    transform: rotate(-0.5deg);
+    transition: transform 200ms var(--unbake-ease), box-shadow 200ms var(--unbake-ease);
+}
+
+.unbake-root[data-skin="kitchen"] .unbake-tile:nth-child(2n) {
+    transform: rotate(0.6deg);
+}
+
+.unbake-root[data-skin="kitchen"] .unbake-tile:hover,
+.unbake-root[data-skin="kitchen"] .unbake-tile:focus-within {
+    /* 手に取る動き。**持ち上げて、傾きを直す。** */
+    transform: rotate(0deg) translateY(-3px) scale(1.012);
+    box-shadow: 0 12px 22px rgba(0, 0, 0, 0.45);
+}
+
+.unbake-root[data-skin="kitchen"] .unbake-tile-media {
+    border-radius: 17px;
+}
+
+/* 判定は帯のまま（テーマ1と同じ位置）。**枠を細くしたので描き直す。** */
+.unbake-root[data-skin="kitchen"] .unbake-tile[data-verdict]::after {
+    content: "";
+    position: absolute;
+    top: 12%;
+    bottom: 12%;
+    left: 0;
+    inset-inline-start: 0;
+    width: 4px;
+    inline-size: 4px;
+    z-index: 3;
+    border-radius: 0 4px 4px 0;
+    background: currentColor;
+    pointer-events: none;
+}
+
+.unbake-root[data-skin="kitchen"] .unbake-tile[data-verdict="reproducible"]::after { color: var(--unbake-ok); }
+.unbake-root[data-skin="kitchen"] .unbake-tile[data-verdict="approximate"]::after  { color: var(--unbake-warn); }
+.unbake-root[data-skin="kitchen"] .unbake-tile[data-verdict="blocked"]::after      { color: var(--unbake-bad); }
+.unbake-root[data-skin="kitchen"] .unbake-tile[data-verdict="pending"]::after      { color: var(--unbake-muted); }
+
+.unbake-root[data-skin="kitchen"] .unbake-tile-foot {
+    background: linear-gradient(0deg,
+        color-mix(in oklab, var(--unbake-bg) 88%, transparent) 0%,
+        transparent 100%);
+}
+
+/* =========================================================================
+   6. 道具（操作）
+   ========================================================================= */
+
+.unbake-root[data-skin="kitchen"] .unbake-act,
+.unbake-root[data-skin="kitchen"] .unbake-view-toggle,
+.unbake-root[data-skin="kitchen"] .unbake-selection button,
+.unbake-root[data-skin="kitchen"] .unbake-settings-open,
+.unbake-root[data-skin="kitchen"] .unbake-raindrop-open,
+.unbake-root[data-skin="kitchen"] .unbake-donate-open,
+.unbake-root[data-skin="kitchen"] .unbake-fullscreen-open,
+.unbake-root[data-skin="kitchen"] .unbake-batch-run {
+    border: 1px solid color-mix(in oklab, var(--kitchen-crust) 34%, transparent);
+    border-radius: 999px;
+    background: linear-gradient(180deg,
+        color-mix(in oklab, var(--unbake-button) 84%, var(--unbake-text)) 0%,
+        var(--unbake-button) 100%);
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.12),
+        0 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+/* 焼き直す口は、窯の色で塗る。 */
+.unbake-root[data-skin="kitchen"] .unbake-act-replay {
+    border-color: color-mix(in oklab, var(--unbake-warn) 55%, transparent);
+    background: linear-gradient(180deg,
+        color-mix(in oklab, var(--unbake-warn) 34%, var(--unbake-button)) 0%,
+        color-mix(in oklab, var(--unbake-warn) 14%, var(--unbake-button)) 100%);
+}
+
+/* 焼いている最中は、窯の中が明るくなったり落ち着いたりする。 */
+.unbake-root[data-skin="kitchen"] .unbake-act[data-busy="true"] {
+    background: linear-gradient(180deg,
+        color-mix(in oklab, var(--unbake-warn) 44%, var(--unbake-button)) 0%,
+        color-mix(in oklab, var(--unbake-warn) 18%, var(--unbake-button)) 100%);
+    animation: unbake-kitchen-oven 1.8s ease-in-out infinite;
+}
+
+@keyframes unbake-kitchen-oven {
+    0%   { box-shadow: inset 0 0 0 0 transparent; }
+    50%  { box-shadow: inset 0 0 12px 2px color-mix(in oklab, var(--unbake-warn) 60%, transparent); }
+    100% { box-shadow: inset 0 0 0 0 transparent; }
+}
+
+/* =========================================================================
+   7. ボウル（受け口）と、貼った紙
+   ========================================================================= */
+
+.unbake-root[data-skin="kitchen"] .unbake-dropzone {
+    border: 2px dashed color-mix(in oklab, var(--kitchen-crust) 40%, transparent);
+    /* 口が広く、底が丸い——ボウルの形。 */
+    border-radius: 14px 14px 40% 40% / 14px 14px 60% 60%;
+    background: color-mix(in oklab, var(--kitchen-paper) 55%, transparent);
+}
+
+.unbake-root[data-skin="kitchen"] .unbake-dropzone[data-active="true"] {
+    border-color: var(--unbake-warn);
+    background: color-mix(in oklab, var(--unbake-warn) 14%, transparent);
+}
+
+.unbake-root[data-skin="kitchen"] .unbake-search,
+.unbake-root[data-skin="kitchen"] .unbake-settings-input {
+    border: 1px solid color-mix(in oklab, var(--unbake-text) 12%, transparent);
+    border-radius: var(--unbake-radius-sm);
+    background: color-mix(in oklab, var(--kitchen-paper) 80%, transparent);
+}
+
+.unbake-root[data-skin="kitchen"] .unbake-chip {
+    border-radius: 999px;
+    background: color-mix(in oklab, var(--kitchen-paper) 70%, transparent);
+}
+
+.unbake-root[data-skin="kitchen"] .unbake-selection {
+    border-radius: var(--unbake-radius-sm);
+    border-color: color-mix(in oklab, var(--kitchen-crust) 26%, transparent);
+    background: color-mix(in oklab, var(--kitchen-paper) 78%, transparent);
+}
+
+/* 記録欄は、壁に貼った控えの紙。 */
+.unbake-root[data-skin="kitchen"] .unbake-log {
+    border: 1px solid color-mix(in oklab, var(--unbake-text) 10%, transparent);
+    border-radius: var(--unbake-radius-sm);
+    background:
+        repeating-linear-gradient(
+            180deg,
+            transparent 0 17px,
+            color-mix(in oklab, var(--unbake-accent) 12%, transparent) 17px 18px),
+        color-mix(in oklab, var(--kitchen-paper) 70%, transparent);
+}
+
+.unbake-root[data-skin="kitchen"] .unbake-popup,
+.unbake-root[data-skin="kitchen"] .unbake-detail,
+.unbake-root[data-skin="kitchen"] .unbake-sweep,
+.unbake-root[data-skin="kitchen"] .unbake-variants {
+    border: 1px solid color-mix(in oklab, var(--kitchen-crust) 26%, transparent);
+    border-radius: var(--unbake-radius);
+    background:
+        var(--kitchen-grain),
+        var(--unbake-overlay);
+    box-shadow: 0 14px 30px rgba(0, 0, 0, 0.45);
+}
+
+/* =========================================================================
+   8. 退き方
+   ========================================================================= */
+
+.unbake-root[data-skin="kitchen"][data-rich="off"] .unbake-title-icon,
+.unbake-root[data-skin="kitchen"][data-rich="off"] .unbake-icon,
+.unbake-root[data-skin="kitchen"][data-rich="off"] .unbake-act[data-busy="true"],
+.unbake-root[data-skin="kitchen"][data-rich="off"][data-running="true"] .unbake-title-icon,
+.unbake-root[data-skin="kitchen"][data-rich="off"][data-running="true"] .unbake-icon,
+.unbake-root[data-skin="kitchen"][data-rich="off"][data-running="true"] .unbake-header::after {
+    animation: none;
+}
+
+/* 傾きは**形の説明**なので残す。動くのは持ち上げだけ止める。 */
+.unbake-root[data-skin="kitchen"][data-rich="off"] .unbake-tile:hover,
+.unbake-root[data-skin="kitchen"][data-rich="off"] .unbake-tile:focus-within {
+    transform: rotate(-0.5deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .unbake-root[data-skin="kitchen"] .unbake-title-icon,
+    .unbake-root[data-skin="kitchen"] .unbake-icon,
+    .unbake-root[data-skin="kitchen"] .unbake-act[data-busy="true"],
+    .unbake-root[data-skin="kitchen"][data-running="true"] .unbake-title-icon,
+    .unbake-root[data-skin="kitchen"][data-running="true"] .unbake-icon,
+    .unbake-root[data-skin="kitchen"][data-running="true"] .unbake-header::after {
+        animation: none;
+    }
+
+    .unbake-root[data-skin="kitchen"] .unbake-tile,
+    .unbake-root[data-skin="kitchen"] .unbake-header::after {
+        transition: none;
+    }
+}
+
+@supports not (color: color-mix(in oklab, red, blue)) {
+    .unbake-root[data-skin="kitchen"] {
+        --kitchen-wood: var(--unbake-bg);
+        --kitchen-wood-dark: var(--unbake-bg);
+        --kitchen-paper: var(--unbake-panel);
+        --kitchen-rule: var(--unbake-line);
+        --kitchen-crust: var(--unbake-warn);
+        --kitchen-steam: var(--unbake-muted);
+    }
+}
+
+/* =========================================================================
+   ComfyUI のツール列に居る印
+   =========================================================================
+
+   **面の外なので、色は宿主から借りる。** 配色（`--unbake-*`）は
+   `.unbake-root` の上にしか無く、ここには届かない——`currentColor`
+   （宿主が印に与えている色）を種にして、形と濃淡だけで見分けを付ける。 */
+
+html[data-unbake-skin="kitchen"] .unbake-icon {
+    /* **形は残す**（面の側と同じ選択）。道具を持った手のように少し傾ける。 */
+    transform: rotate(-12deg);
+    background-image: linear-gradient(180deg,
+        currentColor 0%,
+        color-mix(in oklab, currentColor 62%, #000) 100%);
+}
