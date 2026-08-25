@@ -12,20 +12,6 @@ dropping something onto the panel.
 
 ---
 
-## For model management, use [ComfyUI-Lora-Manager](https://github.com/willmiao/ComfyUI-Lora-Manager)
-
-**Unbake does not manage models.** Browsing, downloading, organising and previewing
-what you have on disk — that is LoRA Manager's job, and it is far better at it.
-
-Unbake stands **downstream of it**. One of its inputs is the Generation Record that
-LoRA Manager writes, and it is built so that you end up with *more* reason to use
-LoRA Manager, not less.
-
-**Please support the upstream project.** LoRA Manager's author accepts support via
-[ko-fi](https://ko-fi.com/pixelpawsai) / [Patreon](https://www.patreon.com/c/pixelpaws) /
-PayPal / afdian (the upstream `FUNDING.yml` is the authoritative list).
-**If you use this tool, go there first.**
-
 ## What it deliberately does not do
 
 Stating the absent features up front, as a specification.
