@@ -35,12 +35,6 @@ These are not "not yet" — they are **"never"**.
 | Plan | **Replay Manifest** | The execution plan built from that record, carrying **what can be satisfied and what is missing** |
 | Compare | **Sweep** | Declare an axis, run many, lay the results out side by side |
 
-**The input is not called a "recipe", because calling it that would tie the input
-to one specific tool.** Of the four routes that feed the panel, only one is a recipe —
-a ComfyUI output is not, a Civitai image is not, an A1111 PNG is not.
-**"Recipe" is reserved for naming what LoRA Manager wrote.** The general term is
-Generation Record.
-
 ---
 
 ## What it can do
