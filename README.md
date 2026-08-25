@@ -17,8 +17,8 @@ dropping something onto the panel.
 Stating the absent features up front, as a specification.
 These are not "not yet" — they are **"never"**.
 
-- **Browsing, searching, organising models** — LoRA Manager.
-- **Managing preview images and model descriptions** — LoRA Manager.
+- **Browsing, searching, organising models** — not this tool's job.
+- **Managing preview images and model descriptions** — likewise absent.
 - **A Civitai browsing client** — it does nothing beyond being handed one image.
 - **Training, merging, quantising** — this is about reproducing and comparing generations.
 - **A library that only returns a verdict** — that is

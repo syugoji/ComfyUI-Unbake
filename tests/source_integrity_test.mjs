@@ -253,16 +253,54 @@ const READMES = [
     { file: 'README.ja.md', section: /##\s*やらないこと/ },
 ];
 
-test('どちらの README にも「やらないこと」「上流を前提にすること」「上流の寄付導線」が入っている', async () => {
+/**
+ * **上流の寄付導線は「上流の口」で見る。** `ko-fi` という語では見ない——
+ * どちらの README にも**自分の** ko-fi（`ko-fi.com/syugoji`）が末尾に在るので、
+ * 語だけで見ると**上流への言及が丸ごと消えても緑のまま**になる。
+ * 2026-08-25 に実際その状態が一度できた（`/ko-fi|Patreon/` で見ていた）。
+ */
+const UPSTREAM_FUNDING = /ko-fi\.com\/pixelpawsai|patreon\.com\/c\/pixelpaws/i;
+
+test('どちらの README にも「やらないこと」「上流を前提にすること」が入っている', async () => {
     // **要件①（客の取り合いにならない）を文書側で固定する。**
-    // 3つのうち1つでも落ちると、下流に立つという位置づけが読者に伝わらない。
+    // **`genParamsMapper.js` の出所は GPL の帰属表示**なので、ここは値切れない。
     for (const { file, section } of READMES) {
         const readme = await readFile(join(ROOT, file), 'utf8');
         assert.match(readme, section, file + ': やらないことの節が無い');
         assert.match(readme, /ComfyUI-Lora-Manager|LoRA Manager/, file + ': 上流を前提にする記述が無い');
-        assert.match(readme, /ko-fi|Patreon|github\.com\/sponsors/i, file + ': 上流の寄付導線が併記されていない');
         assert.match(readme, /genParamsMapper\.js/, file + ': genParamsMapper.js の出所が明記されていない');
     }
+});
+
+test('英語版と日本語版が、上流の支援導線について同じ状態である', async () => {
+    // **「在る」も「無い」も指定しない。揃っていることだけを見る。**
+    //
+    // 利用者決定（2026-08-25）で上流の支援案内は両方から外れたが、**それを
+    // 「無いこと」として固定はしない**——後で戻すのは正しい変更でありうるので、
+    // 検査が反対しては困る。**本当の危険は片方だけ動くこと**で、
+    // そうなると読者は言語によって違う立ち位置の文書を読む。
+    //
+    // **アプリ内の導線（`donateView.js`）は別で、そちらは上流を自分より先に置いている**
+    // （`D-20260820-03`）。README から外れてもその決定は崩れない。
+    const en = await readFile(join(ROOT, 'README.md'), 'utf8');
+    const ja = await readFile(join(ROOT, 'README.ja.md'), 'utf8');
+    assert.equal(UPSTREAM_FUNDING.test(en), UPSTREAM_FUNDING.test(ja),
+        '上流の支援導線が片方の README にしか無い（言語で立ち位置が変わる）');
+    // **自分の口は両方に在る。** 上の検査が「ko-fi という語」で通っていないことの裏取り。
+    for (const [name, text] of [['README.md', en], ['README.ja.md', ja]]) {
+        assert.ok(text.includes('ko-fi.com/syugoji'), name + ': 自分の支援導線が無い');
+    }
+});
+
+test('両方の README が、同じ見出し構成になっている', async () => {
+    // **片方だけ節を消すと、言語によって読める内容が変わる。**
+    // 2026-08-25 に実際、英語版だけ「やらないこと」の名指しが残った。
+    // 見出しの**個数**で見る（文言は言語で違うので中身では比べられない）。
+    const en = await readFile(join(ROOT, 'README.md'), 'utf8');
+    const ja = await readFile(join(ROOT, 'README.ja.md'), 'utf8');
+    const heads = (t) => t.split(/\r?\n/).filter(l => /^##\s/.test(l)).length;
+    assert.equal(heads(en), heads(ja),
+        `見出しの数が違う（en=${heads(en)} / ja=${heads(ja)}）＝片方だけ節が増減している`);
 });
 
 test('両方の README が互いを指している（片方しか無い状態に落ちない）', async () => {
