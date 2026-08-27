@@ -200,55 +200,63 @@ test('宿主が口を渡しており、輸入も通っている', async () => {
     assert.match(source, /nodePackIo:/, '面へ口を渡していない');
 });
 
-test('帯の「不足ノードを入れる」を押すと、Manager を探しに行く', async () => {
-    /*
-     * **入口は帯の側**（2026-08-28 利用者の報告）。タイルの ⊞ は
-     * `.unbake-tile-head` に居て**触れると消える**ので、押せる口にはできない
-     * ——狙いに行った瞬間に `opacity: 0` になる。
-     *
-     * **文字列で見張らない。** 一度は本文に呼び出しが在るかで見ていたが、
-     * **関数の定義そのものが同じ字を含む**ので潰しても緑だった（変異で判明）。
-     */
+const mountPanel = async (nodes, io = {}) => {
     const { createUnbakePanel } = await import('../web/panel/panel.js');
     const { fakeDocument } = await import('./fake_dom.mjs');
     const doc = fakeDocument();
-    const asked = [];
     const panel = createUnbakePanel(doc.createElement('div'), {
         documentRef: doc, display: { listView: 'tiles' },
         nodePackIo: {
-            detect: async () => { asked.push('detect'); return null; },
-            packsFor: async () => [],
-            install: async () => ({ queued: [], failed: [] }),
+            detect: async () => null, packsFor: async () => [],
+            install: async () => ({ queued: [], failed: [] }), ...io,
         },
     });
     panel.setRecords([{
         id: '1', libraryId: '1', title: 'T', verdict: 'approximate',
-        missing: { models: [], resources: [], nodes: ['smZ CLIPTextEncode'] },
+        missing: { models: [], resources: [], nodes },
     }]);
-    const button = panel.root.find(node => String(node.className || '').includes('unbake-install-nodes'));
-    assert.ok(button, '帯に「不足ノードを入れる」が無い');
-    assert.notEqual(button.style?.display, 'none', 'ノードが要るのに出ていない');
-    button.dispatch('click', {});
+    return panel;
+};
+
+const menuLabels = (panel) => panel.root.allByClass('unbake-context-item').map(n => String(n.textContent || ''));
+
+test('「ダウンロード」の品書きから、ノードの行が Manager を探しに行く', async () => {
+    /*
+     * **口は1つ、中で分ける**（2026-08-28 利用者の指示）。3つ並べると
+     * 帯の高さは 幅352px で 136.8px（3行）だった——実測して1行へ畳んだ。
+     *
+     * **文字列で見張らない。** 押して、外へ出たかを見る。
+     */
+    const asked = [];
+    const panel = await mountPanel(['smZ CLIPTextEncode'],
+        { detect: async () => { asked.push('detect'); return null; } });
+    const parent = panel.root.find(node => String(node.className || '').includes('unbake-download-missing'));
+    assert.ok(parent, '帯に「ダウンロード」が無い');
+    assert.notEqual(parent.style?.display, 'none', '足りない物が在るのに出ていない');
+    parent.dispatch('click', {});
+    const labels = menuLabels(panel);
+    assert.ok(labels.some(text => text.includes('⊞')), `ノードの行が無い: ${labels.join(' / ')}`);
+    panel.root.allByClass('unbake-context-item')
+        .find(node => String(node.textContent || '').includes('⊞')).dispatch('click', {});
     for (let i = 0; i < 8; i += 1) await new Promise(r => setTimeout(r, 0));
     assert.deepEqual(asked, ['detect'], '押しても Manager を探しに行っていない');
 });
 
-test('ノードが揃っていれば、その口は出さない', async () => {
+test('足りない物が無ければ、口ごと出さない', async () => {
     // **圧迫感への答えは「小さくする」ではなく「出さない」**（利用者の指示）。
-    const { createUnbakePanel } = await import('../web/panel/panel.js');
-    const { fakeDocument } = await import('./fake_dom.mjs');
-    const doc = fakeDocument();
-    const panel = createUnbakePanel(doc.createElement('div'), {
-        documentRef: doc, display: { listView: 'tiles' },
-        nodePackIo: { detect: async () => null, packsFor: async () => [], install: async () => ({ queued: [], failed: [] }) },
-    });
-    panel.setRecords([{
-        id: '1', libraryId: '1', title: 'T', verdict: 'reproducible',
-        missing: { models: [], resources: [], nodes: [] },
-    }]);
-    const button = panel.root.find(node => String(node.className || '').includes('unbake-install-nodes'));
-    assert.ok(button, '口そのものが無い（描き直しで戻せなくなる）');
-    assert.equal(button.style?.display, 'none', '当てはまらないのに場所を取っている');
+    const panel = await mountPanel([]);
+    const parent = panel.root.find(node => String(node.className || '').includes('unbake-download-missing'));
+    assert.ok(parent, '口そのものが無い（描き直しで戻せなくなる）');
+    assert.equal(parent.style?.display, 'none', '当てはまらないのに場所を取っている');
+});
+
+test('当てはまらない行は、品書きにも出さない', async () => {
+    // 押せるのに何も起きない行を作らない。
+    const panel = await mountPanel(['smZ CLIPTextEncode']);
+    panel.root.find(node => String(node.className || '').includes('unbake-download-missing')).dispatch('click', {});
+    const labels = menuLabels(panel);
+    assert.ok(!labels.some(text => text.includes('⤓⊞')),
+        `モデルが要らないのに「両方」が出ている: ${labels.join(' / ')}`);
 });
 
 test('タイルの ⊞ は押せる口にしない（触れると消えるため）', async () => {

@@ -1500,7 +1500,6 @@ export function createUnbakePanel(el, {
         class: 'unbake-download-missing', type: 'button',
         text: t('download.missing.all'), title: t('download.missing.help'),
     });
-    downloadButton.addEventListener('click', () => downloadMissing());
     const downloadStopButton = element('button', {
         class: 'unbake-download-stop', type: 'button', text: t('download.cancel'),
     });
@@ -1552,27 +1551,21 @@ export function createUnbakePanel(el, {
      * **選んでいる分と全部の切り替えは、既にある形に合わせる**
      * ——`downloadButtonText()` が選択の有無で語を変えている。別の仕組みを作らない。
      */
-    const nodeButton = element('button', {
-        class: 'unbake-download-missing unbake-install-nodes', type: 'button',
-        text: t('nodes.missing.all'), title: t('nodes.missing.help'),
-    });
-    nodeButton.addEventListener('click', () => offerNodeInstall(chosenRecords().list));
-    const bothButton = element('button', {
-        class: 'unbake-download-missing unbake-install-both', type: 'button',
-        text: t('missing.both.all'), title: t('missing.both.help'),
-    });
-    bothButton.addEventListener('click', async () => {
-        // **順に頼む。** ノードは Manager の行列へ、モデルはこちらの行列へ入る
-        // ——別の相手なので、まとめて1つの進み具合にはできない。
-        await offerNodeInstall(chosenRecords().list);
-        await downloadMissing();
-    });
+    /*
+     * **口は1つ。中で分ける**（2026-08-28 利用者の指示・実測で決めた）。
+     *
+     * 3つ並べると帯の高さは 幅352px で **136.8px（3行）**、490px でも 71.2px（2行）。
+     * 親1つにすると**どちらの幅でも 39.2px（1行）**に収まる。
+     * 頻繁に押す操作ではないので、**一手増える代わりに帯を返す**方が釣り合う。
+     *
+     * **塗りは1つだけ。** 塗った四角が3つ並ぶのが重さの正体だった
+     *（この面の「並びの中で唯一の塗りを1つ置くと、そこが起点だと判る」と揃う）。
+     */
+    downloadButton.addEventListener('click', (event) => openDownloadMenu(event));
 
     const selectionBar = element('div', { class: 'unbake-selection' }, [
         selectionCount, selectAllButton, clearSelectionButton,
-        ...(downloadIo ? [downloadButton] : []),
-        ...(nodePackIo ? [nodeButton] : []),
-        ...(downloadIo && nodePackIo ? [bothButton] : []),
+        ...(downloadIo || nodePackIo ? [downloadButton] : []),
         ...(batchButton ? [batchButton] : []),
         ...(batchStopButton ? [batchStopButton] : []),
     ]);
@@ -3218,6 +3211,54 @@ export function createUnbakePanel(el, {
      * `numpy` / `opencv-python-headless` / `transformers` / git ビルドを引く側だった。
      * **渡すのは「何が足りないか」だけ**にして、入れる責任は Manager 側に残す。
      */
+    /**
+     * **ダウンロードの品書き**（2026-08-28 利用者の指示）。
+     *
+     * 語は「ダウンロード」で揃える（利用者の指示）——「落とす／入れる／埋める」を
+     * 混ぜると、**同じ操作なのに3通りの言い方**を覚えることになる。
+     *
+     * **当てはまらない行は出さない。** 0件の行を出すと、押せるのに何も起きない。
+     */
+    function openDownloadMenu(event) {
+        const shown = shownRecords();
+        const canModel = shown.filter(isDownloadable).length;
+        const canNode = shown.filter(needsNode).length;
+        const chosen = () => chosenRecords().list;
+        const all = selected.size === 0;
+        const items = [
+            {
+                key: 'models',
+                label: `⤓ ${all ? t('download.missing.all') : t('download.missing')}（${canModel}）`,
+                title: t('download.missing.help'),
+                run: () => downloadMissing(),
+                off: !downloadIo || !canModel,
+            },
+            {
+                key: 'nodes',
+                label: `⊞ ${all ? t('nodes.missing.all') : t('nodes.missing')}（${canNode}）`,
+                title: t('nodes.missing.help'),
+                run: () => offerNodeInstall(chosen()),
+                off: !nodePackIo || !canNode,
+            },
+            {
+                key: 'both',
+                label: `⤓⊞ ${all ? t('missing.both.all') : t('missing.both')}`,
+                title: t('missing.both.help'),
+                // **順に頼む。** ノードは Manager の行列へ、モデルはこちらの行列へ入る
+                // ——別の相手なので、まとめて1つの進み具合にはできない。
+                run: async () => { await offerNodeInstall(chosen()); await downloadMissing(); },
+                off: !downloadIo || !nodePackIo || !canModel || !canNode,
+            },
+        ].filter(item => !item.off);
+        if (!items.length) return null;
+        const box = downloadButton.getBoundingClientRect?.() || { left: 0, bottom: 0 };
+        return showMenu(items, {
+            x: Number(box.left) || 0,
+            y: Number(box.bottom) || 0,
+            ariaLabel: t('download.menu'),
+        });
+    }
+
     async function offerNodeInstall(records) {
         const list = Array.isArray(records) ? records : [records];
         const nodes = [...new Set(list.flatMap(item => item?.missing?.nodes || []))];
@@ -3614,11 +3655,26 @@ export function createUnbakePanel(el, {
               off: typeof loadRecord !== 'function' },
         ].filter(item => !item.off);
 
-        const menu = element('div', {
-            class: 'unbake-context', role: 'menu',
+        return showMenu(items, {
+            x: Number(event?.clientX) || 0,
+            y: Number(event?.clientY) || 0,
             // **読み上げにも件数を渡す。** 見えている数字だけだと、
             // 目で確かめられない人には何件消えるのか判らない。
-            'aria-label': t('menu.deleteSelected', { count }),
+            ariaLabel: t('menu.deleteSelected', { count }),
+        });
+    }
+
+    /**
+     * 品書きを1枚出す。**右クリックと、帯の「ダウンロード」で共用する**
+     *（2026-08-28 利用者の指示）。
+     *
+     * **新しい部品を作らない。** 閉じ方（Escape・外を押す）も位置の決め方も
+     * 既にここに在るので、増やすと**同じ作法を2つ持つ**ことになる。
+     */
+    function showMenu(items, { x = 0, y = 0, ariaLabel = '' } = {}) {
+        const menu = element('div', {
+            class: 'unbake-context', role: 'menu',
+            ...(ariaLabel ? { 'aria-label': ariaLabel } : {}),
         }, items.map(item => {
             const button = element('button', {
                 class: 'unbake-context-item', type: 'button', role: 'menuitem', text: item.label,
@@ -3627,10 +3683,7 @@ export function createUnbakePanel(el, {
             button.addEventListener('click', () => { closeContextMenu(); item.run(); });
             return button;
         }));
-
         // 押した所に出す。`fixed` なので、一覧を巻いても位置がずれない。
-        const x = Number(event?.clientX) || 0;
-        const y = Number(event?.clientY) || 0;
         menu.style.position = 'fixed';
         menu.style.left = `${x}px`;
         menu.style.top = `${y}px`;
@@ -5245,13 +5298,13 @@ export function createUnbakePanel(el, {
          */
         const canModel = records.filter(isDownloadable).length;
         const canNode = records.filter(needsNode).length;
-        downloadButton.style.display = canModel ? '' : 'none';
-        nodeButton.style.display = canNode ? '' : 'none';
-        // **両方の口は、両方在るときだけ。** 片方しか無いなら上の2つで足りる。
-        bothButton.style.display = (canModel && canNode) ? '' : 'none';
-        // **選んだ分か全部かは、既に在る形に合わせる**（`downloadButtonText`）。
-        nodeButton.textContent = selected.size === 0 ? t('nodes.missing.all') : t('nodes.missing');
-        bothButton.textContent = selected.size === 0 ? t('missing.both.all') : t('missing.both');
+        // **足りない物が無ければ、口ごと出さない**（2026-08-28）。
+        // 圧迫感への答えは「小さくする」ではなく「出さない」。
+        downloadButton.style.display = (canModel || canNode) ? '' : 'none';
+        // **件数を親に出す。** 開く前に、開く価値があるかが判る。
+        if (!downloadButton.getAttribute('data-scanning')) {
+            downloadButton.textContent = `${t('download.menu')}（${canModel + canNode}）`;
+        }
 
         downloadableChip.textContent = '⤓ ' + records.filter(isDownloadable).length;
         downloadableChip.setAttribute('data-on', downloadableOnly ? 'true' : 'false');
