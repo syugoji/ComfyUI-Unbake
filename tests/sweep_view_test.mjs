@@ -250,6 +250,8 @@ test('かけられない記録には、その理由が一覧に出る', () => {
     const host = new FakeNode('div', doc);
     const panel = createUnbakePanel(host, {
         documentRef: doc, width: 900, makeSweepRunner: () => stubRunner(),
+        // **器を名指しする**（2026-08-28・既定がタイルへ変わったため）。
+        display: { listView: 'table' },
     });
     panel.setRecords([SWEEPABLE, CAPTURED]);
     // **行にアイコンは置かない**（2026-08-22 利用者の指示）——入口は絵を押す詳細だけ。

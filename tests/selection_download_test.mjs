@@ -44,7 +44,10 @@ const withMissing = (id, versionId, name = `model-${versionId}`) => rec(id, {
 
 function mount(records, { display = null, ...io } = {}) {
     const doc = fakeDocument();
-    const panel = createUnbakePanel(doc.createElement('div'), { documentRef: doc, display, ...io });
+    // **既定は表**（2026-08-28）。渡された display は必ず勝つ。
+    const panel = createUnbakePanel(doc.createElement('div'), {
+        documentRef: doc, display: { listView: 'table', ...(display || {}) }, ...io,
+    });
     panel.setRecords(records);
     return panel;
 }

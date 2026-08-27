@@ -536,6 +536,9 @@ test('走っている間に押すと、順番待ちになる（断らない）',
     // その場で開くのが本題）ので、`makeSweepRunner` の回数では見ない。
     let ran = 0;
     const panel = createUnbakePanel(container(doc), {
+        // **器を名指しする**（2026-08-28）。既定がタイルへ変わったので、
+        // 表の行を数える検査は自分で表を選ぶ。測っている中身は変えていない。
+        display: { listView: 'table' },
         mode: 'sidebar', width: 1200,
         makeSweepRunner: () => { starts += 1; return {
             inputsReady: Promise.resolve(),
@@ -935,6 +938,9 @@ test('待っている印をもう一度押すと、順番待ちをやめる', as
     let ran = 0;
     let starts = 0;
     const panel = createUnbakePanel(container(doc), {
+        // **器を名指しする**（2026-08-28）。既定がタイルへ変わったので、
+        // 表の行を数える検査は自分で表を選ぶ。測っている中身は変えていない。
+        display: { listView: 'table' },
         mode: 'sidebar', width: 1200,
         makeSweepRunner: () => { starts += 1; return {
             inputsReady: Promise.resolve(),
@@ -988,6 +994,9 @@ test('前が失敗しても、次の順番待ちが始まる', async () => {
     const held = new Promise((r) => { release = r; });
     let starts = 0;
     const panel = createUnbakePanel(container(doc), {
+        // **器を名指しする**（2026-08-28）。既定がタイルへ変わったので、
+        // 表の行を数える検査は自分で表を選ぶ。測っている中身は変えていない。
+        display: { listView: 'table' },
         mode: 'sidebar', width: 1200,
         makeSweepRunner: () => { starts += 1; return {
             inputsReady: Promise.resolve(),
@@ -1028,6 +1037,9 @@ test('同じ記録を二重に並べない（押し直しても順番は早ま�
     const held = new Promise((r) => { release = r; });
     let starts = 0;
     const panel = createUnbakePanel(container(doc), {
+        // **器を名指しする**（2026-08-28）。既定がタイルへ変わったので、
+        // 表の行を数える検査は自分で表を選ぶ。測っている中身は変えていない。
+        display: { listView: 'table' },
         mode: 'sidebar', width: 1200,
         makeSweepRunner: () => { starts += 1; return {
             inputsReady: Promise.resolve(),
@@ -1078,6 +1090,9 @@ test('走っている間は二度押しを受け付けない', async () => {
     let release;
     const held = new Promise((r) => { release = r; });
     const panel = createUnbakePanel(container(doc), {
+        // **器を名指しする**（2026-08-28）。既定がタイルへ変わったので、
+        // 表の行を数える検査は自分で表を選ぶ。測っている中身は変えていない。
+        display: { listView: 'table' },
         mode: 'sidebar', width: 1200,
         makeSweepRunner: () => { starts += 1; return {
             inputsReady: held,

@@ -95,12 +95,35 @@ test('切り替えは一覧の手元でできる（設定を開かせない）',
     const panel = mount([rec('1'), rec('2')]);
     const toggle = panel.root.byClass('unbake-view-toggle');
     assert.ok(toggle, '見せ方の切替が無い');
-    assert.equal(tilesOf(panel).length, 0, '既定は表のはず');
+    // **既定はタイル**（2026-08-28 利用者の指示）。この道具で最初にすることは
+    // 「どの記録を再現するか選ぶ」で、選ぶ手掛かりは絵の方にある。
+    assert.equal(tilesOf(panel).length, 2, '既定がタイルになっていない');
 
     toggle.dispatch('click', {});
-    assert.equal(tilesOf(panel).length, 2, 'タイルへ切り替わっていない');
+    assert.equal(tilesOf(panel).length, 0, '表へ切り替わっていない');
     toggle.dispatch('click', {});
-    assert.equal(tilesOf(panel).length, 0, '表へ戻せない');
+    assert.equal(tilesOf(panel).length, 2, 'タイルへ戻せない');
+});
+
+test('既定は面と宿主の両方で「タイル」', async () => {
+    /*
+     * **2箇所ある。** `unbake/settings.py` が宿主の既定で、`panel.js` は
+     * 宿主の設定がまだ届いていない一瞬に使う後退先。**片方だけ直すと、
+     * 開いた最初の一瞬だけ別の器で描かれる**（気づきにくい形で残る）。
+     */
+    const { readFile } = await import('node:fs/promises');
+    const { join, dirname } = await import('node:path');
+    const { fileURLToPath } = await import('node:url');
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+
+    const py = await readFile(join(root, 'unbake/settings.py'), 'utf8');
+    assert.match(py, /"list_view":\s*"tiles"/, '宿主の既定が表のまま');
+
+    const js = await readFile(join(root, 'web/panel/panel.js'), 'utf8');
+    const at = js.indexOf('let listView = LIST_VIEWS.has(');
+    assert.notEqual(at, -1, '後退先が見つからない（改名を見逃している）');
+    const line = js.slice(at, js.indexOf(';', at));
+    assert.ok(line.includes("'tiles'"), `面の後退先が表のまま: ${line}`);
 });
 
 test('絞り込みはどちらの器でも同じに効く', () => {
@@ -160,9 +183,12 @@ test('見せ方と大きさは保存され、次に開いたときも残る', ()
     const panel = mount([rec('1')], null, {
         settingsIo: { read: async () => ({}), write: async (patch) => { written.push(patch); return { settings: patch }; } },
     });
+    // **既定はタイル**なので、1度目の切替で表になる（2026-08-28）。
     panel.root.byClass('unbake-view-toggle').dispatch('click', {});
-    assert.deepEqual(written, [{ list_view: 'tiles', tile_size: 0 }]);
+    assert.deepEqual(written, [{ list_view: 'table', tile_size: 0 }]);
 
+    // 大きさの口はタイルのときにだけ在るので、タイルへ戻してから触る。
+    panel.root.byClass('unbake-view-toggle').dispatch('click', {});
     const select = panel.root.byClass('unbake-view-columns');
     select.value = '3';
     select.dispatch('change', {});

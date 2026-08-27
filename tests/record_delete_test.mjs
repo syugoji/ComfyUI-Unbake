@@ -44,7 +44,9 @@ function mount({
 } = {}) {
     const documentRef = fakeDocument();
     const panel = createUnbakePanel(documentRef.createElement('div'), {
-        documentRef, ingest, recordsIo, modelsIo, settingsIo, display,
+        documentRef, ingest, recordsIo, modelsIo, settingsIo,
+        // **既定は表**（2026-08-28）。渡された display は必ず勝つ。
+        display: { listView: 'table', ...(display || {}) },
         makeSweepRunner, loadInstalledModels, loadRecord, loadVariants, canBuild,
     });
     return { documentRef, panel };

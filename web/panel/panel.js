@@ -534,7 +534,13 @@ export function createUnbakePanel(el, {
      */
     let sortDescending = display?.sortDescending === true;
     /** 一覧の見せ方。**表とタイルは同じ記録・同じ絞り込みを描く**（データは1つ）。 */
-    let listView = LIST_VIEWS.has(String(display?.listView)) ? String(display.listView) : 'table';
+    /**
+     * 一覧の器。**既定はタイル**（2026-08-28 利用者の指示）。
+     *
+     * **`unbake/settings.py` の既定と揃えること。** 片方だけ直すと、
+     * 宿主の設定がまだ届いていない最初の一瞬だけ別の器で描かれる。
+     */
+    let listView = LIST_VIEWS.has(String(display?.listView)) ? String(display.listView) : 'tiles';
     /**
      * タイルの**大きさ**。0 は「幅に合わせる」、1 が最大で 4 が最小。
      *

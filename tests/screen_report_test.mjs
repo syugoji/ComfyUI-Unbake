@@ -48,7 +48,12 @@ const previewCellOf = (panel) => panel.root.find(
 
 const mount = (records, display = null) => {
     const doc = fakeDocument();
-    const panel = createUnbakePanel(doc.createElement('div'), { documentRef: doc, display });
+    // **既定は表**（2026-08-28）。製品の既定はタイルへ変わったが、この面の検査は
+    // 表の中を測っている。**渡された display は必ず勝つ**ので、タイルを名指しした
+    // 検査はそのまま動く。
+    const panel = createUnbakePanel(doc.createElement('div'), {
+        documentRef: doc, display: { listView: 'table', ...(display || {}) },
+    });
     panel.setRecords(records);
     return panel;
 };
