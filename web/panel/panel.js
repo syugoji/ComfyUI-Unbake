@@ -3400,6 +3400,10 @@ export function createUnbakePanel(el, {
                             removed.push(displayName(item));
                             records = records.filter(other => other.id !== item.id);
                             selected.delete(String(item.id));
+                            // **1件ごとに描き直す**（上と同じ理由）。まとめて消す回は
+                            // 時間がかかるので、**減っていく様子が見える**方が
+                            // 「止まっているのか進んでいるのか」も分かる。
+                            render();
                         } else {
                             failed.push(displayName(item));
                         }
@@ -3560,6 +3564,20 @@ export function createUnbakePanel(el, {
                 if (result?.ok) {
                     records = records.filter(item => item.id !== record.id);
                     selected.delete(String(record.id));
+                    /*
+                     * **消えた時点で描き直す**（2026-08-28 利用者の報告
+                     * 「レコードを削除した後、タイル表示が残っています」）。
+                     *
+                     * 確認の面は**消した後も開いたまま**残る（何が消えたかを1件ずつ
+                     * 出すため）。描き直しを閉じたときだけにしていたので、
+                     * **「消しました」と書いてある面の後ろに、消したはずのタイルが
+                     * 見えている**状態になっていた——読む人には
+                     * *消えていない*としか映らない。
+                     *
+                     * 閉じたときの描き直し（`onReturn`）は残す。失敗した回や、
+                     * 押さずに閉じた回はここを通らない。
+                     */
+                    render();
                 }
                 return result;
             },

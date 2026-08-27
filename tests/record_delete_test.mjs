@@ -1223,3 +1223,77 @@ test('詳細の「出す」は、実行器へレシピを渡す（記録の入�
     // 入れ物を二重に渡していないこと（`recipe` を抱えたまま渡さない）。
     assert.equal(passed.recipe, undefined, 'レシピを入れ子のまま渡している');
 });
+
+// --- 消した時点で一覧から消える（2026-08-28 利用者の報告）-------------------
+
+test('確認の面が開いたままでも、消えた分は一覧から消える', async () => {
+    /*
+     * **「レコードを削除した後、タイル表示が残っています」**（実機の報告）。
+     *
+     * 確認の面は**消した後も開いたまま**残る（何が消えたかを1件ずつ出すため）。
+     * 描き直しを「閉じたとき」だけにしていたので、**「消しました」と書いてある
+     * 面の後ろに、消したはずのタイルが見えている**状態になっていた
+     * ——読む人には*消えていない*としか映らない。
+     *
+     * **タイルで測る。** 確認は既定で入っている（入れたばかりの環境はこちら）ので、
+     * この道が既定の見え方そのもの。
+     */
+    const { panel } = mount({
+        display: { listView: 'tiles', confirmBeforeDelete: true },
+        recordsIo: { remove: async (id) => ({ ok: true, removed: [id] }) },
+    });
+    panel.setRecords([recordOf('a'), recordOf('b'), recordOf('c')]);
+    const tilesOf = () => panel.root.allByClass('unbake-tile')
+        .filter(node => node.className === 'unbake-tile').length;
+    assert.equal(tilesOf(), 3, '前提が崩れている（タイルで描かれていない）');
+
+    panel.root.findAll(n => String(n.className || '').includes('unbake-act-delete'))[0]
+        .dispatch('click', {});
+    await settle();
+    const go = panel.root.findAll(n => String(n.className || '').includes('unbake-confirm-go'))[0];
+    assert.ok(go, '確認の面が出ていない');
+    go.dispatch('click', {});
+    await settle();
+
+    // **まだ閉じていない。** ここで既に減っていること。
+    assert.ok(panel.root.findAll(n => String(n.className || '').includes('unbake-confirm-backdrop')).length,
+        '確認の面が閉じてしまっている（この検査が測りたい状態を通らない）');
+    assert.equal(tilesOf(), 2, '消したのにタイルが残っている');
+});
+
+test('まとめて消す回も、1件ごとに一覧から減る', async () => {
+    // **時間がかかる回ほど効く。** 減っていく様子が見えないと、
+    // 「止まっているのか進んでいるのか」が読めない。
+    const { panel } = mount({
+        display: { listView: 'tiles', confirmBeforeDelete: true },
+        recordsIo: { remove: async (id) => ({ ok: true, removed: [id] }) },
+    });
+    panel.setRecords([recordOf('a'), recordOf('b'), recordOf('c')]);
+    const tilesOf = () => panel.root.allByClass('unbake-tile')
+        .filter(node => node.className === 'unbake-tile').length;
+    for (const box of panel.root.allByClass('unbake-pick').slice(0, 2)) {
+        box.checked = true;
+        box.dispatch('click', {});
+    }
+    await settle();
+    assert.equal(panel.selected.length, 2, '2件選べていない');
+
+    // 選んだうえで右クリック → まとめて削除。
+    const tile = panel.root.allByClass('unbake-tile').filter(n => n.className === 'unbake-tile')[0];
+    await tile.dispatch('contextmenu', { clientX: 0, clientY: 0, preventDefault() {} });
+    // **訳文で探さない**（この面の検査は英語で回している）。品書きは
+    // 「選んだ N 件を…」の並びなので、件数を含む削除の行を数字で当てる。
+    const items = panel.root.allByClass('unbake-context-item');
+    const item = items.find(node => /2/.test(node.textContent) && /delet|削除/i.test(node.textContent));
+    assert.ok(item, `まとめて削除の項目が無い: ${items.map(n => n.textContent).join(' / ')}`);
+    item.dispatch('click', {});
+    await settle();
+    const go = panel.root.findAll(n => String(n.className || '').includes('unbake-confirm-go'))[0];
+    assert.ok(go, '確認の面が出ていない');
+    go.dispatch('click', {});
+    for (let i = 0; i < 8; i += 1) await settle();
+
+    assert.ok(panel.root.findAll(n => String(n.className || '').includes('unbake-confirm-backdrop')).length,
+        '確認の面が閉じてしまっている（測りたい状態を通らない）');
+    assert.equal(tilesOf(), 1, '2件消したのにタイルが残っている');
+});
