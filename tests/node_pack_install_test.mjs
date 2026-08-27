@@ -290,3 +290,107 @@ test('親の口の語は、描き直した後も「ダウンロード（件数�
     assert.match(text, /1/, '件数が出ていない');
     pick('en');
 });
+
+// --- 品書きの畳み方と、2段の順番 ---------------------------------------------
+
+const mountBoth = async (io = {}) => {
+    const { createUnbakePanel } = await import('../web/panel/panel.js');
+    const { fakeDocument } = await import('./fake_dom.mjs');
+    const doc = fakeDocument();
+    const calls = { install: [], plan: [] };
+    const panel = createUnbakePanel(doc.createElement('div'), {
+        documentRef: doc,
+        display: { listView: 'tiles', confirmBeforeDelete: true },
+        nodePackIo: {
+            detect: async () => ({ api: 'v2', version: '4.2.2' }),
+            packsFor: async () => [{ id: 'comfyui_smznodes', title: 'smZNodes', nodes: ['smZ CLIPTextEncode'] }],
+            install: async (...args) => { calls.install.push(args); return { queued: ['comfyui_smznodes'], failed: [] }; },
+        },
+        downloadIo: {
+            start: async () => ({ ok: true }),
+            state: async () => ({}),
+            plan: async (ids) => { calls.plan.push(ids); return { items: [] }; },
+        },
+        ...io,
+    });
+    panel.setRecords([{
+        id: '1', libraryId: '1', title: 'T', verdict: 'blocked',
+        missing: {
+            models: [], nodes: ['smZ CLIPTextEncode'],
+            resources: [{ type: 'lora', name: 'm1', versionId: '9001' }],
+        },
+    }]);
+    return { panel, doc, calls };
+};
+
+const settle = (ms = 0) => new Promise(resolve => setTimeout(resolve, ms));
+
+test('「モデルとノード」は、ノードの面が閉じるまでモデルへ進まない', async () => {
+    /*
+     * **実機の報告**（2026-08-28）「ノードのインストール画面のすぐあとに
+     * モデルのダウンロード画面が出て、モデルのダウンロードしかできない」。
+     *
+     * `askThen()` は返事を待たずに返る。`await` しても意味が無く、
+     * **ノードの確認の上にモデルの確認が重なって**下が押せなくなっていた。
+     */
+    const { setLocale: pick, t: tr } = await import('../web/i18n/index.js');
+    pick('ja');
+    const { panel, calls } = await mountBoth();
+    panel.root.byClass('unbake-download-missing').dispatch('click', {});
+    const rows = panel.root.allByClass('unbake-context-item');
+    const both = rows.find(node => String(node.textContent).includes('⤓⊞'));
+    assert.ok(both, `「モデルとノード」の行が無い: ${rows.map(r => r.textContent).join(' / ')}`);
+    both.dispatch('click', {});
+    await settle(20);
+
+    // **出ている面はノードの側。** モデルの面に差し替わっていたら、
+    // ノードの確認は押せないまま消えている。
+    const shown = panel.root.text;
+    assert.ok(shown.includes(tr('nodes.install.title', { count: 1 })),
+        `ノードの確認が出ていない（モデルに差し替わった）: ${shown.slice(-300)}`);
+    assert.deepEqual(calls.plan, [], 'ノードの返事を待たずにモデルへ進んでいる');
+
+    // **返事をしたら、続きが始まる。** 待たせるだけにすると、
+    // 「モデルとノード」がノードだけの口になる。
+    const go = panel.root.findAll(node => node.textContent === tr('nodes.install.go'))[0];
+    assert.ok(go, `頼む口が無い: ${panel.root.text.slice(-200)}`);
+    await go.dispatch('click', {});
+    await settle(30);
+    assert.equal(calls.install.length, 1, 'ノードを頼んでいない');
+    // **入れたのに「消しました」と言わない。**
+    assert.ok(!panel.root.text.includes(tr('confirm.done', { list: 'comfyui_smznodes' })),
+        `入れる問いに消す側の語が出ている: ${panel.root.text.slice(-200)}`);
+    // 面を閉じて初めて、続き（モデル）が始まる。
+    const close = panel.root.byClass('unbake-confirm-close');
+    assert.ok(close, '閉じる口が無い');
+    await close.dispatch('click', {});
+    await settle(30);
+    assert.ok(panel.root.text.includes(tr('download.scope', { count: 1, models: 1, blocked: 0 }))
+        || calls.plan.length > 0,
+        `ノードの後にモデルへ進んでいない: ${panel.root.text.slice(-300)}`);
+    pick('en');
+});
+
+test('面の外（ComfyUI の背景）を押すと品書きが閉じ、聞き手も残らない', async () => {
+    // **付けた聞き手を外す所まで見る。** 残ると、次に開いた品書きを
+    // その場で閉じる形で表に出る。
+    const { panel, doc } = await mountBoth();
+    panel.root.byClass('unbake-download-missing').dispatch('click', {});
+    assert.ok(panel.root.byClass('unbake-context'), '品書きが開いていない');
+    assert.equal(doc.countListeners('click'), 1, '外を見る聞き手が付いていない');
+
+    await doc.dispatch('click', {});
+    assert.equal(panel.root.byClass('unbake-context'), null, '外を押しても閉じない');
+    assert.equal(doc.countListeners('click'), 0, '閉じたのに聞き手が残っている');
+});
+
+test('品書きの中の押しは、外の聞き手まで届かない', async () => {
+    // 届くと**開いた行を押した瞬間に閉じる**——行の処理が走る前に消える。
+    const { panel, doc } = await mountBoth();
+    panel.root.byClass('unbake-download-missing').dispatch('click', {});
+    const menu = panel.root.byClass('unbake-context');
+    let outside = 0;
+    doc.addEventListener('click', () => { outside += 1; });
+    await menu.dispatch('click', {});
+    assert.equal(outside, 0, '品書きの中の押しが外まで上がっている');
+});

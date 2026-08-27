@@ -84,6 +84,12 @@ export function createConfirmView({
      */
     destructive = true,
     confirmLabel = null,
+    /**
+     * 終わったときの語の鍵。既定は消す側（`confirm.done`）。
+     * **入れる問いに使うときは呼び手が渡す**——渡さないと
+     * ノードパックを頼んだのに「消しました」と出る。
+     */
+    doneKey = null,
     /*
      * **並べたものを選べるようにする**（2026-08-26 利用者の指示）。
      *
@@ -262,7 +268,10 @@ export function createConfirmView({
         if (result?.ok) {
             // **消したものを1件ずつ出す。** 「消しました」だけだと、
             // 付随が残ったのか消えたのかが読めない。
-            status.textContent = t('confirm.done', {
+            // **語は呼び手が決める**（2026-08-28）。既定は消す側だが、
+            // この面は入れる側でも使う——ノードパックを頼んだのに
+            // **「消しました」と出ていた。**
+            status.textContent = t(doneKey || 'confirm.done', {
                 list: (result.removed || []).join(' / ') || '—',
             });
             confirm.disabled = true;

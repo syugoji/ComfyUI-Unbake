@@ -3254,9 +3254,17 @@ export function createUnbakePanel(el, {
                 key: 'both',
                 label: `⤓⊞ ${all ? t('missing.both.all') : t('missing.both')}`,
                 title: t('missing.both.help'),
-                // **順に頼む。** ノードは Manager の行列へ、モデルはこちらの行列へ入る
-                // ——別の相手なので、まとめて1つの進み具合にはできない。
-                run: async () => { await offerNodeInstall(chosen()); await downloadMissing(); },
+                /*
+                 * **ノードが終わってからモデルへ進む**（2026-08-28 利用者の報告
+                 * 「ノードのインストール画面のすぐあとにモデルの画面が出て、
+                 * モデルしか操作できない」）。
+                 *
+                 * `askThen()` は返事を待たない——確認の面を出したらすぐ返る。
+                 * `await` しても意味が無く、**ノードの確認の上にモデルの確認が
+                 * 重なって**、下になった方は押せないまま消えていた。
+                 * 続きは面が閉じたとき（`afterwards`）に始める。
+                 */
+                run: () => offerNodeInstall(chosen(), { afterwards: () => downloadMissing() }),
                 off: !downloadIo || !nodePackIo || !canModel || !canNode,
             },
         ].filter(item => !item.off);
@@ -3269,29 +3277,42 @@ export function createUnbakePanel(el, {
         });
     }
 
-    async function offerNodeInstall(records) {
+    /**
+     * 足りないノードパックを Manager へ頼む。
+     *
+     * `afterwards` は**この面が閉じたときに1度だけ**呼ぶ。頼めなかった回
+     *（Manager が居ない・地図に無い・そもそも足りていない）も呼ぶ
+     * ——呼ばないと、「モデルとノード」を選んだのにモデルが始まらない。
+     */
+    async function offerNodeInstall(records, { afterwards = null } = {}) {
+        let went = false;
+        const goOn = () => { if (!went) { went = true; afterwards?.(); } };
         const list = Array.isArray(records) ? records : [records];
         const nodes = [...new Set(list.flatMap(item => item?.missing?.nodes || []))];
-        if (!nodes.length || !nodePackIo) return null;
+        if (!nodes.length || !nodePackIo) { goOn(); return null; }
         let manager = null;
         try { manager = await nodePackIo.detect(); } catch { manager = null; }
-        if (!manager) { appendLog(t('nodes.noManager')); showToast(t('nodes.noManager')); return null; }
+        if (!manager) { appendLog(t('nodes.noManager')); showToast(t('nodes.noManager')); goOn(); return null; }
         let packs = [];
         try {
             packs = await nodePackIo.packsFor(manager.api, nodes);
         } catch (error) {
             appendLog(t('nodes.mappingFailed', { detail: error?.message || String(error) }));
+            goOn();
             return null;
         }
         if (!packs.length) {
             // **推し量らない。** 地図に無いものは名前を出さずに、そう言う。
             appendLog(t('nodes.unknownPack', { list: nodes.join('、') }));
             showToast(t('nodes.unknownPack', { list: nodes.join('、') }));
+            goOn();
             return null;
         }
         return askThen({
             title: t('nodes.install.title', { count: packs.length }),
             confirmLabel: t('nodes.install.go'),
+            // **入れる側の語で終わる。** 既定のままだと「消しました」と出る。
+            doneKey: 'nodes.install.queued',
             destructive: false,
             files: packs.map(pack => ({ name: pack.title, note: pack.nodes.join('、'), bytes: null })),
             // **入れるのは Manager だと書く。** 誰が何をするのかを画面で言う。
@@ -3308,7 +3329,7 @@ export function createUnbakePanel(el, {
                     failed: result.failed.map(item => `${item.id}（${item.detail}）`),
                 };
             },
-            onReturn: () => {},
+            onReturn: () => goOn(),
         });
     }
 
@@ -3514,7 +3535,8 @@ export function createUnbakePanel(el, {
             .then((result) => {
                 options.onReturn?.();
                 if (result?.ok) {
-                    appendLog(t('confirm.done', { list: (result.removed || []).join(' / ') || '—' }));
+                    appendLog(t(options.doneKey || 'confirm.done',
+                        { list: (result.removed || []).join(' / ') || '—' }));
                 } else {
                     appendLog(t('confirm.failed', {
                         detail: String(result?.error || (result?.failed || []).join(' / ') || ''),
@@ -3591,8 +3613,14 @@ export function createUnbakePanel(el, {
      * 一番まずい形になる（選択が画面外に在ると、何が消えるのか見えない）。
      */
     let contextMenuNode = null;
+    /** 品書きを開いている間だけ付ける聞き手の**外し方**（付けたら必ず外す）。 */
+    let contextMenuOff = null;
 
     function closeContextMenu() {
+        // **付けた聞き手を必ず外す。** 残すと、閉じた品書きのために
+        // 書類の押しを拾い続ける（次に開いた分を即座に閉じる形で表に出る）。
+        try { contextMenuOff?.(); } catch { /* 外せなくても畳む方は進める */ }
+        contextMenuOff = null;
         contextMenuNode?.remove?.();
         contextMenuNode = null;
     }
@@ -3702,6 +3730,26 @@ export function createUnbakePanel(el, {
         menu.style.top = `${y}px`;
         contextMenuNode = menu;
         root.append(menu);
+        /*
+         * **面の外——ComfyUI の背景を押しても閉じる**（2026-08-28 利用者の指示）。
+         *
+         * 元は面の中（`.unbake-root`）の押しでしか閉じなかった。開いたまま
+         * 背景を押すと**品書きだけが残る**ので、閉じるには品書きの中を押すか
+         * 面の中を押し直すしかなかった。
+         *
+         * 品書きの中の押しは**ここで止める**（行は自分で閉じている）。
+         * 書類まで上がってくるのは「外を押した」ときだけになる。
+         */
+        menu.addEventListener('click', (event) => event?.stopPropagation?.());
+        const closeFromOutside = () => closeContextMenu();
+        // **鍵盤からも降りられる。** 背景の押しを宿主が飲み込む場合の逃げ道でもある。
+        const closeOnEscape = (event) => { if (event?.key === 'Escape') closeContextMenu(); };
+        doc.addEventListener?.('click', closeFromOutside);
+        doc.addEventListener?.('keydown', closeOnEscape);
+        contextMenuOff = () => {
+            doc.removeEventListener?.('click', closeFromOutside);
+            doc.removeEventListener?.('keydown', closeOnEscape);
+        };
         return menu;
     }
 

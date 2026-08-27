@@ -162,6 +162,14 @@ export class FakeNode {
             // **止めろと言われたら、そこから上には配らない。**
             if (stopped) break;
         }
+        // **最後は書類まで届く**（本物と同じ）。面は宿主の書類の中に在るので、
+        // 「面の外を押したら閉じる」を書類へ付けた側から見ると、
+        // **面の中の押しも同じ聞き手に当たる**——止めていなければ。
+        if (!stopped && typeof this.ownerDocument?.listeners?.get === 'function') {
+            for (const handler of [...(this.ownerDocument.listeners.get(type) || [])]) {
+                running.push(handler(event));
+            }
+        }
         return Promise.all(running);
     }
 
@@ -241,8 +249,28 @@ export function fakeDocument() {
         body: null,
         // **焦点は書類が持つ**（本物と同じ）。初期値は本文——面の外を指す。
         activeElement: null,
-        addEventListener() {},
-        removeEventListener() {},
+        /*
+         * **書類の聞き手も本当に覚える**（2026-08-28）。
+         *
+         * 何もしない偽物にしていたので、「面の外を押したら閉じる」を
+         * 付けても外しても**検査からは同じに見えた**——付け忘れも
+         * 外し忘れも緑のまま通る。覚えて配る。
+         */
+        listeners: new Map(),
+        addEventListener(type, handler) {
+            const list = doc.listeners.get(type) || [];
+            list.push(handler);
+            doc.listeners.set(type, list);
+        },
+        removeEventListener(type, handler) {
+            const list = (doc.listeners.get(type) || []).filter(item => item !== handler);
+            doc.listeners.set(type, list);
+        },
+        /** 面の外で起きた出来事（宿主の背景を押す・鍵盤を叩く）。 */
+        dispatch(type, event = {}) {
+            return Promise.all([...(doc.listeners.get(type) || [])].map(handler => handler(event)));
+        },
+        countListeners(type) { return (doc.listeners.get(type) || []).length; },
     };
     doc.head = new FakeNode('head', doc);
     doc.body = new FakeNode('body', doc);
