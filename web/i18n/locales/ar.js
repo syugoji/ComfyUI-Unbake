@@ -390,6 +390,8 @@ export const messages = {
     "settings.sourceDirs.help": "يقرأ ملفات ‎*.recipe.json‎ الموجودة هنا وصورها المقترنة (مثال: D:/AI/forge/webui/models/Lora/recipes، وهو مجلد recipes الخاص بـ LoRA Manager). للقراءة فقط: لا يُكتب هنا شيء أبدًا. وإذا وصل السجل نفسه أيضًا من LoRA Manager قيد التشغيل، فالمعتمد ما وُجد على القرص.",
     "settings.outputDir": "المجلد الذي يكتب فيه Unbake",
     "settings.outputDir.help": "المكان الذي يحفظ فيه Unbake السجلات التي ينشئها. يمكن تركه فارغًا؛ عندها يستخدم user/unbake/records في ComfyUI. وهو منفصل عمدًا عن مجلدات المصدر أعلاه — فالكتابة فيها قد تُتلف مكتبة قائمة.",
+    "settings.downloadRoot": "أين تُنزَّل النماذج الناقصة",
+    "settings.downloadRoot.help": "مثال: D:/AI/forge/webui — جذر شجرة النماذج، وليس مجلد models نفسه. اتركه فارغا لاستخدام مجلدات ComfyUI. كل نوع يذهب حيث اُعد ComfyUI لقراءته: مع المثال أعلاه تنزل الـ checkpoints في models/Stable-diffusion، وملفات LoRA في models/Lora، والـ embeddings في embeddings. لا يمكن اختيار سوى المجلدات التي يقرؤها ComfyUI فعلا؛ وإن لم يطابق أي منها فسيعود إلى الافتراضي ويذكر ذلك في السجل.",
     "settings.civitaiKey": "مفتاح واجهة Civitai",
     "settings.civitaiKey.help": "يُستخدم للبحث في Civitai عن النماذج الناقصة. تعمل القائمة بدونه، غير أنك لن تستطيع الاستعلام عن النماذج الناقصة أو تنزيلها. يُحفظ المفتاح خارج مجلد هذه الإضافة (ضمن user/ في ComfyUI)، فلا يُوزَّع مع الشيفرة أبدًا.",
     "settings.raindropToken": "رمز Raindrop",

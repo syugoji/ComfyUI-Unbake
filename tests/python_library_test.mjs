@@ -707,7 +707,9 @@ function downloadScript(body) {
         'sys.path.insert(0, ".")',
         'import unbake.download as dl',
         'root = tempfile.mkdtemp(prefix="unbake-dltest-")',
-        'dl._model_dir = lambda kind: root',
+        // `root` は 2026-08-28 に足した引数（落とす先の根を選べるようにした）。
+        // **ここの `root` は退避先の一時フォルダ**なので、名前を分けて受ける。
+        'dl._model_dir = lambda kind, download_root="": root',
         ...body,
     ].join('\n');
 }

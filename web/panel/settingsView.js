@@ -48,6 +48,9 @@ function makeElement(doc, tag, attributes = {}, children = []) {
 const TEXT_FIELDS = [
     { key: 'raindrop_collection_id', label: 'settings.raindropCollection', help: 'settings.raindropCollection.help' },
     { key: 'record_output_dir', label: 'settings.outputDir', help: 'settings.outputDir.help' },
+    // **落とす先の根**（2026-08-28 利用者の指示）。空＝ComfyUI の既定。
+    // 選べるのは ComfyUI が知っている置き場の中だけ（合う物が無ければ既定へ戻る）。
+    { key: 'download_root', label: 'settings.downloadRoot', help: 'settings.downloadRoot.help' },
 ];
 
 /**

@@ -28,7 +28,7 @@ from unbake.utils.model_file_validation import (
 class ErrorKindTest(unittest.TestCase):
     def setUp(self):
         self.target = os.path.join(tempfile.mkdtemp(), "m.safetensors")
-        patcher = mock.patch.object(dl, "safe_target", lambda kind, filename: self.target)
+        patcher = mock.patch.object(dl, "safe_target", lambda kind, filename, root="": self.target)
         patcher.start()
         self.addCleanup(patcher.stop)
 

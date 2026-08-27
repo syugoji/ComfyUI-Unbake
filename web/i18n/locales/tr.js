@@ -390,6 +390,8 @@ export const messages = {
     "settings.sourceDirs.help": "Buradaki *.recipe.json dosyalarını ve eşlerindeki görselleri okur (örn. D:/AI/forge/webui/models/Lora/recipes — LoRA Manager'ın recipes klasörü). Yalnızca okur; buraya asla yazmaz. Aynı kayıt çalışan bir LoRA Manager'dan da gelirse, diskte bulunan kazanır.",
     "settings.outputDir": "Unbake'in yazdığı klasör",
     "settings.outputDir.help": "Unbake'in oluşturduğu kayıtları nereye yazacağı. Boş bırakabilirsiniz: ComfyUI'nin user/unbake/records klasörü kullanılır. Yukarıdaki kaynak klasörlerden bilerek ayrıdır — oraya yazmak mevcut kütüphaneye zarar verme riski taşır.",
+    "settings.downloadRoot": "Eksik modellerin indirilecegi yer",
+    "settings.downloadRoot.help": "Ornek: D:/AI/forge/webui — model agacinin koku, models klasorunun kendisi degil. Bos birakirsaniz ComfyUI'nin kendi klasorleri kullanilir. Her tur, ComfyUI'nin okuyacak sekilde ayarlandigi yere gider: yukaridaki ornekte checkpoints models/Stable-diffusion'a, LoRA'lar models/Lora'ya, embedding'ler embeddings'e iner. Yalnizca ComfyUI'nin zaten okudugu klasorler secilebilir; eslesen yoksa varsayilana doner ve gunluge yazar.",
     "settings.civitaiKey": "Civitai API anahtarı",
     "settings.civitaiKey.help": "Eksik modelleri Civitai'de aramak için kullanılır. Liste onsuz da çalışır; yalnızca eksik modelleri sorgulayıp indiremezsiniz. Anahtar bu eklentinin klasörünün dışında (ComfyUI'nin user/ altında) saklanır, dolayısıyla kodla birlikte dağıtılmaz.",
     "settings.raindropToken": "Raindrop belirteci",

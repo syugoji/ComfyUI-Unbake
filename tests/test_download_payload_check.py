@@ -85,7 +85,7 @@ class PayloadCheckTest(unittest.TestCase):
             def __exit__(self, *exc):
                 return False
 
-        with mock.patch.object(dl, "safe_target", lambda kind, filename: target):
+        with mock.patch.object(dl, "safe_target", lambda kind, filename, root="": target):
             with self.assertRaises(dl.DownloadError) as caught:
                 dl.download_model(
                     url="https://example.invalid/x", kind="checkpoints",

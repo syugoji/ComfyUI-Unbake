@@ -388,6 +388,8 @@ export const messages = {
     "settings.sourceDirs.help": "Reads the *.recipe.json files here and their paired images (e.g. D:/AI/forge/webui/models/Lora/recipes — that is LoRA Manager's recipes folder). Read-only: nothing is ever written here. If the same record also arrives from a running LoRA Manager, the one found on disk wins.",
     "settings.outputDir": "Folder Unbake writes to",
     "settings.outputDir.help": "Where Unbake saves records it creates. Leave it empty and it uses ComfyUI's user/unbake/records. It is deliberately separate from the folders above — writing into your source folders would risk damaging an existing library.",
+    "settings.downloadRoot": "Where missing models are downloaded",
+    "settings.downloadRoot.help": "Example: D:/AI/forge/webui — the root of the model tree, not the models folder itself. Leave it empty to use ComfyUI's own folders. Each kind goes wherever ComfyUI is configured to read it, so with the example above checkpoints land in models/Stable-diffusion, LoRAs in models/Lora, and embeddings in embeddings. Only folders ComfyUI already reads can be chosen; if none match it falls back to the default and says so in the log.",
     "settings.civitaiKey": "Civitai API key",
     "settings.civitaiKey.help": "Used to look up missing models on Civitai. The list works without it; you just cannot query or download missing models. The key is stored outside this extension's folder (under ComfyUI's user/), so it never ships with the code.",
     "settings.raindropToken": "Raindrop token",

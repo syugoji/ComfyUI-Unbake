@@ -390,6 +390,8 @@ export const messages = {
     "settings.sourceDirs.help": "讀取這裡的 *.recipe.json 與其成對的圖片（例：D:/AI/forge/webui/models/Lora/recipes，也就是 LoRA Manager 的 recipes 資料夾）。只讀取，絕不寫入。若同一筆紀錄也來自執行中的 LoRA Manager，以磁碟上找到的為準。",
     "settings.outputDir": "Unbake 寫入的資料夾",
     "settings.outputDir.help": "Unbake 新建紀錄的儲存位置。留空即可——那樣會存到 ComfyUI 的 user/unbake/records。刻意與上面的來源分開：寫入來源資料夾有破壞既有資料庫的風險。",
+    "settings.downloadRoot": "缺少模型的下載位置",
+    "settings.downloadRoot.help": "輸入範例: D:/AI/forge/webui — 填寫模型目錄樹的根，而不是 models 資料夾本身。留空則使用 ComfyUI 自己的資料夾。各類型的去向依照 ComfyUI 的設定，按上面的範例，checkpoints 進入 models/Stable-diffusion，LoRA 進入 models/Lora，embeddings 進入 embeddings。只能選擇 ComfyUI 已經讀取的資料夾；若沒有相符項目，會回到預設位置並在紀錄中說明。",
     "settings.civitaiKey": "Civitai API 金鑰",
     "settings.civitaiKey.help": "用於在 Civitai 查詢缺少模型的資訊與下載位置。留空也能正常瀏覽清單，只是無法查詢與下載缺少的模型。金鑰存放在本擴充資料夾之外（ComfyUI 的 user/ 底下），不會隨程式碼散布。",
     "settings.raindropToken": "Raindrop 權杖",

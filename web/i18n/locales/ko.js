@@ -390,6 +390,8 @@ export const messages = {
     "settings.sourceDirs.help": "여기에 있는 *.recipe.json과 짝이 되는 이미지를 읽습니다(예: D:/AI/forge/webui/models/Lora/recipes ——LoRA Manager의 recipes 폴더). 읽기만 하고 이 폴더에는 절대 쓰지 않습니다. 같은 레코드가 실행 중인 LoRA Manager에서도 올 경우, 디스크에서 찾은 쪽을 씁니다.",
     "settings.outputDir": "Unbake가 쓰는 폴더",
     "settings.outputDir.help": "Unbake가 새로 만든 레코드를 저장하는 곳입니다. 비워 두어도 됩니다——그러면 ComfyUI의 user/unbake/records에 만들어집니다. 위의 읽기 원본과는 일부러 분리했습니다(원본에 쓰면 기존 라이브러리를 망칠 여지가 생깁니다).",
+    "settings.downloadRoot": "없는 모델을 내려받을 곳",
+    "settings.downloadRoot.help": "입력 예: D:/AI/forge/webui — 모델 나무의 뿌리를 적습니다(models 폴더가 아닙니다). 비워 두면 ComfyUI 자체 폴더를 씁니다. 종류별 행선지는 ComfyUI 설정을 따르므로, 위 예라면 checkpoints는 models/Stable-diffusion, LoRA는 models/Lora, embeddings는 embeddings로 들어갑니다. 고를 수 있는 것은 ComfyUI가 이미 읽는 폴더뿐이며, 맞는 것이 없으면 기본값으로 돌아가고 기록에 남깁니다.",
     "settings.civitaiKey": "Civitai API 키",
     "settings.civitaiKey.help": "부족한 모델의 정보와 위치를 Civitai에서 조회할 때 씁니다. 비워 두어도 목록은 동작하며, 부족 모델 조회와 내려받기만 할 수 없습니다. 키는 이 확장 폴더 바깥(ComfyUI의 user/ 아래)에 저장되어 배포물에 들어가지 않습니다.",
     "settings.raindropToken": "Raindrop 토큰",

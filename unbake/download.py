@@ -41,11 +41,13 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
 
 #: 落として良い置き場。**ここに無い種別は受けない。**
+LOG = logging.getLogger(__name__)
+
 ALLOWED_KINDS = ("loras", "checkpoints", "embeddings", "vae", "controlnet",
                  "upscale_models", "diffusion_models", "hypernetworks")
 
@@ -128,8 +130,46 @@ def _build_opener() -> Any:
     return urllib.request.build_opener(_DropAuthOnHostChange).open
 
 
-def _model_dir(kind: str) -> str:
-    """ComfyUI が知っている置き場。**設定から受け取ったパスは使わない。**"""
+def _under(path: str, root: str) -> bool:
+    """`path` が `root` の下（または root そのもの）か。**大小と区切りを揃えて比べる。**"""
+    prefix = os.path.abspath(str(root).replace("\\", "/")).rstrip("/\\").lower()
+    full = os.path.abspath(str(path)).lower()
+    return full == prefix or full.startswith(prefix + os.sep.lower())
+
+
+def choose_model_dir(kind: str, paths: Sequence[str], root: str = "") -> Tuple[str, bool]:
+    """落とす先を、**ComfyUI が知っている置き場の中から**選ぶ。
+
+    Args:
+        kind: 置き場の種類（`ALLOWED_KINDS`）。
+        paths: `folder_paths.get_folder_paths(kind)` が返した並び。**先頭が既定。**
+        root: 利用者が選んだ根。空なら先頭をそのまま使う。
+
+    Returns:
+        `(選んだ置き場, 根に合うものが在ったか)`。
+
+    **並びの外は返さない。** 設定で受け取るのは「どれを選ぶか」であって
+    「どこへ書くか」ではない。任意のパスを書ける形にすると、
+    **ComfyUI が読まない場所へ落として「落ちているのに不足のまま」**になる
+    ——その罠は転送の成功として現れるので、気づくのに時間がかかる
+    （`tests/test_model_destination.py` が同じ罠を別の入口で見張っている）。
+
+    合う置き場が無ければ**先頭へ戻す**。ただし戻したことは第2の返り値で伝える
+    ——黙って戻すと「Forge へ入れたつもり」のまま気づけない。
+    """
+    if not paths:
+        raise DownloadError(f"ComfyUI has no folder configured for {kind}", "setup")
+    wanted = str(root or "").strip()
+    if not wanted:
+        return paths[0], True
+    for path in paths:
+        if _under(path, wanted):
+            return path, True
+    return paths[0], False
+
+
+def _model_dir(kind: str, root: str = "") -> str:
+    """ComfyUI が知っている置き場。**選べるのは、その並びの中だけ。**"""
     if kind not in ALLOWED_KINDS:
         raise DownloadError(f"unsupported kind: {kind}", "setup")
     try:
@@ -137,23 +177,29 @@ def _model_dir(kind: str) -> str:
     except ImportError as error:  # pragma: no cover - ComfyUI の外
         raise DownloadError("folder_paths is not available (not running inside ComfyUI)", "setup") from error
     paths = folder_paths.get_folder_paths(kind)
-    if not paths:
-        raise DownloadError(f"ComfyUI has no folder configured for {kind}", "setup")
-    return paths[0]
+    chosen, matched = choose_model_dir(kind, paths, root)
+    if not matched:
+        # **黙って既定へ落とさない。** 落ちた先が違えば、次に探すのは
+        # 「なぜ Forge に入っていないのか」で、ここを見に来る人は居ない。
+        LOG.warning(
+            "download_root %r has no %s folder that ComfyUI reads; using %r",
+            root, kind, chosen,
+        )
+    return chosen
 
 
-def safe_target(kind: str, filename: str) -> str:
+def safe_target(kind: str, filename: str, root: str = "") -> str:
     """置き先を組む。**API が返した名前を、そのまま繋がない。**"""
     base = os.path.basename(str(filename or "").replace("\\", "/")).strip()
     if not base or base in (".", ".."):
         raise DownloadError("the file name is empty", "setup")
     if os.path.splitext(base)[1].lower() not in ALLOWED_SUFFIXES:
         raise DownloadError(f"unsupported file type: {base}", "setup")
-    root = _model_dir(kind)
-    target = os.path.abspath(os.path.join(root, base))
+    base_dir = _model_dir(kind, root)
+    target = os.path.abspath(os.path.join(base_dir, base))
     # **必ず置き場の中であること。** basename を取ってあるので理屈では外れないが、
     # 理屈で守るとリンクや正規化の穴で破れる。実際のパスで確かめる。
-    if os.path.commonpath([os.path.abspath(root), target]) != os.path.abspath(root):
+    if os.path.commonpath([os.path.abspath(base_dir), target]) != os.path.abspath(base_dir):
         raise DownloadError("refusing to write outside the model folder", "setup")
     return target
 
@@ -169,6 +215,7 @@ def download_model(
     on_progress: Optional[Callable[[int, Optional[int]], None]] = None,
     opener: Optional[Callable[..., Any]] = None,
     should_cancel: Optional[Callable[[], bool]] = None,
+    root: str = "",
 ) -> Dict[str, Any]:
     """モデルを1つ落とす。
 
@@ -178,7 +225,7 @@ def download_model(
     Raises:
         DownloadError: 置き先が作れない・既にある・大きすぎる・hash が合わない
     """
-    target = safe_target(kind, filename)
+    target = safe_target(kind, filename, root)
     if os.path.exists(target):
         # **上書きしない。** 同名の別物へ差し替えると、
         # 「同じ名前なのに別の絵が出る」という一番厄介な壊れ方をする。

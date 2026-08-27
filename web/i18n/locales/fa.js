@@ -390,6 +390,8 @@ export const messages = {
     "settings.sourceDirs.help": "فایل‌های *.recipe.json اینجا و تصویر جفتشان را می‌خواند (مثال: D:/AI/forge/webui/models/Lora/recipes — همان پوشهٔ recipes در LoRA Manager). فقط خواندنی است: هرگز اینجا چیزی نوشته نمی‌شود. اگر همان رکورد از LoRA Manager در حال اجرا هم بیاید، آنچه روی دیسک پیدا شده مقدم است.",
     "settings.outputDir": "پوشه‌ای که Unbake در آن می‌نویسد",
     "settings.outputDir.help": "جایی که Unbake رکوردهای ساختهٔ خود را ذخیره می‌کند. می‌توانید خالی بگذارید؛ آنگاه user/unbake/records در ComfyUI به کار می‌رود. عمداً از پوشه‌های منبع بالا جدا است — نوشتن در آن‌ها می‌تواند کتابخانهٔ موجود را خراب کند.",
+    "settings.downloadRoot": "جای دانلود مدل‌های کم",
+    "settings.downloadRoot.help": "نمونه: D:/AI/forge/webui — ریشهٔ درخت مدل‌ها، نه خود پوشهٔ models. خالی بگذارید تا پوشه‌های خود ComfyUI به کار رود. هر نوع به جایی می‌رود که ComfyUI برای خواندنش تنظیم شده: با نمونهٔ بالا، checkpointها در models/Stable-diffusion، LoRAها در models/Lora و embeddingها در embeddings می‌نشینند. تنها پوشه‌هایی قابل انتخاب‌اند که ComfyUI از قبل می‌خواند؛ اگر هیچ‌کدام جور نبود به پیش‌فرض برمی‌گردد و در گزارش می‌گوید.",
     "settings.civitaiKey": "کلید API سایت Civitai",
     "settings.civitaiKey.help": "برای یافتن مدل‌های ناموجود در Civitai به کار می‌رود. فهرست بدون آن هم کار می‌کند؛ فقط نمی‌توانید مدل‌های ناموجود را استعلام و دریافت کنید. کلید بیرون از پوشهٔ این افزونه (زیر user/ در ComfyUI) ذخیره می‌شود و هرگز همراه کد منتشر نمی‌شود.",
     "settings.raindropToken": "توکن Raindrop",

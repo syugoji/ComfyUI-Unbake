@@ -58,7 +58,7 @@ class ResumeTest(unittest.TestCase):
         self.body = os.urandom(dl.CHUNK * 3 + 1234)
         self.sha = hashlib.sha256(self.body).hexdigest()
         self.target = os.path.join(self.dir, "model.safetensors")
-        patcher = mock.patch.object(dl, "safe_target", lambda kind, filename: self.target)
+        patcher = mock.patch.object(dl, "safe_target", lambda kind, filename, root="": self.target)
         patcher.start()
         self.addCleanup(patcher.stop)
 

@@ -385,6 +385,8 @@ export const messages = {
     "settings.sourceDirs.help": "ここに置いてある *.recipe.json と、その対の画像を読みます（例: D:/AI/forge/webui/models/Lora/recipes ——LoRA Manager の recipes フォルダがこれです）。読むだけで、このフォルダには一切書き込みません。同じレコードが稼働中の LoRA Manager からも来たときは、フォルダで見つかったほうを使います。",
     "settings.outputDir": "Unbake が書き込むフォルダ",
     "settings.outputDir.help": "Unbake が新しく作ったレコードの保存先です。空のままで構いません——その場合は ComfyUI の user/unbake/records に作られます。上の読み込み元とはわざと別にしてあります（読み込み元へ書くと、既存のライブラリを壊す余地ができるため）。",
+    "settings.downloadRoot": "不足モデルを落とす先",
+    "settings.downloadRoot.help": "入力例: D:/AI/forge/webui —— モデルの木の根を書きます（models フォルダではありません）。空なら ComfyUI の既定の置き場へ落とします。種類ごとの行き先は ComfyUI の設定に従うので、上の例なら checkpoints は models/Stable-diffusion、loras は models/Lora、embeddings は embeddings へ入ります。選べるのは ComfyUI が知っている置き場だけで、合うものが無ければ既定へ戻ります（戻したことは記録に出ます）。",
     "settings.civitaiKey": "Civitai の API キー",
     "settings.civitaiKey.help": "足りないモデルの情報や置き場所を Civitai から引くのに使います。空のままでも一覧は動きますが、不足モデルの照会とダウンロードはできません。鍵はこの拡張のフォルダの外（ComfyUI の user/ の下）に保存されるので、配布物には入りません。",
     "settings.raindropToken": "Raindrop のトークン",

@@ -430,3 +430,26 @@ test('助詞で変わる文は断片ではなく文ごと分かれている', ()
         assert.ok(!CATALOGS[locale]['core.recipeWorkflowBuilder.57'], `${locale}: 断片版が残っている`);
     }
 });
+
+// --- 打ち込む物の説明には、打ち込む例を載せる（2026-08-28 利用者の指示）------
+
+test('落とす先の説明には、具体的な入力例が入っている', () => {
+    /*
+     * **「モデルの木の根を書く」だけでは、何を書けばよいか判らない。**
+     * 打ち込む欄の説明なので、**そのまま貼れる形**を出す。
+     * 例が消えると「自由入力なのに何を入れるか分からない欄」に戻るので、
+     * 訳し直した日に落ちないようここで縛る。
+     */
+    for (const locale of Object.keys(LOCALE_META || {})) {
+        setLocale(locale);
+        const help = t('settings.downloadRoot.help');
+        assert.notEqual(help, 'settings.downloadRoot.help', `${locale}: 訳が無い`);
+        assert.ok(help.includes('D:/AI/forge/webui'),
+            `${locale}: 具体的な入力例が入っていない`);
+        // **どの種類がどこへ入るかも書く。** 種類ごとに置き場の形が違う
+        // （`embeddings` だけ `models/` の下に無い）ので、例が1つだと誤解される。
+        assert.ok(help.includes('embeddings'),
+            `${locale}: 種類ごとの行き先に触れていない`);
+    }
+    setLocale('ja');
+});

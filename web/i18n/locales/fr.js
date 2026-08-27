@@ -390,6 +390,8 @@ export const messages = {
     "settings.sourceDirs.help": "Lit les *.recipe.json qui s'y trouvent et leurs images associées (ex. D:/AI/forge/webui/models/Lora/recipes, le dossier recipes de LoRA Manager). En lecture seule : rien n'y est jamais écrit. Si le même enregistrement arrive aussi d'un LoRA Manager en cours d'exécution, celui trouvé sur le disque l'emporte.",
     "settings.outputDir": "Dossier où Unbake écrit",
     "settings.outputDir.help": "Où Unbake enregistre ce qu'il crée. Vous pouvez laisser vide : il utilisera user/unbake/records de ComfyUI. C'est volontairement séparé des dossiers sources — y écrire risquerait d'abîmer une bibliothèque existante.",
+    "settings.downloadRoot": "Ou sont telecharges les modeles manquants",
+    "settings.downloadRoot.help": "Exemple : D:/AI/forge/webui — la racine de l'arborescence des modeles, pas le dossier models. Laissez vide pour utiliser les dossiers de ComfyUI. Chaque type va la ou ComfyUI est configure pour le lire : avec l'exemple ci-dessus, les checkpoints vont dans models/Stable-diffusion, les LoRA dans models/Lora et les embeddings dans embeddings. Seuls les dossiers deja lus par ComfyUI peuvent etre choisis ; si aucun ne correspond, il revient au dossier par defaut et le signale dans le journal.",
     "settings.civitaiKey": "Clé API Civitai",
     "settings.civitaiKey.help": "Sert à retrouver sur Civitai les modèles manquants. La liste fonctionne sans ; seules la recherche et le téléchargement des modèles manquants deviennent impossibles. La clé est stockée hors du dossier de l'extension (sous user/ de ComfyUI), elle n'accompagne donc jamais le code.",
     "settings.raindropToken": "Jeton Raindrop",

@@ -423,6 +423,9 @@ def start_download(version_id: str, *, kind: Optional[str] = None,
             expected_bytes=resolved.get("bytes"),
             api_key=api_key,
             on_progress=progress,
+            # **落とす先の根を渡す**（2026-08-28）。選べるのは ComfyUI が
+            # 知っている置き場の中だけで、合う物が無ければ既定へ戻る。
+            root=str(get_settings().get("download_root", "") or ""),
             # **自分の実体を見る。** `_download` は最後に別の辞書へ差し替わるので、
             # そちらを見ると中断の印を取り落とす。
             should_cancel=lambda: bool(mine.get("canceled")),

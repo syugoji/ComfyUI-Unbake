@@ -390,6 +390,8 @@ export const messages = {
     "settings.sourceDirs.help": "Lê os *.recipe.json daqui e suas imagens correspondentes (ex.: D:/AI/forge/webui/models/Lora/recipes, a pasta recipes do LoRA Manager). Somente leitura: nada é escrito aqui. Se o mesmo registro também vier de um LoRA Manager em execução, vale o encontrado no disco.",
     "settings.outputDir": "Pasta onde o Unbake grava",
     "settings.outputDir.help": "Onde o Unbake salva os registros que cria. Pode deixar vazio: usará user/unbake/records do ComfyUI. É separado de propósito das pastas de origem — escrever nelas poderia danificar uma biblioteca existente.",
+    "settings.downloadRoot": "Onde os modelos ausentes sao baixados",
+    "settings.downloadRoot.help": "Exemplo: D:/AI/forge/webui — a raiz da arvore de modelos, nao a pasta models. Deixe vazio para usar as pastas do ComfyUI. Cada tipo vai para onde o ComfyUI esta configurado para ler: com o exemplo acima, checkpoints vao para models/Stable-diffusion, LoRAs para models/Lora e embeddings para embeddings. So e possivel escolher pastas que o ComfyUI ja le; se nenhuma corresponder, volta para a padrao e avisa no registro.",
     "settings.civitaiKey": "Chave de API do Civitai",
     "settings.civitaiKey.help": "Serve para consultar no Civitai os modelos que faltam. A lista funciona sem ela; você apenas não consegue consultar nem baixar os modelos ausentes. A chave fica fora da pasta desta extensão (em user/ do ComfyUI), então nunca vai junto com o código.",
     "settings.raindropToken": "Token do Raindrop",

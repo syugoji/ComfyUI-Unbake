@@ -390,6 +390,8 @@ export const messages = {
     "settings.sourceDirs.help": "Читает лежащие здесь *.recipe.json и парные к ним изображения (например, D:/AI/forge/webui/models/Lora/recipes — это папка recipes у LoRA Manager). Только чтение: сюда никогда ничего не пишется. Если та же запись приходит и от запущенного LoRA Manager, побеждает найденная на диске.",
     "settings.outputDir": "Папка, в которую пишет Unbake",
     "settings.outputDir.help": "Куда Unbake сохраняет созданные им записи. Можно оставить пустым — тогда используется user/unbake/records у ComfyUI. Это намеренно отделено от папок-источников: запись в них могла бы повредить существующую библиотеку.",
+    "settings.downloadRoot": "Куда скачиваются недостающие модели",
+    "settings.downloadRoot.help": "Пример: D:/AI/forge/webui — корень дерева моделей, а не сама папка models. Оставьте пустым, чтобы использовать папки ComfyUI. Каждый тип попадает туда, откуда его читает ComfyUI: с примером выше checkpoints идут в models/Stable-diffusion, LoRA в models/Lora, а embeddings в embeddings. Выбрать можно только те папки, которые ComfyUI уже читает; если совпадений нет, он вернётся к папке по умолчанию и сообщит об этом в журнале.",
     "settings.civitaiKey": "Ключ API Civitai",
     "settings.civitaiKey.help": "Нужен, чтобы искать недостающие модели на Civitai. Список работает и без него — просто нельзя запросить и скачать недостающие модели. Ключ хранится вне папки расширения (в user/ у ComfyUI), поэтому никогда не попадает в код.",
     "settings.raindropToken": "Токен Raindrop",
