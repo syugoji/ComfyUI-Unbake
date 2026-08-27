@@ -1338,6 +1338,30 @@ export function createUnbakePanel(el, {
     chips.append(downloadableChip);
 
     /**
+     * **ノードが要る記録だけを見る**（2026-08-28 利用者の指示）。
+     *
+     * モデルの ⤓ と別に持つ——**打つ手が違う**ので、混ぜると
+     * 「落としたのに直らない」を探すことになる。
+     * 形はお気に入り・⤓ と同じ（入れたときだけ絞る）。
+     */
+    let needsNodeOnly = display?.needsNodeOnly === true || display?.needs_node_only === true;
+    const needsNodeChip = element('button', {
+        class: 'unbake-chip unbake-chip-needs-node', type: 'button',
+        'data-on': 'false', title: t('filter.needsNode'),
+    });
+    needsNodeChip.addEventListener('click', () => {
+        needsNodeOnly = !needsNodeOnly;
+        persistFilters();
+        render();
+    });
+    chips.append(needsNodeChip);
+
+    /** ノードが手元に無いか。**その場で測った物だけ**（名前は環境ごとに違う）。 */
+    function needsNode(record) {
+        return (record?.missing?.nodes || []).length > 0;
+    }
+
+    /**
      * 落とせば試せるか。**版IDが1つでも在れば落とせる。**
      *
      * 判定そのものは使わない——`approximate` でも足りない素材は在りうるし、
@@ -1398,6 +1422,7 @@ export function createUnbakePanel(el, {
             hidden_verdicts: [...hidden],
             favorites_only: favoritesOnly,
             downloadable_only: downloadableOnly,
+            needs_node_only: needsNodeOnly,
         })?.catch?.(() => appendLog(t('list.view.notSaved')));
     }
 
@@ -1515,12 +1540,43 @@ export function createUnbakePanel(el, {
     // **走っていない間は出さない。** 出しておくと、空の欄が場所を取る。
     downloadPanel.style.display = 'none';
 
+    /*
+     * **足りない物を埋める口**（2026-08-28 利用者の指示）。
+     *
+     * モデル・ノード・両方の3つを並べるが、**当てはまる物が無い口は出さない**
+     * ——利用者の指示「UIが窮屈になるため、圧迫感を与えないように」への答えは、
+     * **小さくすることではなく、出さないこと**である（この面が
+     * 「走っていない間は出さない。出しておくと空の欄が場所を取る」で
+     * 既に採っている決めごと）。実際、全部揃っている環境では1つも出ない。
+     *
+     * **選んでいる分と全部の切り替えは、既にある形に合わせる**
+     * ——`downloadButtonText()` が選択の有無で語を変えている。別の仕組みを作らない。
+     */
+    const nodeButton = element('button', {
+        class: 'unbake-download-missing unbake-install-nodes', type: 'button',
+        text: t('nodes.missing.all'), title: t('nodes.missing.help'),
+    });
+    nodeButton.addEventListener('click', () => offerNodeInstall(chosenRecords().list));
+    const bothButton = element('button', {
+        class: 'unbake-download-missing unbake-install-both', type: 'button',
+        text: t('missing.both.all'), title: t('missing.both.help'),
+    });
+    bothButton.addEventListener('click', async () => {
+        // **順に頼む。** ノードは Manager の行列へ、モデルはこちらの行列へ入る
+        // ——別の相手なので、まとめて1つの進み具合にはできない。
+        await offerNodeInstall(chosenRecords().list);
+        await downloadMissing();
+    });
+
     const selectionBar = element('div', { class: 'unbake-selection' }, [
         selectionCount, selectAllButton, clearSelectionButton,
         ...(downloadIo ? [downloadButton] : []),
+        ...(nodePackIo ? [nodeButton] : []),
+        ...(downloadIo && nodePackIo ? [bothButton] : []),
         ...(batchButton ? [batchButton] : []),
         ...(batchStopButton ? [batchStopButton] : []),
     ]);
+
 
     const controls = element('div', { class: 'unbake-controls' }, [search, chips, viewControls]);
     search.addEventListener('input', () => { query = String(search.value || '').toLowerCase(); render(); });
@@ -2266,6 +2322,7 @@ export function createUnbakePanel(el, {
         if (hidden.has(record?.verdict)) return false;
         if (favoritesOnly && !isFavorite(record)) return false;
         if (downloadableOnly && !isDownloadable(record)) return false;
+        if (needsNodeOnly && !needsNode(record)) return false;
         if (!query) return true;
         const hay = [
             // **両方の名前で引ける。** 出す絵の名前（`civitai_<id>`）でも、
@@ -3161,8 +3218,9 @@ export function createUnbakePanel(el, {
      * `numpy` / `opencv-python-headless` / `transformers` / git ビルドを引く側だった。
      * **渡すのは「何が足りないか」だけ**にして、入れる責任は Manager 側に残す。
      */
-    async function offerNodeInstall(record) {
-        const nodes = record?.missing?.nodes || [];
+    async function offerNodeInstall(records) {
+        const list = Array.isArray(records) ? records : [records];
+        const nodes = [...new Set(list.flatMap(item => item?.missing?.nodes || []))];
         if (!nodes.length || !nodePackIo) return null;
         let manager = null;
         try { manager = await nodePackIo.detect(); } catch { manager = null; }
@@ -4991,24 +5049,21 @@ export function createUnbakePanel(el, {
         }
         const missingNodes = record?.missing?.nodes || [];
         if (missingNodes.length > 0) {
-            const mark = element(nodePackIo ? 'button' : 'span', {
+            /*
+             * **押せる口にしない**（2026-08-28 利用者の報告「カーソルを載せると
+             * 項目が変化するためクリックできません」）。
+             *
+             * この印は `.unbake-tile-head` に居て、**タイルに触れると
+             * `opacity: 0` になる**（操作の列と場所を分け合っているため）。
+             * つまり**狙いに行った瞬間に消える**——押せる形にしてはいけない。
+             *
+             * 入れる口は**帯の側**に置く（⊞ で絞って、まとめて頼む）。
+             */
+            marks.push(element('span', {
                 class: 'unbake-tile-mark', 'data-mark': 'needs-node',
-                ...(nodePackIo ? { type: 'button' } : {}),
                 // **名前は吹き出しで言う。** 印は場所を取らない形に留める。
-                text: '⊞',
-                title: nodePackIo
-                    ? t('tile.needsNode.install', { list: missingNodes.join('、') })
-                    : t('tile.needsNode', { list: missingNodes.join('、') }),
-            });
-            if (nodePackIo) {
-                // **印を入口にする**（2026-08-28 利用者の指示）。履歴の1行に置くと
-                // 流れて消えるので、**印そのものから一手で入れられる**ようにする。
-                mark.addEventListener('click', (event) => {
-                    event?.stopPropagation?.();
-                    offerNodeInstall(record);
-                });
-            }
-            marks.push(mark);
+                text: '⊞', title: t('tile.needsNode', { list: missingNodes.join('、') }),
+            }));
         }
         // **判定を字で出す。ただし上の段には出さない**（2026-08-22 利用者の選択）。
         //
@@ -5183,8 +5238,25 @@ export function createUnbakePanel(el, {
          * 添える。★（在る／気に入っている）と対になる形にして、
          * 「これは手元に無い」と一目で判るようにする。
          */
+        /*
+         * **当てはまらない口は出さない**（2026-08-28 利用者の指示
+         * 「圧迫感を与えないように」）。**小さくするのではなく、出さない。**
+         * 全部揃っている環境では1つも出ないので、帯は元の長さのまま。
+         */
+        const canModel = records.filter(isDownloadable).length;
+        const canNode = records.filter(needsNode).length;
+        downloadButton.style.display = canModel ? '' : 'none';
+        nodeButton.style.display = canNode ? '' : 'none';
+        // **両方の口は、両方在るときだけ。** 片方しか無いなら上の2つで足りる。
+        bothButton.style.display = (canModel && canNode) ? '' : 'none';
+        // **選んだ分か全部かは、既に在る形に合わせる**（`downloadButtonText`）。
+        nodeButton.textContent = selected.size === 0 ? t('nodes.missing.all') : t('nodes.missing');
+        bothButton.textContent = selected.size === 0 ? t('missing.both.all') : t('missing.both');
+
         downloadableChip.textContent = '⤓ ' + records.filter(isDownloadable).length;
         downloadableChip.setAttribute('data-on', downloadableOnly ? 'true' : 'false');
+        needsNodeChip.textContent = '⊞ ' + records.filter(needsNode).length;
+        needsNodeChip.setAttribute('data-on', needsNodeOnly ? 'true' : 'false');
         // **範囲が変わったら語も変える。** 未選択なら表示中の全件が対象になる
         // ——同じ語のままだと、範囲が違うことに気づけない。
         if (!armedDownload) downloadButton.textContent = downloadButtonText();

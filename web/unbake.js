@@ -234,6 +234,11 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
                 showCommercialOk: settings?.show_commercial_ok !== false,
             confirmBeforeDelete: settings?.confirm_before_delete !== false,
             showCompare: settings?.show_compare !== false,
+            // **保存しているのに戻していなかった**（2026-08-28 に気づいた）。
+            // `persistFilters` は `downloadable_only` を書いているのに、
+            // ここで読み出していないので**開き直すと絞り込みが外れる**。
+            downloadableOnly: settings?.downloadable_only === true,
+            needsNodeOnly: settings?.needs_node_only === true,
         };
     }
 

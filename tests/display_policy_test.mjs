@@ -521,6 +521,9 @@ const APPLY_EXEMPT = new Map([
     ['sidebarWidth', '同上。掴み手で変えた値がそのまま保存される'],
     ['hiddenVerdicts', '面の中の絞り込み帯が持ち、押した時点で効く'],
     ['favoritesOnly', '同上（★の絞り込み）'],
+    // **上の2つと同じ種類。** 面の中の絞り込み帯が持ち、押した時点で効く。
+    ['downloadableOnly', '同上（⤓ の絞り込み）'],
+    ['needsNodeOnly', '同上（⊞ の絞り込み・2026-08-28）'],
     ['disableDarkReader', '文書の `<meta>` に効く錠。面ではなく `unbake.js` が保存時に当て直す'],
 ]);
 

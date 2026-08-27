@@ -773,3 +773,21 @@ test('印の吹き出しに、無いノードの名前が入る', () => {
         '名前が吹き出しに入っていない');
     setLocale('en');
 });
+
+test('⊞ の絞り込みで、ノードが要るものだけになる', () => {
+    // **押した時点で効く**（★・⤓ と同じ形）。数は絞っても見え続ける。
+    setLocale('en');
+    const panel = mount([
+        { ...rec('1'), missing: { models: [], resources: [], nodes: ['smZ CLIPTextEncode'] } },
+        { ...rec('2'), missing: { models: [], resources: [], nodes: [] } },
+    ], { listView: 'tiles' });
+    assert.equal(tilesOf(panel).length, 2, '前提が崩れている');
+    const chip = panel.root.find(node => String(node.className || '').includes('unbake-chip-needs-node'));
+    assert.ok(chip, '⊞ の絞り込みが無い');
+    assert.match(String(chip.textContent || ''), /1/, '件数が出ていない');
+    chip.dispatch('click', {});
+    assert.equal(tilesOf(panel).length, 1, '絞り込みが効いていない');
+    assert.equal(chip.getAttribute('data-on'), 'true', '入っている印が出ていない');
+    chip.dispatch('click', {});
+    assert.equal(tilesOf(panel).length, 2, '切っても戻らない');
+});

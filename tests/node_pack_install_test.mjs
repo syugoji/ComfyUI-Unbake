@@ -200,11 +200,14 @@ test('宿主が口を渡しており、輸入も通っている', async () => {
     assert.match(source, /nodePackIo:/, '面へ口を渡していない');
 });
 
-test('⊞ を押すと、実際に Manager を探しに行く', async () => {
+test('帯の「不足ノードを入れる」を押すと、Manager を探しに行く', async () => {
     /*
-     * **文字列で見張らない。** 一度 `offerNodeInstall(record)` が本文に在るかで
-     * 見ていたが、**関数の定義そのものが同じ字を含む**ので、呼び出しを潰しても
-     * 緑のままだった（変異で判明）。**押して、外へ出たかを見る。**
+     * **入口は帯の側**（2026-08-28 利用者の報告）。タイルの ⊞ は
+     * `.unbake-tile-head` に居て**触れると消える**ので、押せる口にはできない
+     * ——狙いに行った瞬間に `opacity: 0` になる。
+     *
+     * **文字列で見張らない。** 一度は本文に呼び出しが在るかで見ていたが、
+     * **関数の定義そのものが同じ字を含む**ので潰しても緑だった（変異で判明）。
      */
     const { createUnbakePanel } = await import('../web/panel/panel.js');
     const { fakeDocument } = await import('./fake_dom.mjs');
@@ -222,10 +225,38 @@ test('⊞ を押すと、実際に Manager を探しに行く', async () => {
         id: '1', libraryId: '1', title: 'T', verdict: 'approximate',
         missing: { models: [], resources: [], nodes: ['smZ CLIPTextEncode'] },
     }]);
-    const mark = panel.root.allByClass('unbake-tile-mark')
-        .find(node => node.getAttribute('data-mark') === 'needs-node');
-    assert.ok(mark, '⊞ が出ていない');
-    mark.dispatch('click', { stopPropagation() {} });
+    const button = panel.root.find(node => String(node.className || '').includes('unbake-install-nodes'));
+    assert.ok(button, '帯に「不足ノードを入れる」が無い');
+    assert.notEqual(button.style?.display, 'none', 'ノードが要るのに出ていない');
+    button.dispatch('click', {});
     for (let i = 0; i < 8; i += 1) await new Promise(r => setTimeout(r, 0));
     assert.deepEqual(asked, ['detect'], '押しても Manager を探しに行っていない');
+});
+
+test('ノードが揃っていれば、その口は出さない', async () => {
+    // **圧迫感への答えは「小さくする」ではなく「出さない」**（利用者の指示）。
+    const { createUnbakePanel } = await import('../web/panel/panel.js');
+    const { fakeDocument } = await import('./fake_dom.mjs');
+    const doc = fakeDocument();
+    const panel = createUnbakePanel(doc.createElement('div'), {
+        documentRef: doc, display: { listView: 'tiles' },
+        nodePackIo: { detect: async () => null, packsFor: async () => [], install: async () => ({ queued: [], failed: [] }) },
+    });
+    panel.setRecords([{
+        id: '1', libraryId: '1', title: 'T', verdict: 'reproducible',
+        missing: { models: [], resources: [], nodes: [] },
+    }]);
+    const button = panel.root.find(node => String(node.className || '').includes('unbake-install-nodes'));
+    assert.ok(button, '口そのものが無い（描き直しで戻せなくなる）');
+    assert.equal(button.style?.display, 'none', '当てはまらないのに場所を取っている');
+});
+
+test('タイルの ⊞ は押せる口にしない（触れると消えるため）', async () => {
+    const source = await (await import('node:fs/promises'))
+        .readFile(new URL('../web/panel/panel.js', import.meta.url), 'utf8');
+    const at = source.indexOf("'data-mark': 'needs-node'");
+    assert.notEqual(at, -1, '印が見つからない');
+    const around = source.slice(at - 700, at + 400);
+    assert.doesNotMatch(around, /addEventListener\('click'/,
+        'タイルの印に押し口を戻している（触れると消えるので届かない）');
 });

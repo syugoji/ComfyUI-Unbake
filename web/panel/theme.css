@@ -614,9 +614,13 @@
 
    **当初は「負の値にすると切れる」と書いていたが、それは測らずに書いた嘘だった。**
    巻いていないときの見た目は `0` と `-14px` で同一（どちらも上の操作列から 8px）。 */
+/* **帯は詰め込まない**（2026-08-28 利用者の指示「圧迫感を与えないように」）。
+   当てはまらない口は JS 側で出さないので、ここは**入り切らないときに折り返す**
+   ことだけを引き受ける——横へ押し出して切れるより、1段増える方がよい。 */
 .unbake-selection {
     display: flex;
     flex-wrap: wrap;
+    row-gap: 6px;
     align-items: center;
     gap: 6px;
     margin-top: 8px;
@@ -1049,6 +1053,15 @@
 }
 
 .unbake-tile-mark[data-mark="favorite"] { color: var(--unbake-warn); }
+
+/* **ノードの絞り込みは青の帯**（2026-08-28 利用者の指示）。
+   ⤓（モデル）と並ぶので、**色でも形でも別**にする——形だけだと
+   小さい印が2つ並んで見分けに時間がかかり、色だけだと白黒で潰れる。 */
+.unbake-chip-needs-node[data-on="true"] {
+    border-color: var(--unbake-accent);
+    background: var(--unbake-accent-dim);
+    color: var(--unbake-accent);
+}
 
 /* **「何を入れれば直るか」の印**（2026-08-28 利用者の指示）。
    **形で分ける**——⤓ はモデル（落とす）、⊞ はノード（部品を足す）。
