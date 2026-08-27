@@ -713,3 +713,63 @@ test('選ぶ口を押しても、タイルへ伝わって裏返らない', async
     await boxes[0].dispatch('click', { stopPropagation: () => { bubbled += 1; } });
     assert.equal(bubbled, 1, '選ぶ口が伝播を止めていない');
 });
+
+// --- 「何を入れれば直るか」の印（2026-08-28 利用者の指示）-------------------
+
+const marksOf = (panel) => panel.root.allByClass('unbake-tile-mark')
+    .map(n => `${n.getAttribute('data-mark')}:${n.textContent}`);
+
+test('ノードが手元に無いタイルには ⊞ が出る', () => {
+    /*
+     * **名前は持ち回らない。** 公開しているので、どのノードが無いかは
+     * **環境ごとに違う**——`object_info` と突き合わせてその場で測った物を
+     * `missing.nodes` で受け取り、在れば印を出すだけにする。
+     */
+    setLocale('en');
+    const panel = mount([{ ...rec('1'), missing: { models: [], resources: [], nodes: ['smZ CLIPTextEncode'] } }],
+        { listView: 'tiles' });
+    assert.ok(marksOf(panel).includes('needs-node:⊞'), `⊞ が出ていない: ${marksOf(panel).join(' ')}`);
+});
+
+test('ノードが揃っていれば ⊞ は出ない', () => {
+    setLocale('en');
+    const panel = mount([{ ...rec('1'), missing: { models: [], resources: [], nodes: [] } }],
+        { listView: 'tiles' });
+    assert.ok(!marksOf(panel).some(m => m.startsWith('needs-node')),
+        `揃っているのに ⊞ が出ている: ${marksOf(panel).join(' ')}`);
+});
+
+test('モデルの印とノードの印は、別の形にする', () => {
+    /*
+     * **打つ手が違うので、同じ印にしない**（利用者の指示）。同じだと
+     * 「⤓ が付いているのに落としても直らない」が起きる。
+     * **色では分けない**——白黒の画面や配色を変えた人に届かない。
+     */
+    setLocale('en');
+    const panel = mount([{
+        ...rec('1'),
+        missing: {
+            models: [{ name: 'x.safetensors', versionId: 123 }],
+            resources: [], nodes: ['smZ CLIPTextEncode'],
+        },
+    }], { listView: 'tiles' });
+    const marks = marksOf(panel);
+    const model = marks.find(m => m.startsWith('needs-model:'));
+    const node = marks.find(m => m.startsWith('needs-node:'));
+    assert.ok(model, `モデルの印が出ていない: ${marks.join(' ')}`);
+    assert.ok(node, `ノードの印が出ていない: ${marks.join(' ')}`);
+    assert.notEqual(model.split(':')[1], node.split(':')[1], '同じ字を使っている（見分けられない）');
+});
+
+test('印の吹き出しに、無いノードの名前が入る', () => {
+    // **印だけでは何を入れればよいか判らない。** 名前は吹き出しで言う。
+    setLocale('ja');
+    const panel = mount([{ ...rec('1'), missing: { models: [], resources: [], nodes: ['smZ CLIPTextEncode'] } }],
+        { listView: 'tiles' });
+    const node = panel.root.allByClass('unbake-tile-mark')
+        .find(n => n.getAttribute('data-mark') === 'needs-node');
+    assert.ok(node, 'ノードの印が無い');
+    assert.match(String(node.getAttribute('title') || ''), /smZ CLIPTextEncode/,
+        '名前が吹き出しに入っていない');
+    setLocale('en');
+});

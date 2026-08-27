@@ -447,6 +447,8 @@ export function createUnbakePanel(el, {
      * 手元の索引は開いたときの姿なので、直前に出た絵が入っていない。
      */
     loadFreshOutputs = null,
+    /** 足りないノードパックを Manager に入れてもらう口（2026-08-28）。 */
+    nodePackIo = null,
     /**
      * VRAM とモデルの大きさを実測する口（2026-08-26 実機）。
      * 無ければ**黙る**——測れないことを「入らない」と読まない。
@@ -3151,6 +3153,56 @@ export function createUnbakePanel(el, {
      * （足りないモデルを別のものへ差し替える、解像度だけ変える）。
      * 投げるのは「再現する」と Sweep の役目。
      */
+    /**
+     * **足りないノードパックを、Manager に入れてもらう**（2026-08-28 利用者の指示）。
+     *
+     * **こちらは pip を触らない。** 版の解決も衝突の検出も戻しも Manager が
+     * 持っている——実測でも、この面が要求するパックは
+     * `numpy` / `opencv-python-headless` / `transformers` / git ビルドを引く側だった。
+     * **渡すのは「何が足りないか」だけ**にして、入れる責任は Manager 側に残す。
+     */
+    async function offerNodeInstall(record) {
+        const nodes = record?.missing?.nodes || [];
+        if (!nodes.length || !nodePackIo) return null;
+        let manager = null;
+        try { manager = await nodePackIo.detect(); } catch { manager = null; }
+        if (!manager) { appendLog(t('nodes.noManager')); showToast(t('nodes.noManager')); return null; }
+        let packs = [];
+        try {
+            packs = await nodePackIo.packsFor(manager.api, nodes);
+        } catch (error) {
+            appendLog(t('nodes.mappingFailed', { detail: error?.message || String(error) }));
+            return null;
+        }
+        if (!packs.length) {
+            // **推し量らない。** 地図に無いものは名前を出さずに、そう言う。
+            appendLog(t('nodes.unknownPack', { list: nodes.join('、') }));
+            showToast(t('nodes.unknownPack', { list: nodes.join('、') }));
+            return null;
+        }
+        return askThen({
+            title: t('nodes.install.title', { count: packs.length }),
+            confirmLabel: t('nodes.install.go'),
+            destructive: false,
+            files: packs.map(pack => ({ name: pack.title, note: pack.nodes.join('、'), bytes: null })),
+            // **入れるのは Manager だと書く。** 誰が何をするのかを画面で言う。
+            warnings: [t('nodes.install.warning')],
+            onConfirm: async () => {
+                const result = await nodePackIo.install(manager.api, packs);
+                if (result.queued.length) {
+                    appendLog(t('nodes.install.queued', { list: result.queued.join('、') }));
+                    showToast(t('nodes.install.restart'), { sticky: true });
+                }
+                return {
+                    ok: result.failed.length === 0,
+                    removed: result.queued,
+                    failed: result.failed.map(item => `${item.id}（${item.detail}）`),
+                };
+            },
+            onReturn: () => {},
+        });
+    }
+
     async function openRecordInComfy(record) {
         if (!openInComfy) { appendLog(t('openInComfy.unavailable')); return null; }
         let target = record;
@@ -4914,6 +4966,49 @@ export function createUnbakePanel(el, {
             marks.push(element('span', {
                 class: 'unbake-tile-mark', 'data-mark': 'favorite', text: '★', title: t('tile.favorite'),
             }));
+        }
+        /*
+         * **「何を入れれば直るか」を印で出す**（2026-08-28 利用者の指示）。
+         *
+         * **モデルとノードは別の印にする。** 打つ手が違うので、同じ印だと
+         * 「⤓ が付いているのに落としても直らない」が起きる:
+         *
+         *     ⤓ … モデルが手元に無い（落とせば揃う）
+         *     ⊞ … ノードが手元に無い（パックを入れれば揃う）
+         *
+         * **色では分けない。** 配色を変えた人や白黒の画面で読めなくなる
+         * ——この面の他の印（❖ ★）と同じ決めごと。
+         *
+         * **ノードの名前は持ち回らない。** 公開しているので、どのノードが
+         * 無いかは**環境ごとに違う**——`object_info` と突き合わせて
+         * その場で測った物だけを `missing.nodes` で受け取る。
+         */
+        if (isDownloadable(record)) {
+            marks.push(element('span', {
+                class: 'unbake-tile-mark', 'data-mark': 'needs-model',
+                text: '⤓', title: t('tile.needsModel'),
+            }));
+        }
+        const missingNodes = record?.missing?.nodes || [];
+        if (missingNodes.length > 0) {
+            const mark = element(nodePackIo ? 'button' : 'span', {
+                class: 'unbake-tile-mark', 'data-mark': 'needs-node',
+                ...(nodePackIo ? { type: 'button' } : {}),
+                // **名前は吹き出しで言う。** 印は場所を取らない形に留める。
+                text: '⊞',
+                title: nodePackIo
+                    ? t('tile.needsNode.install', { list: missingNodes.join('、') })
+                    : t('tile.needsNode', { list: missingNodes.join('、') }),
+            });
+            if (nodePackIo) {
+                // **印を入口にする**（2026-08-28 利用者の指示）。履歴の1行に置くと
+                // 流れて消えるので、**印そのものから一手で入れられる**ようにする。
+                mark.addEventListener('click', (event) => {
+                    event?.stopPropagation?.();
+                    offerNodeInstall(record);
+                });
+            }
+            marks.push(mark);
         }
         // **判定を字で出す。ただし上の段には出さない**（2026-08-22 利用者の選択）。
         //

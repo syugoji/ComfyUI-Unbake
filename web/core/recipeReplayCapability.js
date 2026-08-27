@@ -373,7 +373,7 @@ function result(level, reasons, built = null, audit = null, missing = emptyMissi
  * 壊れるので、判定に使う事実は最初から構造で持つ。
  */
 function emptyMissing() {
-    return { models: [], resources: [] };
+    return { models: [], resources: [], nodes: [] };
 }
 
 /** ComfyUI のウィジェット名から、そのファイルが置かれるフォルダを引く。 */
@@ -898,6 +898,14 @@ export async function analyzeRecipeReplayCapability(
             resources: [...new Map(
                 missingResources.map(item => [`${item.type}:${item.name}`, item])
             ).values()],
+            /*
+             * **手元に無いノード**（2026-08-28 利用者の指示）。
+             *
+             * 名前は**環境ごとに違う**（公開しているので、こちらの手元に在る物と
+             * 相手の手元に在る物は一致しない）。だから表に持たず、
+             * **`object_info` と突き合わせてその場で測った物だけ**を載せる。
+             */
+            nodes: [...new Set(built?.missingNodes || [])],
         };
         if (inspected.fatal.length > 0) {
             // **遮断の理由を決める前に、その素材が本当に配布されているかを確かめる。**

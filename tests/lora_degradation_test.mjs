@@ -381,3 +381,42 @@ test('本当に無いものは、今までどおり不足に並ぶ', async () =>
     assert.deepEqual((capability.missing?.resources || []).map(r => r.name),
         ['definitely_not_here_xyz.safetensors'], '本当に無いものまで在ることにしている');
 });
+
+// --- 手元に無いノードを、名前ではなく「その場の測定」で返す（2026-08-28）------
+
+test('埋め込みグラフに未導入のノードが在れば、missing.nodes に出る', async () => {
+    /*
+     * **名前を表に持たない。** この道具は公開しているので、
+     * **どのノードが無いかは環境ごとに違う**——利用者の指摘。
+     * だから `object_info` と突き合わせて**その場で測った物だけ**を返す。
+     *
+     * ここで見るのは「文から切り出せているか」ではなく
+     * **構造で持ち回れているか**。文は訳が1つ増えた日に形が変わる。
+     */
+    setLocale('ja');
+    const capability = await analyzeRecipeReplayCapability(
+        baseRecipe({
+            comfy_prompt: {
+                1: { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: 'base.safetensors' } },
+                2: { class_type: 'smZ CLIPTextEncode', inputs: { text: 'a girl', clip: ['1', 1] } },
+                3: { class_type: 'SaveImage', inputs: { images: ['2', 0], filename_prefix: 'x' } },
+            },
+        }),
+        { objectInfo: OBJECT_INFO, knownModelCatalog: { models: [], installed: [], unavailable: 'test' },
+          probeAvailability: false },
+    );
+    assert.deepEqual(capability.missing?.nodes, ['smZ CLIPTextEncode'],
+        `手元に無いノードを返していない: ${JSON.stringify(capability.missing)}`);
+});
+
+test('ノードが揃っていれば missing.nodes は空', async () => {
+    // **検出器の生死。** 常に何か返す作りだと、印が全件に出る。
+    setLocale('ja');
+    const capability = await analyzeRecipeReplayCapability(
+        baseRecipe({}),
+        { objectInfo: OBJECT_INFO, knownModelCatalog: { models: [], installed: [], unavailable: 'test' },
+          probeAvailability: false },
+    );
+    assert.deepEqual(capability.missing?.nodes || [], [],
+        `揃っているのに不足として返している: ${JSON.stringify(capability.missing?.nodes)}`);
+});

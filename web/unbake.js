@@ -49,6 +49,16 @@ import {
     buildRecordFromRecipe,
     markUnbuildable,
 } from './core/generationRecord.js';
+/*
+ * **`environmentRequestOrNull` を輸入していなかった**（2026-08-28 に気づいた）。
+ *
+ * 389行目（`lookupByName`）が前から呼んでいるが、この面のどこからも輸入して
+ * いない——**呼ばれた時に ReferenceError で落ちる**。読み込みは通るので、
+ * その道を一度も踏まないうちは判らない。新しく足した口が同じ轍を踏みかけたので、
+ * ここで輸入して両方を直す。
+ */
+import { environmentRequestOrNull } from './core/environment.js';
+import { detectManager, packsForNodes, installPacks } from './core/nodePackInstall.js';
 import { buildRecipeWorkflow } from './core/recipeWorkflowBuilder.js';
 import { applyResolvedResources } from './core/civitaiResources.js';
 import { hasVersionEvidence, toRecipeShape } from './core/recordShape.js';
@@ -621,6 +631,19 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
         downloadIo,
         companionIo,
         openInComfy: openWorkflowInComfy,
+        /**
+         * **足りないノードパックは Manager に入れてもらう**（2026-08-28）。
+         *
+         * こちらは pip を触らない——版の解決も衝突の検出も戻しも Manager が持つ。
+         * API の形は 3.x と 4.x で違うので、`detect()` が見分ける。
+         */
+        nodePackIo: {
+            detect: () => detectManager(environmentRequestOrNull() || fetch),
+            packsFor: (api, nodes) => packsForNodes(environmentRequestOrNull() || fetch, api, nodes),
+            install: (api, packs) => installPacks(environmentRequestOrNull() || fetch, api, packs, {
+                clientId: String(app?.api?.clientId || app?.clientId || ''),
+            }),
+        },
         // **お気に入りはこちら側に持つ。** 記録は上流が書いた `.recipe.json` で、
         // こちらは読むだけと決めてある（上流の印は尊重して、消す道は作らない）。
         favoritesIo: { write: (patch) => writeUnbakeSettings(patch) },

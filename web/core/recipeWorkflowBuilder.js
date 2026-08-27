@@ -3889,7 +3889,11 @@ function validateOrRepairEmbeddedPrompt(prompt, recipe, objectInfo, warnings) {
             problems.missingInputs.length ? t('core.recipeWorkflowBuilder.47', { p1: problems.missingInputs.join('、') }) : '',
         ].filter(Boolean).join(' / ');
         if (!canBuildStandardRecipe(recipe)) {
-            throw new Error(t('core.recipeWorkflowBuilder.48', { p1: details }));
+            const error = new Error(t('core.recipeWorkflowBuilder.48', { p1: details }));
+            // **名前も構造で載せる**（2026-08-28）。文からは切り出せない
+            // ——訳が1つ増えた日に、切り出しが黙って空になる。
+            error.missingNodes = problems.missingNodes;
+            throw error;
         }
         warnings.push(t('core.recipeWorkflowBuilder.49', { p1: details }));
         /*
@@ -3908,7 +3912,12 @@ function validateOrRepairEmbeddedPrompt(prompt, recipe, objectInfo, warnings) {
         }
         // **この関数が持っているのは `objectInfo` だけ。** `options` は無い
         // ——`options` と書いて 21件が `options is not defined` で落ちた（実測 2026-08-21）。
-        return { prompt: standardPrompt(recipe, warnings, { objectInfo }), rebuilt: true };
+        return {
+            prompt: standardPrompt(recipe, warnings, { objectInfo }),
+            rebuilt: true,
+            // **手元に無いノードの名前を、文ではなく並びで返す。**
+            missingNodes: problems.missingNodes,
+        };
     }
 
     if (addedOutput) {
@@ -4695,6 +4704,13 @@ export function buildRecipeWorkflow(recipe, options = {}) {
     if (!recipe || typeof recipe !== 'object') throw new Error('Recipe data is required');
 
     const warnings = [];
+    /**
+     * **手元に無かったノードの名前**（2026-08-28）。
+     *
+     * 名前は**環境ごとに違う**ので、表に持たない。ここで `object_info` と
+     * 突き合わせて実際に無かった物だけを載せ、上へ返す。
+     */
+    let missingNodes = [];
     let replayManifest = getReplayManifest(recipe, options, warnings);
     const rawA1111Parameters = findA1111Parameters(recipe);
     const resourceStack = parseResourceStackGraph(rawA1111Parameters);
@@ -4861,6 +4877,10 @@ export function buildRecipeWorkflow(recipe, options = {}) {
             );
             prompt = validated.prompt;
             if (validated.rebuilt) source = 'standard';
+            // **どのノードが手元に無かったかを、上へ返す。**
+            // 画面はこれで「入れれば直る」を印にできる（名前は環境ごとに違うので、
+            // 表に持たず、**その場で測った物だけ**を渡す）。
+            missingNodes = validated.missingNodes || [];
         }
     } else if (rawA1111Parameters) {
         const features = a1111CompatibilityFeatures(rawA1111Parameters);
@@ -4994,6 +5014,7 @@ export function buildRecipeWorkflow(recipe, options = {}) {
     return {
         prompt,
         source,
+        missingNodes,
         droppedLoras,
         realignedModelNames,
         warnings,
