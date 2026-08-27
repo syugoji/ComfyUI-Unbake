@@ -4442,8 +4442,17 @@ textarea.unbake-detail-input {
 
 /* **落としている間だけ出る欄**（2026-08-26 利用者の指示）。
    「止める」は落としている間しか要らないのに、ずっと並んでいて邪魔だった。 */
+/* **折り返す**（2026-08-28 利用者の報告「サイドバーを広げないと全体が出ない」）。
+
+   実測（利用者の幅 490px・日本語の進捗文）: 中身 534px に対して器は 488px で、
+   **「止める」の右端が 44.5px はみ出していた**——押すには帯を広げるしかない。
+   字が `flex: none` かつ `white-space: nowrap` で、**縮みも折り返しもしない**のが原因。
+
+   直後の実測: はみ出し **0**、棒が1段目・字と「止める」が2段目。
+   高さは 78.8px → 58.4px と**むしろ縮む**。300px まで狭めてもはみ出さない。 */
 .unbake-download-panel {
     display: flex;
+    flex-wrap: wrap;
     gap: 10px;
     align-items: center;
     padding: 6px 10px;
@@ -4478,9 +4487,14 @@ textarea.unbake-detail-input {
 .unbake-download-bar[data-unknown="true"] .unbake-download-fill { display: none; }
 
 .unbake-download-text {
-    flex: none;
+    /* **縮めるし、折り返す。** `flex: none` + `nowrap` だと、日本語の
+       進捗文（400px 近い）がそのまま器を押し広げて「止める」を追い出す。
+       区切りは空白なので、折り返しても数字は途中で割れない
+       （`tabular-nums` は残すので、桁は揃ったまま）。 */
+    flex: 1 1 auto;
+    min-width: 0;
     color: var(--unbake-muted);
-    white-space: nowrap;
+    white-space: normal;
     font-variant-numeric: tabular-nums;
 }
 

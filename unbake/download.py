@@ -54,6 +54,11 @@ ALLOWED_KINDS = ("loras", "checkpoints", "embeddings", "vae", "controlnet",
 #: 受け取ってよい拡張子。**実行できる形式を落とさない。**
 ALLOWED_SUFFIXES = (".safetensors", ".sft", ".ckpt", ".pt", ".pth", ".bin")
 
+#: 申告された大きさとのずれを許す幅。**`sizeKB` は KB なので、
+#: バイトへ直す切り捨てで最大 1024 バイトずれる**（それより大きなずれは
+#: 相手の数字が古いか、こちらが途中で切れたかのどちらか）。
+SIZE_SLACK = 1024
+
 #: 1回に落としてよい上限。**桁を間違えたリンクで数百GBを引かないため。**
 MAX_BYTES = 64 * 1024 * 1024 * 1024
 
@@ -395,8 +400,44 @@ def download_model(
         _remove(temp_name)
         raise DownloadError(f"checksum mismatch: expected {sha256}, got {got}", "corrupt")
     if expected_bytes is not None and written != expected_bytes:
-        _remove(temp_name)
-        raise DownloadError(f"size mismatch: expected {expected_bytes}, got {written}", "corrupt")
+        """**大きさでハッシュの結論を覆さない**（2026-08-28 実機の報告）。
+
+        報告された失敗:
+            748cmSDXL.safetensors — size mismatch: expected 255017024, got 255025442
+
+        実測で追った結果、**落ちてきた物は正しかった**:
+
+            Civitai の `sizeKB`  249040.0625 → int(*1024) = 255,017,024
+            実物                              255,025,442（差 8,418 バイト＝8.22 KB）
+            Civitai の SHA256    85715EB6…F261A
+            実物の SHA256        85715eb6…f261a（**一致**）
+            手元で使っている同じ LoRA も 255,025,442 バイト
+
+        つまり **Civitai の申告する大きさが 8KB ずれている**だけで、中身は本物。
+        それを消していたので、**何度落とし直しても同じ所で失敗する**。
+
+        この面には既に同じ決めごとが書いてある（下の `if not sha256:`）——
+        **「ハッシュが在るときは呼ばない。一致していれば結論が出ており、
+        それより弱い検査で覆してはならない。」** 大きさの検査だけが破っていた。
+
+        ハッシュが無いときは大きさが唯一の手がかりだが、**短い側だけを疑う**。
+        長い側は「相手の数字が古い」であって、壊れた証拠ではない。
+        `sizeKB` は小数を持つので、KB→バイトの切り捨てで最大 1024 バイトずれる。
+        """
+        if sha256:
+            LOG.info(
+                "size differs from the API (%s vs %s) but the checksum matched; keeping it",
+                expected_bytes, written,
+            )
+        elif written + SIZE_SLACK < expected_bytes:
+            _remove(temp_name)
+            raise DownloadError(
+                f"size mismatch: expected {expected_bytes}, got {written}", "corrupt")
+        else:
+            LOG.info(
+                "size differs from the API (%s vs %s); not short, so keeping it",
+                expected_bytes, written,
+            )
     if written == 0:
         _remove(temp_name)
         raise DownloadError("empty download", "corrupt")

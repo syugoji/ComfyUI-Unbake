@@ -165,3 +165,63 @@ test('1件も落ちなかったときは掛け直さない', async () => {
     await confirmPick(panel);
     assert.deepEqual(calls, [], '何も落ちていないのに掛け直している');
 });
+
+// --- 狭い帯でもはみ出さない（2026-08-28 利用者の報告）----------------------
+
+test('落としている間の帯は、狭い幅でも全部見える', async () => {
+    /*
+     * **「サイドバーを広げないと全体が出ない」**（実機の報告）。
+     *
+     * 実測（利用者の幅 **490px**・日本語の進捗文）:
+     *
+     *     器 488px に対して中身 534px  → はみ出し 46px
+     *     「止める」の右端 534.5px      → 器の右端 490px を 44.5px 超えている
+     *
+     * 原因は字の側。`flex: none` と `white-space: nowrap` で**縮みも
+     * 折り返しもしない**ので、400px 近い進捗文がそのまま器を押し広げ、
+     * 一番外側にある「止める」を追い出していた。
+     *
+     * 直後の実測: はみ出し **0**、高さは 78.8px → 58.4px。300px まで狭めても
+     * はみ出さない。
+     */
+    const { readFile } = await import('node:fs/promises');
+    const { join, dirname } = await import('node:path');
+    const { fileURLToPath } = await import('node:url');
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+    const css = await readFile(join(root, 'web/panel/theme.css'), 'utf8');
+
+    /*
+     * **注記を落としてから見る。** ここは3度目の同じ穴——注記に
+     * 「`flex: none` だった」と書いてあるので、素の本文を見ると
+     * **直したのに直っていないと判定する**（実際そうなって落ちた）。
+     */
+    const block = (selector) => {
+        const head = `
+${selector} {`;
+        const at = css.indexOf(head);
+        assert.notEqual(at, -1, `規則が無い（改名を見逃している）: ${selector}`);
+        let body = css.slice(at + head.length, css.indexOf('}', at));
+        for (;;) {
+            const from = body.indexOf('/*');
+            if (from === -1) break;
+            const to = body.indexOf('*/', from);
+            if (to === -1) break;
+            body = body.slice(0, from) + body.slice(to + 2);
+        }
+        return body;
+    };
+
+    const panel = block('.unbake-download-panel');
+    assert.match(panel, /flex-wrap:\s*wrap/,
+        '帯が折り返さない。入り切らない分が器の外へ出て、押せなくなる');
+
+    const text = block('.unbake-download-text');
+    assert.doesNotMatch(text, /flex:\s*none/,
+        '進捗文が縮まない（これが器を押し広げていた）');
+    assert.match(text, /min-width:\s*0/,
+        'flex の既定（min-width: auto）のままだと、折り返しを許しても縮まない');
+    assert.doesNotMatch(text, /white-space:\s*nowrap/,
+        '進捗文が1行のままだと、折り返しても意味が無い');
+    // **桁は揃えたまま。** 数字が動くと、目で追えなくなる。
+    assert.match(text, /font-variant-numeric:\s*tabular-nums/, '桁揃えを落としている');
+});

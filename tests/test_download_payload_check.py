@@ -9,13 +9,52 @@
 `classify_model_payload` は 185行の完成品としてこのリポジトリにも在ったが、
 **どこからも呼ばれていなかった**（2026-08-26 の到達性の棚卸しで判明）。
 """
+import hashlib
+import io as _io
+import struct
 import os
 import tempfile
 import unittest
+from unittest import mock
 
+import unbake.download as dl
 from unbake.utils.model_file_validation import (
     PAYLOAD_BROKEN, PAYLOAD_OK, PAYLOAD_UNKNOWN, classify_model_payload,
 )
+
+
+def _safetensors(total: int) -> bytes:
+    """**形の通った safetensors** を `total` バイトちょうどで作る。
+
+    ハッシュを渡さない道は**中身の形も見る**ので、`b"xxx…"` だと
+    そちらで弾かれて、**大きさの判定を一度も踏まない検査**になる（実際なった）。
+    """
+    header = b'{"__metadata__":{}}'
+    body = struct.pack("<Q", len(header)) + header
+    # **逃がし文字を使わない**（この道具立てで潰れ、生の NUL が入った）。
+    return body + bytes(max(0, total - len(body)))
+
+
+def _opener(body: bytes):
+    """`urlopen` の代わり。**中身をそのまま返すだけ**の相手。"""
+
+    class Fake:
+        headers = {}
+        status = 200
+
+        def __init__(self):
+            self._stream = _io.BytesIO(body)
+
+        def read(self, size=-1):
+            return self._stream.read(size)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    return lambda request, timeout=None: Fake()
 
 
 def _write(name: str, data: bytes) -> str:
@@ -113,3 +152,65 @@ class PayloadCheckTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SizeVsHashTest(unittest.TestCase):
+    """**大きさでハッシュの結論を覆さない**（2026-08-28 実機の報告）。
+
+    報告された失敗:
+        ``748cmSDXL.safetensors — size mismatch: expected 255017024, got 255025442``
+
+    実測で追った結果、**落ちてきた物は正しかった**:
+
+        Civitai の ``sizeKB``  249040.0625 → ``int(*1024)`` = 255,017,024
+        実物                                255,025,442（差 8,418 バイト）
+        Civitai の SHA256      85715EB6…F261A
+        実物の SHA256          85715eb6…f261a（**一致**）
+
+    つまり **Civitai の申告する大きさが 8KB ずれている**だけ。消していたので、
+    **何度落とし直しても同じ所で失敗する**形になっていた。
+    """
+
+    def _run(self, *, body, sha256, expected_bytes):
+        target = os.path.join(self.dir, "m.safetensors")
+        with mock.patch.object(dl, "safe_target", lambda kind, filename, root="": target):
+            return dl.download_model(
+                url="https://example.invalid/m.safetensors",
+                kind="loras", filename="m.safetensors",
+                sha256=sha256, expected_bytes=expected_bytes,
+                opener=_opener(body),
+            )
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = self._tmp.name
+        self.addCleanup(self._tmp.cleanup)
+
+    def test_ハッシュが合えば_大きさが違っても置く(self):
+        body = _safetensors(100)
+        digest = hashlib.sha256(body).hexdigest()
+        result = self._run(body=body, sha256=digest, expected_bytes=92)
+        self.assertTrue(result.get("ok"), "ハッシュが合っているのに消している")
+        self.assertTrue(os.path.exists(os.path.join(self.dir, "m.safetensors")))
+
+    def test_ハッシュが無く_短ければ断る(self):
+        """**短い＝途中で切れた疑い。** ここは今までどおり落とす。"""
+        with self.assertRaises(dl.DownloadError) as caught:
+            self._run(body=_safetensors(100), sha256=None, expected_bytes=100 + dl.SIZE_SLACK + 1)
+        self.assertEqual(caught.exception.code, "corrupt")
+
+    def test_ハッシュが無く_長いだけなら置く(self):
+        """**長い側は相手の数字が古いだけ**——壊れた証拠ではない（実機の形）。"""
+        result = self._run(body=_safetensors(200), sha256=None, expected_bytes=100)
+        self.assertTrue(result.get("ok"), "長いだけで消している")
+
+    def test_ハッシュが無く_切り捨てぶんのずれなら置く(self):
+        """``sizeKB`` は小数を持つので、KB→バイトで最大 1024 ずれる。"""
+        result = self._run(body=_safetensors(100), sha256=None, expected_bytes=100 + dl.SIZE_SLACK)
+        self.assertTrue(result.get("ok"))
+
+    def test_ハッシュが違えば_今までどおり断る(self):
+        """**弱めていない。** ハッシュが結論を出す側は変えていない。"""
+        with self.assertRaises(dl.DownloadError) as caught:
+            self._run(body=_safetensors(100), sha256="0" * 64, expected_bytes=100)
+        self.assertEqual(caught.exception.code, "corrupt")
