@@ -789,3 +789,88 @@ test('打っている欄には、保存の後の値を当て直さない', async
     view.apply({ settings: { raindrop_collection_id: 'サーバの値' } });
     assert.equal(input.value, 'サーバの値', '当て直しが効いていない');
 });
+
+// --- 鍵とトークンの保存ボタン（2026-08-28 利用者の指示）---------------------
+
+const settle = async (n = 6) => { for (let i = 0; i < n; i += 1) await new Promise(r => setTimeout(r, 0)); };
+
+test('鍵とトークンの欄には、隣に保存ボタンがある', async () => {
+    /*
+     * **2026-08-24 に全体の保存ボタンを外している**（自動保存が効いているのに
+     * 「押さないと保存されない」と読まれたため）。その判断は他の欄では今も有効で、
+     * 戻していない——ここだけ別なのは下の2つの理由による。
+     */
+    setLocale('en');
+    const io = fakeIo({});
+    const view = createSettingsView({ documentRef: fakeDocument(), read: io.read, write: io.write });
+    await view.loaded;
+    const saves = view.root.allByClass('unbake-settings-secret-save');
+    assert.equal(saves.length, 2, '鍵とトークンの両方に保存ボタンが要る');
+    // **全体の保存ボタンは戻さない。**
+    const bottom = view.root.findAll(n => String(n.className || '') === 'unbake-settings-actions');
+    for (const box of bottom) {
+        assert.doesNotMatch(String(box.text || ''), /^Save$/, '全体の保存ボタンが戻っている');
+    }
+});
+
+test('押すと、その場で送られる（欄から離れなくても）', async () => {
+    /*
+     * **理由①: 秘密欄の保存の合図は `change`**（＝欄から離れたとき）。
+     * 貼って Escape で閉じると `change` が起きないまま面ごと消える。
+     */
+    setLocale('en');
+    const io = fakeIo({});
+    const view = createSettingsView({ documentRef: fakeDocument(), read: io.read, write: io.write });
+    await view.loaded;
+    const input = view.root.findAll(n => n.getAttribute('type') === 'password')[0];
+    input.value = 'PASTED-KEY';
+    view.root.allByClass('unbake-settings-secret-save')[0].dispatch('click', {});
+    await settle();
+    const sent = io.calls.filter(c => c.civitai_api_key === 'PASTED-KEY' || c.raindrop_token === 'PASTED-KEY');
+    assert.equal(sent.length, 1, `押しても送られていない: ${JSON.stringify(io.calls)}`);
+});
+
+test('空のまま押しても、何も送らない', async () => {
+    // 空＝「変えない」なので、押した意味が出ない。送ると「保存しました」だけが出る。
+    setLocale('en');
+    const io = fakeIo({});
+    const view = createSettingsView({ documentRef: fakeDocument(), read: io.read, write: io.write });
+    await view.loaded;
+    const before = io.calls.length;
+    view.root.allByClass('unbake-settings-secret-save')[0].dispatch('click', {});
+    await settle();
+    assert.equal(io.calls.length, before, '空でも送っている');
+});
+
+test('秘密欄にも保存の印が出る', async () => {
+    /*
+     * **理由②: 値が二度と表示されない。** 他の欄には「✓ 保存」が出ていたのに、
+     * ここだけ無かった——**目で確かめられない欄でこそ、入った合図が要る。**
+     */
+    setLocale('en');
+    const io = fakeIo({});
+    const view = createSettingsView({ documentRef: fakeDocument(), read: io.read, write: io.write });
+    await view.loaded;
+    const input = view.root.findAll(n => n.getAttribute('type') === 'password')[0];
+    input.value = 'PASTED-KEY';
+    view.root.allByClass('unbake-settings-secret-save')[0].dispatch('click', {});
+    await settle();
+    const marks = view.root.allByClass('unbake-settings-saved').map(n => String(n.textContent || ''));
+    assert.ok(marks.some(text => text.trim()), `保存の印が出ていない: ${JSON.stringify(marks)}`);
+});
+
+test('打ったまま閉じても、失わない', async () => {
+    /*
+     * **押し忘れても落とさない。** ボタンは確かめる口であって、
+     * **押さないと消える**作りにはしない——それは 2026-08-24 に外した形そのもの。
+     */
+    setLocale('en');
+    const io = fakeIo({});
+    const view = createSettingsView({ documentRef: fakeDocument(), read: io.read, write: io.write });
+    await view.loaded;
+    view.root.findAll(n => n.getAttribute('type') === 'password')[0].value = 'TYPED-THEN-CLOSED';
+    view.destroy();
+    await settle();
+    const sent = io.calls.filter(c => Object.values(c).includes('TYPED-THEN-CLOSED'));
+    assert.equal(sent.length, 1, `閉じたときに送っていない: ${JSON.stringify(io.calls)}`);
+});

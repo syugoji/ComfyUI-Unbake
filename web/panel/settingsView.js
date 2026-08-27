@@ -364,6 +364,26 @@ export function createSettingsView({
             if (String(input.value || '')) autoSave({ now: true });
         });
         const state = element('span', { class: 'unbake-settings-secret-state' });
+        /*
+         * **鍵とトークンにだけ保存ボタンを置く**（2026-08-28 利用者の指示）。
+         *
+         * 2026-08-24 に保存ボタンを外している——自動保存は効いていたのに、
+         * ボタンが在ることで「押さないと保存されない」と読まれたため。
+         * **その判断は他の欄では今も正しい**ので、全体の保存ボタンは戻さない。
+         *
+         * ここだけ別なのは、**秘密欄の保存の合図が `change`**（＝欄から
+         * 離れたとき）だからで、貼って Escape で閉じると **`change` が起きないまま
+         * 面ごと消える**。そのうえ値は二度と表示されないので、
+         * **入ったかどうかを目で確かめられない。** 押す口が要るのはそこ。
+         */
+        const saveNow = element('button', {
+            class: 'unbake-settings-secret-save', type: 'button', text: t('settings.save'),
+        });
+        saveNow.addEventListener('click', () => {
+            // 空で押しても何も送らない（空＝「変えない」なので、押した意味が出ない）。
+            if (!String(input.value || '')) return;
+            autoSave({ now: true });
+        });
         const clear = element('button', {
             class: 'unbake-settings-clear', type: 'button', text: t('settings.clear'),
         });
@@ -374,8 +394,11 @@ export function createSettingsView({
             element('div', { class: 'unbake-settings-labelrow' }, [
                 element('label', { class: 'unbake-settings-label', text: t(field.label) }),
                 hint(field.help),
+                // **秘密欄にも保存の印を出す。** 他の欄には出ていたのに、
+                // ここだけ無かった——値が見えない欄でこそ、入った合図が要る。
+                savedMark(field.key),
             ].filter(Boolean)),
-            element('div', { class: 'unbake-settings-secret-row' }, [input, state, clear]),
+            element('div', { class: 'unbake-settings-secret-row' }, [input, state, saveNow, clear]),
             element('p', { class: 'unbake-settings-help', text: t(field.help) }),
         ]));
     }
@@ -409,7 +432,22 @@ export function createSettingsView({
         else saveTimer = setTimeout(run, 700);
     }
 
-    // **保存ボタンは置かない**（2026-08-24 利用者の指示）。
+    /**
+     * 待っている保存を、今ここで送る。**閉じるときに呼ぶ。**
+     *
+     * 秘密欄は `change` を待つので、**打ったまま離れていない値**も拾う
+     * ——`collect()` は空の秘密欄を送らないので、値が在るときだけ意味を持つ。
+     */
+    function flushPending() {
+        const pending = saveTimer !== null;
+        const typedSecret = [...secretInputs.values()].some(node => String(node.value || ''));
+        if (!pending && !typedSecret) return;
+        if (saveTimer && typeof clearTimeout === 'function') clearTimeout(saveTimer);
+        saveTimer = null;
+        save(collect());
+    }
+
+    // **全体の保存ボタンは置かない**（2026-08-24 利用者の指示・今も有効）。
     // 自動保存は 2026-08-23 から効いていた——実測でも、押さずに
     // `POST /unbake/settings` が飛んで「保存しました。」が出ていた。
     // それでも「保存されない」と読まれたのは**ボタンが残っていたから**で、
@@ -695,6 +733,17 @@ export function createSettingsView({
         // **書き戻しを外から呼べるようにする。** 打っている欄を守れているかは、
         // これを呼んで初めて確かめられる（保存の中でしか走らない道だった）。
         apply,
-        destroy() { root.remove(); },
+        destroy() {
+            /*
+             * **閉じる前に、待っている分を送る**（2026-08-28）。
+             *
+             * 文字の欄は手が止まって 700ms で送る作りなので、
+             * **打ってすぐ閉じると、その 700ms は永久に来ない**——節点は消え、
+             * 打った値はどこにも残らない。秘密欄はさらに `change` 待ちなので、
+             * **貼って Escape** だと一度も送られないまま消える。
+             */
+            flushPending();
+            root.remove();
+        },
     };
 }

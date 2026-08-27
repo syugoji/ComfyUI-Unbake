@@ -2535,7 +2535,10 @@
 }
 
 .unbake-settings-back,
+/* **保存も「消す」と同じ顔にする**（2026-08-28）。並びの中で片方だけ目立つと、
+   どちらが既定の道か読めなくなる——秘密欄はどちらも押していい口である。 */
 .unbake-settings-clear,
+.unbake-settings-secret-save,
 .unbake-settings-actions button {
     border: 1px solid var(--unbake-line);
     border-radius: var(--unbake-radius-sm);
