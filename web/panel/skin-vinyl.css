@@ -390,6 +390,13 @@
     color: color-mix(in oklab, var(--unbake-text) 82%, var(--vinyl-label));
 }
 
+/* **印は回さない**（2026-08-27）。基本の面は印だけを回すようにしたが、
+   ここは**盤（釦）そのものが回る**のが主題なので、重ねると
+   1.0秒と1.6秒の回転が二重に見えて目に障る。 */
+.unbake-root[data-skin="vinyl"] .unbake-act[data-busy="true"]::before {
+    animation: none;
+}
+
 /* 走っている釦は、盤の回転で示す（点滅させない——目に障る）。 */
 .unbake-root[data-skin="vinyl"] .unbake-act[data-busy="true"] {
     background:

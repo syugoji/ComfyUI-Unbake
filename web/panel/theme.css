@@ -1605,11 +1605,32 @@
    **だから色は触らない。** 押せる状態の配色は既に読める形に作ってあるので、
    そのまま使い、**走っていることは色以外で示す**——印を `⟳` へ替えて回し、
    誰も使っていない `outline` を足す。**取り合いに参加しなければ負けない。** */
+/* **回すのは印だけ。釦ごと回さない**（2026-08-27 利用者の指摘）。
+
+   2026-08-24 の決めごとは「**印そのものを回す**」だったが、実装は
+   `animation` を**釦へ**当てていた。28×28 のときは印しか見えなかったので
+   気づけず、**▶ を 46×30 の錠剤にした日に「釦ごと回る」として表に出た**。
+
+   印は文字ノードなので CSS からは掴めない。**擬似要素へ出し直す。**
+   隠し方は `font-size: 0`——`color: transparent` にすると
+   **地と字の色の取り合い**（この面が3度踏んだ穴）へ自分から参加することになる。
+   `visibility` も使えない（釦の地と枠まで消える）。
+
+   印の字は **`attr(data-glyph)`** で受ける。CSS へ `⟳` を直接書くと
+   `BUSY_GLYPH` と2箇所に散り、片方を変えた日に黙ってずれる。 */
 .unbake-act[data-busy="true"] {
-    display: inline-block;
     outline: 2px solid var(--unbake-accent);
     outline-offset: 1px;
     cursor: progress;
+    font-size: 0;
+}
+
+.unbake-act[data-busy="true"]::before {
+    content: attr(data-glyph);
+    font-size: var(--unbake-font);
+    line-height: 1;
+    /* `transform` は inline のままだと当たらない。 */
+    display: inline-block;
     animation: unbake-act-spin 1s linear infinite;
 }
 
@@ -1619,7 +1640,9 @@
    **枠は控えめな色**にする（強調色にすると走っているものと並んで見分けが付かない）。
    ここも色の取り合いには参加しない（地と字は触らず、`outline` だけ）。 */
 .unbake-act[data-held="true"] {
-    display: inline-block;
+    /* **`display` を上書きしない**（2026-08-27）。ここは回さないので
+       `inline-block` へ落とす理由が無く、落とすとタイルの列で
+       `inline-flex` の中央寄せが切れる。 */
     outline: 2px dashed var(--unbake-muted);
     outline-offset: 1px;
     /* **押せる。** もう一度押すと順番待ちをやめる。 */
@@ -1633,7 +1656,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-    .unbake-act[data-busy="true"] { animation: none; }
+    .unbake-act[data-busy="true"]::before { animation: none; }
 }
 
 .unbake-act:hover {
@@ -1783,7 +1806,35 @@
 
 /* **器いっぱいまで大きくする。** 元は 82vh の高さ制限だけで、
    横に余白が余っていても絵は大きくならなかった。 */
+/* **`max-` だけでは片方が小さいまま**（2026-08-27 利用者の報告
+   「比較画面で元画像の方だけが小さいです」）。
+
+   `max-inline-size` は**上限**なので、列より小さい絵は**原寸で止まる**。
+   実測（窓 1402×1274・左右の列とも 683.8px）:
+
+       生成 832×1216 → 683.8×999.4（列いっぱいまで伸びた）
+       元   480×701  → **480×701（伸びず・1.42倍の差）**
+
+   1枚で見るときの規則は 2026-08-22 に同じ理由で `inline-size: 100%` へ直して
+   あり、**左右に並べるときだけ直っていなかった**。伸ばすと元画像は少し甘くなるが、
+   **大きさが揃っている方が見比べやすい**——その判断は1枚側で既に凍結してある。
+
+   **高さは `flex` で取る。** 幅だけ揃えても、**比率の違う組では高さが割れる**
+   ——実測（窓 1000×560・生成 832×1216 と 元 512×512）:
+
+       flex あり → 両方 483×520（枠が同じで、中身が枠の中で収まる）
+       flex なし → 生成 483×520 ／ **元 483×483**
+
+   直後の版: 窓 1402×1274 で両方 683.8×1195.9、窓 1000×560 で両方 483×520。
+   どちらの窓でもはみ出しは 0。
+
+   **`calc(100vh - N)` だとはみ出す、とは言えない。** そう書きかけたが、
+   対照（`calc` へ差し替えた版）を 560px の窓で測ったら**はみ出しは 0** だった。
+   `flex` を採る理由は上の「高さが割れない」ことだけである。 */
 .unbake-compare-image {
+    inline-size: 100%;
+    flex: 1 1 auto;
+    min-block-size: 0;
     max-inline-size: 100%;
     /* **窓いっぱいに使う**（2026-08-22 利用者の指摘「拡大が小さい」）。
        元は 96px を案内と余白のために空けていたが、比べるために大きくしたいので
@@ -5095,7 +5146,8 @@ textarea.unbake-detail-input {
 /* --- 走っている印：回るだけでなく、脈を持たせる ------------------------- */
 .unbake-root[data-rich="on"] .unbake-act[data-busy="true"] {
     box-shadow: 0 0 0 0 color-mix(in oklab, var(--unbake-accent) 45%, transparent);
-    animation: unbake-act-spin 1s linear infinite, unbake-pulse 1.6s ease-in-out infinite;
+    /* **脈は釦に残す**（外へ滲む光なので釦の仕事）。**回転だけ印へ移した。** */
+    animation: unbake-pulse 1.6s ease-in-out infinite;
 }
 
 @keyframes unbake-pulse {
@@ -5133,7 +5185,14 @@ textarea.unbake-detail-input {
         animation: none;
     }
 
+    /* **動きを切っていても回転だけは残す**——「走っている」は状態そのもので、
+       止めると走行中と待機中が見分けられない（この振る舞いは前からのもの。
+       今回は当てる先を釦から印へ移しただけ）。 */
     .unbake-root[data-rich="on"] .unbake-act[data-busy="true"] {
+        animation: none;
+    }
+
+    .unbake-root[data-rich="on"] .unbake-act[data-busy="true"]::before {
         animation: unbake-act-spin 1s linear infinite;
     }
 }

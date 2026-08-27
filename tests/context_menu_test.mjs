@@ -298,3 +298,40 @@ test('まとめての再現を2度押しても、並んだ分が取り消され�
     assert.deepEqual(runs.sort(), ['1', '2', '3'],
         `2度押しで顔ぶれが変わった: ${runs.join(' / ')}`);
 });
+
+// --- 一括だけは飛ばさない（2026-08-27 利用者の指示）------------------------
+
+test('選んだ N 件の再現は、絵が在っても飛ばさない', async () => {
+    /*
+     * **単押しと一括で意味が違う。**
+     *
+     *     ▶ の単押し        … 「見せて。無ければ作って」→ 絵が在るなら並びに入れない
+     *     選んだ N 件を再現 … 「必ず作って」          → **絵が在っても飛ばさない**
+     *
+     * 飛ばすと *「再現しろと言ったのに何件かが黙って抜ける」* になる。
+     * ここは**3件とも絵を持っている**状態で流し、**3件とも走る**ことを数える。
+     */
+    const ran = [];
+    const panel = mount([rec('1'), rec('2'), rec('3')], {
+        loadRecord: async (id) => ({ id, gen_params: { seed: 1 }, loras: [] }),
+        // **全件が既に絵を持っている**——単押しなら1件も並ばない状況。
+        loadFreshOutputs: async (record) => [{ url: `/api/view?filename=${record.id}.png` }],
+        loadVariants: async (record) => ({ outputs: [{ url: `/api/view?filename=${record.id}.png` }] }),
+        makeSweepRunner: () => ({
+            run: async (options) => {
+                ran.push(String(options?.record?.id ?? '?'));
+                return { cells: [] };
+            },
+        }),
+    });
+    for (const box of panel.root.allByClass('unbake-pick')) {
+        box.checked = true;
+        await box.dispatch('click', {});
+    }
+    await rowsOf(panel)[0].dispatch('contextmenu', { clientX: 0, clientY: 0, preventDefault() {} });
+    panel.root.allByClass('unbake-context-item')
+        .find(node => node.textContent.includes('再現')).dispatch('click', {});
+    await new Promise(resolve => setTimeout(resolve, 300));
+    assert.deepEqual(ran.slice().sort(), ['1', '2', '3'],
+        `絵が在る記録が飛ばされた（走ったのは ${ran.join(' / ') || 'なし'}）`);
+});

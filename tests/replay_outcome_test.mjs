@@ -47,7 +47,23 @@ test('0枚を「再現しました」と言わない', () => {
 test('作り直さなかったときは、前に出た絵を開く', () => {
     // **絵が無いのではなく、既に在る。** 前の分を開くのが正しい。
     assert.ok(BODY.includes('loadVariants'), '既に出ている絵を探していない');
-    assert.ok(BODY.includes('openCompare(record, existing'), '前に出た絵を並べていない');
+    /*
+     * **出し口は `showMade` へ寄せた**（2026-08-28）。見比べを開くかどうかは
+     * 設定で切れるようになったので、**開く／代わりに一言出す**の分岐を
+     * 1箇所に集めてある。ここで見るのは「前に出た絵を渡していること」。
+     */
+    assert.ok(BODY.includes('showMade(record, existing'), '前に出た絵を渡していない');
+    // **その先で本当に開くこと**も見る（渡すだけで捨てていたら意味が無い）。
+    const madeAt = SOURCE.indexOf('function showMade(record, items)');
+    assert.ok(madeAt >= 0, 'showMade が見つからない（改名を見逃している）');
+    // 閉じ括弧は**本物の改行を書いて**探す（逃がし文字を使わない）。
+    const CLOSE = `
+    }`;
+    const madeBody = SOURCE.slice(madeAt, SOURCE.indexOf(CLOSE, madeAt));
+    assert.ok(madeBody.includes('openCompare('), '設定が入なのに見比べを開かない');
+    assert.ok(madeBody.includes('showCompare'), '設定を見ずに開くか決めている');
+    assert.ok(madeBody.includes("t('replay.alreadyMade.quiet')"),
+        '見比べを切ってあるときに黙る（押しても何も起きないに戻る）');
     // **断りは言わない**（2026-08-26 利用者の指示）。絵が開くことが答えで、
     // 「作り直しませんでした」は読む手間だけを足していた。
     assert.ok(!SOURCE.includes('replay.cached'), '消したはずの断りが残っている');

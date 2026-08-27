@@ -257,8 +257,21 @@ test('作られなかった理由が、画面の履歴に出る', async () => {
     const doc = fakeDocument();
     const panel = createUnbakePanel(doc.createElement('div'), {
         documentRef: doc,
-        // 記録には**別の絵が残っている**（黙って開かれてしまう条件）。
-        loadFreshOutputs: async () => [{ url: '/api/view?filename=old.png', filename: 'old.png', subfolder: '' }],
+        /*
+         * 記録には**別の絵が残っている**（黙って開かれてしまう条件）。
+         *
+         * **読む時点で出し分ける**（2026-08-27 の規則に合わせた）。単押しは
+         * *押した時点で絵が在れば走らせない*ので、1度目に絵を返すと
+         * **この検査は再現そのものを踏まなくなる**（実際そうなって落ちた）。
+         * 押した時は無く、**走った後の読み直しで残り物が見つかる**——
+         * 黙って開かれる条件はそちらの読みで起きる。
+         */
+        loadFreshOutputs: (() => {
+            let reads = 0;
+            return async () => (reads++ === 0
+                ? []
+                : [{ url: '/api/view?filename=old.png', filename: 'old.png', subfolder: '' }]);
+        })(),
         makeSweepRunner: () => ({
             inputsReady: Promise.resolve(),
             requireEmptyQueue: async () => {},

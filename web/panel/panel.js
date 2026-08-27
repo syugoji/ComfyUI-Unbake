@@ -560,6 +560,13 @@ export function createUnbakePanel(el, {
      * 伝えないことは別なので、消したものは履歴へ必ず出す。
      */
     let confirmBeforeDelete = display?.confirmBeforeDelete !== false;
+    /**
+     * **再現の後に見比べの面を自分から開くか**（2026-08-28 利用者の指示・既定は開く）。
+     *
+     * **切るのは「勝手に開く」だけ。** 絵を押して開く道は切らない
+     * ——あれは押した人が今それを見たいと言っているので、設定で塞ぐ物ではない。
+     */
+    let showCompare = display?.showCompare !== false;
     /** 判定の配色。**色だけに頼らないうえで、色そのものも選べるようにする。** */
     let verdictPalette = display?.verdictPalette === 'deuteranopia' ? 'deuteranopia' : 'default';
     /*
@@ -768,7 +775,23 @@ export function createUnbakePanel(el, {
      * **同じ記録を二重に並べない。** 押し直しは順番を早めないので、
      * 並べると同じ絵を2回出すだけになる。
      */
-    function enqueueReplay(record, { toggle = true } = {}) {
+    /**
+     * 再現を並びへ入れる。
+     *
+     * @param {object} record
+     * @param {object} [options]
+     * @param {boolean} [options.toggle] もう一度押したら並びから外すか（▶ だけ真）
+     * @param {boolean} [options.showMadeInstead]
+     *   **既に絵が在るなら、並べずにその絵を開くか**（2026-08-27 利用者の指示）。
+     *
+     *   **▶ の単押しだけが真。** 単押しは「見せて。無ければ作って」で、
+     *   **選んだ N 件の再現は「必ず作って」**——絵が在るものを飛ばすと、
+     *   *「再現しろと言ったのに何件かが黙って抜ける」*になる。
+     *
+     *   **既定は偽**（＝並べる）。新しい呼び口が増えた日に、
+     *   **黙って飛ばす側が既定になっている**ことを避ける。
+     */
+    function enqueueReplay(record, { toggle = true, showMadeInstead = false } = {}) {
         const key = `${record?.id ?? ''}`;
         // **待っている間にもう一度押したら、並びから外す**（2026-08-24 利用者の指示）。
         // 並べたのは自分なので、**気が変わったら取り消せる**べき。
@@ -806,19 +829,90 @@ export function createUnbakePanel(el, {
          * ——`pumpReplayQueue` はそこで止まり、以降に押した分は全部 ⏸ のまま
          * 動かなくなる。「最初の1件が終わると次が始まらない」の正体はこれ。
          *
-         * 差し替えで約束を返すようにもしたが（`openConfirm`）、それは
-         * **止まらないための保険**で、正しい形は**同時に2本走らせないこと**。
-         * 「1件ずつしか流さない」はこの面の唯一の約束なので、例外を作らない。
-         *
-         * **代償は残る。** 既に絵が在るだけの記録も、走っている1件の後ろで待つ。
-         * ただし行列は先に宿主のキューを待たないので、順番が来れば**投げずに
-         * すぐ開く**——待つのは前の1件が終わるまでで、宿主の混み具合ではない。
+         * **今の形はその近道とは別物。** 下の `openMadeOrQueue` は
+         * **`reproduceOne()` を呼ばない**——読んで開くだけで、投げも確認もしない。
+         * だから2本走らず、「1件ずつしか流さない」という約束は保たれている。
          */
+        if (showMadeInstead) { openMadeOrQueue(record, key); return; }
+        queueReplay(record, key);
+    }
+
+    /*
+     * **二度押し用の見張りは置いていない。**
+     *
+     * 一度 `decidingReplay` という集合を足したが、**変異させても検査が赤くならなかった**
+     * ——`openMadeOrQueue` の中の `heldRecords / busyRecords` の確認が先に効くので、
+     * 2度目は必ずそこで止まる。**守っていない物を守っているように書かない。**
+     */
+    /** **最後に単押しされた記録。** 遅れて返った分で、後の分の絵を消さないため。 */
+    let lastPressedReplay = null;
+
+    /** 並びの末尾へ入れて、流し役を起こす。 */
+    function queueReplay(record, key) {
         replayQueue.push({ record, key });
         heldRecords.add(key);
         applyReplayState(key);
         rememberQueue();
         pumpReplayQueue();
+    }
+
+    /**
+     * **既に在る絵を出す。** 見比べを切ってあるなら、代わりに下へ一言出す。
+     *
+     * **黙らない。** 見比べを開くのが唯一の答えだった所（作り直していない回）は、
+     * 面を出さないと**押しても何も起きない**に戻る。
+     *
+     * @param {object} record
+     * @param {Array<{url: string}>} items
+     */
+    function showMade(record, items) {
+        if (showCompare) {
+            openCompare(record, items.slice(0, 4).map(item => ({
+                url: item.url, label: t('replay.alreadyMade'),
+            })));
+            return;
+        }
+        showToast(t('replay.alreadyMade.quiet'));
+        appendLog(t('replay.alreadyMade.quiet'));
+    }
+
+    /**
+     * **既に絵が在るなら開く。無ければ並べる**（▶ の単押しだけが通る道）。
+     *
+     * 2026-08-27 利用者の指示: 「再生ボタン単押しでは『絵が在るなら並びに
+     * 入れない』でほしいが、複数選択からの再現ではスキップして欲しくない」。
+     *
+     * **`reproduceOne()` は呼ばない。** 読んで開くだけなので、投げないし
+     * 確認も要らない——行列の約束（1件ずつ）に触れない。
+     *
+     * **代償**: 絵が在る記録は、単押しでは作り直せなくなる。組み立てを直した後に
+     * 出し直したいときは、**選んでから右クリック → 選んだ N 件を再現**を使う
+     * （そちらは飛ばさない）。札にもそう書く。
+     *
+     * @param {object} record
+     * @param {string} key
+     */
+    async function openMadeOrQueue(record, key) {
+        lastPressedReplay = key;
+        let made = [];
+        try {
+            if (typeof loadFreshOutputs === 'function') made = await loadFreshOutputs(record) || [];
+        } catch { made = []; }
+        if (!made.length && typeof loadVariants === 'function') {
+            try { made = ((await loadVariants(record))?.outputs || []).filter(item => item?.url); }
+            catch { made = []; }
+        }
+        // **待っている間に並んだなら触らない**（別の口から入ったということ）。
+        if (heldRecords.has(key) || busyRecords.has(key)) return;
+        if (!made.length) { queueReplay(record, key); return; }
+        /*
+         * **遅れて返った分で、後から押した記録の絵を消さない。**
+         * 読みに行くのは非同期なので、先に押した方が遅れて返ると
+         * **画面には後の記録が出ているのに中身は前の記録**になる。
+         * **並べる側は消さない**——後から押した分は、並ぶだけで画面を奪わない。
+         */
+        if (lastPressedReplay !== key) return;
+        showMade(record, made);
     }
 
     /**
@@ -1039,6 +1133,10 @@ export function createUnbakePanel(el, {
             button.disabled = true;
             button.setAttribute('data-busy', 'true');
             button.textContent = BUSY_GLYPH;
+            // **印は擬似要素が出す**（釦ごと回さないため・2026-08-27）。
+            // CSS は `content: attr(data-glyph)` でここを読むので、
+            // **付け忘れると印が丸ごと消える**（枠は残るので気づきにくい）。
+            button.setAttribute('data-glyph', BUSY_GLYPH);
             // **列ごと消えないようにする。** hover でしか出ない列に居るので、
             // 走っている間は hover と無関係に見せる（これをしないと印が在っても見えない）。
             button.parentElement?.setAttribute?.('data-busy', 'true');
@@ -2418,7 +2516,9 @@ export function createUnbakePanel(el, {
             // 「押したのに何も起きない」時間が走行中と区別できなくなる。
             // 押した合図だけ渡して、待ちと走りの切り替えは `pumpReplayQueue` が持つ。
             add('unbake-act-replay', label('▶', t('replay.one')), t('replay.one.help'),
-                () => enqueueReplay(record), {}, 'queued');
+                // **単押しは「見せて。無ければ作って」**（2026-08-27 利用者の指示）。
+                // 一括の再現は飛ばさない（そちらは `showMadeInstead` を渡さない）。
+                () => enqueueReplay(record, { showMadeInstead: true }), {}, 'queued');
         }
         if (openInComfy) {
             add('unbake-act-open', '⇱', t('openInComfy'), () => openRecordInComfy(record));
@@ -2541,6 +2641,9 @@ export function createUnbakePanel(el, {
         }
         // **設定画面から戻したら、その場で効くこと。** ここを見ていないと
         // 「二度と表示しない」を解除しても、開き直すまで確認が出ない。
+        if (next.show_compare !== undefined || next.showCompare !== undefined) {
+            showCompare = (next.show_compare ?? next.showCompare) !== false;
+        }
         if (next.confirm_before_delete !== undefined || next.confirmBeforeDelete !== undefined) {
             confirmBeforeDelete = (next.confirm_before_delete ?? next.confirmBeforeDelete) !== false;
         }
@@ -2569,7 +2672,7 @@ export function createUnbakePanel(el, {
             else commercialHead.remove?.();
         }
         render();
-        return { theme, verdictPalette, tileSize, listView, confirmBeforeDelete };
+        return { theme, verdictPalette, tileSize, listView, confirmBeforeDelete, showCompare };
     }
 
     /**
@@ -2940,10 +3043,11 @@ export function createUnbakePanel(el, {
                  * **断りは出さない**（2026-08-26 利用者の指示）。
                  * 前に出た絵がその場で開くので、**開いたこと自体が答え**——
                  * 「作り直しませんでした」は読む手間だけを足していた。
+                 *
+                 * **見比べを切ってあるなら、答えが消える。** そのときだけ
+                 * 下へ一言出す（`showMade` が持つ・2026-08-28）。
                  */
-                openCompare(record, reused.slice(0, 4).map(cell => ({
-                    url: cell.output.url, label: t('replay.result'),
-                })));
+                showMade(record, reused.map(cell => cell.output));
                 return job;
             }
             if (made.length) {
@@ -2953,10 +3057,14 @@ export function createUnbakePanel(el, {
                 appendLog(t('replay.done', { n: made.length }));
                 showToast(t('replay.done', { n: made.length }));
                 // **出たら、元の1枚の隣に並べる。** 「再現できたか」は人が見て決める。
-                openCompare(record, made.map(cell => ({
-                    url: cell.output.url,
-                    label: t('replay.result'),
-                })));
+                // **切ってあるなら開かない**（2026-08-28）。件数の報せは上で出しているので、
+                // ここを黙らせても「押しても何も起きない」にはならない。
+                if (showCompare) {
+                    openCompare(record, made.map(cell => ({
+                        url: cell.output.url,
+                        label: t('replay.result'),
+                    })));
+                }
                 return job;
             }
 
@@ -2992,9 +3100,8 @@ export function createUnbakePanel(el, {
             }
             if (existing.length) {
                 // **断りは出さない**（上と同じ理由）。絵が開くことが答え。
-                openCompare(record, existing.slice(0, 4).map(item => ({
-                    url: item.url, label: t('replay.result'),
-                })));
+                // 切ってあるときに黙らない面倒は `showMade` が見る。
+                showMade(record, existing);
                 return job;
             }
             /*

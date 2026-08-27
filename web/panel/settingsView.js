@@ -105,6 +105,9 @@ const DISPLAY_FIELDS = [
     // 切ってある理由は `unbake/settings.py` に書いてある。
     { key: 'use_civarchive', kind: 'boolean', label: 'settings.useCivarchive', help: 'settings.useCivarchive.help' },
     { key: 'confirm_before_delete', kind: 'boolean', label: 'settings.confirmBeforeDelete', help: 'settings.confirmBeforeDelete.help' },
+    // **見比べの面を自分から開くか**（2026-08-28 利用者の指示・既定は開く）。
+    // 切るのは「勝手に開く」だけで、絵を押して開く道は残る。
+    { key: 'show_compare', kind: 'boolean', label: 'settings.showCompare', help: 'settings.showCompare.help' },
     // **宿主全体に効く設定なので、切れる場所を必ず置く**（2026-08-24）。
     // Dark Reader は半透明の重ねを不透明へ潰すので、重ねた面が「背景が単色」になる。
     // 既定は有効（ComfyUI は元から暗く、上から暗くし直す意味が薄い）。

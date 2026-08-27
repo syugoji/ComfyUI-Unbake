@@ -223,6 +223,7 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
                 groupByCheckpoint: settings?.group_by_checkpoint === true,
                 showCommercialOk: settings?.show_commercial_ok !== false,
             confirmBeforeDelete: settings?.confirm_before_delete !== false,
+            showCompare: settings?.show_compare !== false,
         };
     }
 

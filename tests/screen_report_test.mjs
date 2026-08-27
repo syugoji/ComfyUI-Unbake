@@ -303,8 +303,29 @@ test('走っている印は、色の取り合いに参加しない', async () =>
     assert.doesNotMatch(busy, /(^|;)\s*color\s*:/, '字の色を奪い合っている');
     assert.doesNotMatch(busy, /(^|;)\s*background(-color)?\s*:/, '地の色を奪い合っている');
     // **色以外で示す。** 印を回し、誰も使っていない `outline` を足す。
-    assert.match(busy, /animation/, '走っていることを動きで示していない');
     assert.match(busy, /outline/, '色以外の目印が無い');
+
+    /*
+     * **回すのは印だけ**（2026-08-27 利用者の指摘「ボタンごと回転します」）。
+     *
+     * この検査は元々 `animation` を**釦の規則**へ要求していた。要求どおりに
+     * 実装されていて、それが欠陥だった——2026-08-24 の決めごとは
+     * 「**印そのものを回す**」で、釦を回せとは言っていない。
+     * 28×28 のときは印しか見えないので誰も気づかず、
+     * **▶ を 46×30 の錠剤にした瞬間に表に出た。**
+     *
+     * 見る先を擬似要素へ移す。**釦側には無いこと**も併せて要求する
+     * （両方に在ると二重に回る）。
+     */
+    assert.doesNotMatch(busy, /animation/,
+        '釦そのものを回している（地・枠・広げた的まで一緒に回る）');
+    const head = '.unbake-act[data-busy="true"]::before {';
+    const at = css.indexOf(head);
+    assert.notEqual(at, -1, '走っている印の擬似要素が無い（印が丸ごと消える）');
+    const mark = css.slice(at + head.length, css.indexOf('}', at));
+    assert.match(mark, /animation/, '走っていることを動きで示していない');
+    // 擬似要素も**色は触らない**（釦から継ぐ。触れば同じ取り合いに参加する）。
+    assert.doesNotMatch(mark, /(^|;)\s*color\s*:/, '印の側で字の色を奪い合っている');
 
     // 検出器が生きているか——`outline` を他の誰かが使い始めたら、この前提は崩れる。
     //
