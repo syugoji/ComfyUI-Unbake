@@ -461,24 +461,45 @@ test('すぐ終わる操作は待たせない（同じ間に2度目を受け付�
     assert.equal(star().getAttribute('data-on'), before, '同じ間に押し戻せない');
 });
 
-test('走っている裏でも、既に絵が在る記録はすぐ開く', async () => {
-    // **利用者の要望**（2026-08-25）。行列は1件ずつしか流さないので、
-    // 走っている生成が終わるまで**既に絵が在る記録まで待たされていた**
-    // ——その回はキューへ1件も投げないので、待つ理由が無い。
+/*
+ * **同時に2本走らせない**（2026-08-27・実機「1件目が終わっても次が始まらない」）。
+ *
+ * ここには「走っている裏で押された1件は、既に絵が在るならすぐ開く」を
+ * 見張る検査が在った（2026-08-25 の要望）。**その近道は畳んだ。**
+ *
+ * 近道は `reproduceOne()` を行列の外でもう1本走らせる。再現は投げる前に
+ * 人へ聞くことがあり（VRAM に入らない／分割復号で止まり得る）、
+ * **確認の面は1枚しか持てない**——2本走ると後の面が前の面を差し替え、
+ * 前の1本の返事が返らないまま**行列が永久に止まる**。
+ * さらに、同じ拍で2つ押すと**どちらの投入もまだ着いていない隙に両方が通る**
+ * （2026-08-26 に実測済み: 走り1・待ち1 で ComfyUI に2件同時に居た）。
+ *
+ * **代償は残る。** 既に絵が在るだけの記録も、走っている1件の後ろで待つ。
+ * ここではその代わりに得たもの——**順番どおりに、1本ずつ、必ず全部回る**——を見張る。
+ */
+test('走っている間に押した分は行列を通る（同時に2本走らせない）', async () => {
     const doc = fakeDocument();
     let release;
     const held = new Promise((r) => { release = r; });
-    let opened = 0;
+    /** いま走っている本数。**2 になったら約束が破れている。** */
+    let live = 0;
+    let overlapped = 0;
+    const opened = [];
     const panel = createUnbakePanel(container(doc), {
         mode: 'sidebar', width: 1200,
         makeSweepRunner: (target) => ({
             inputsReady: Promise.resolve(),
             requireEmptyQueue: async () => {},
             run: async () => {
-                // a は投げる分が在って走り続ける。b は既に絵が在るので即返る。
-                if (String(target?.id ?? target?.recipe?.id) === 'a') { await held; return { cells: [] }; }
-                opened += 1;
-                return { cells: [] };
+                const id = String(target?.id ?? target?.recipe?.id);
+                live += 1;
+                if (live > 1) overlapped += 1;
+                try {
+                    // a は投げる分が在って走り続ける。b は既に絵が在るので即返る。
+                    if (id === 'a') await held;
+                    opened.push(id);
+                    return { cells: [] };
+                } finally { live -= 1; }
             },
         }),
     });
@@ -494,11 +515,15 @@ test('走っている裏でも、既に絵が在る記録はすぐ開く', async
     // **a が走っている最中に b を押す。**
     buttons[1].dispatch('click', {});
     for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 0));
-    assert.equal(opened, 1, 'a の完了を待たされている');
-    assert.notEqual(buttons[1].getAttribute('data-held'), 'true', '待ちの姿で止まっている');
+    assert.equal(overlapped, 0, '同時に2本走った（行列の約束が破れている）');
+    assert.deepEqual(opened, [], 'a より先に b が開いた');
+    assert.equal(buttons[1].getAttribute('data-held'), 'true', 'b が待ちの姿になっていない');
 
+    // **a が終われば b は自分で始まる。** ここが「次が始まらない」の本題。
     release();
-    for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 0));
+    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0));
+    assert.deepEqual(opened, ['a', 'b'], '1件目のあと2件目が始まっていない');
+    assert.equal(overlapped, 0, '同時に2本走った');
 });
 
 test('走っている間に押すと、順番待ちになる（断らない）', async () => {

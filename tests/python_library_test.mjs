@@ -789,7 +789,12 @@ test('落としたものは hash を照合し、合わなければ置かない',
         '        return out',
         '    def __enter__(self): return self',
         '    def __exit__(self, *a): return False',
-        'body = b"pretend model bytes"',
+        // **本物の safetensors の器にする。** 中身の形を見る検算が入ったので、
+        // モデルでないバイト列を `.safetensors` と名乗らせると正しく弾かれる。
+        // ここで測りたいのは hash の照合なので、器のほうは本物にしておく。
+        'import json as _json',
+        '_head = _json.dumps({"__metadata__": {}}).encode()',
+        'body = len(_head).to_bytes(8, "little") + _head + bytes(8)',
         'good = hashlib.sha256(body).hexdigest()',
         'opener = lambda request, timeout=0: FakeResponse(body)',
         'out = {}',
@@ -797,7 +802,7 @@ test('落としたものは hash を照合し、合わなければ置かない',
         'r = dl.download_model(url="https://civitai.com/x", kind="loras", filename="ok.safetensors",',
         '                      sha256=good, expected_bytes=len(body), opener=opener)',
         'out["ok"] = {"placed": os.path.exists(os.path.join(root, "ok.safetensors")),',
-        '             "verified": r["verified"], "bytes": r["bytes"]}',
+        '             "verified": r["verified"], "bytes": r["bytes"], "sent": len(body)}',
         '# 合わない hash なら置かれない',
         'try:',
         '    dl.download_model(url="https://civitai.com/x", kind="loras", filename="bad.safetensors",',
@@ -825,7 +830,11 @@ test('落としたものは hash を照合し、合わなければ置かない',
 
     assert.equal(got.ok.placed, true, '合う hash なのに置かれていない');
     assert.equal(got.ok.verified, true);
-    assert.equal(got.ok.bytes, 19);
+    // **送った長さと突き合わせる。** 数字を直に書くと、器を本物へ替えた
+    // だけで赤くなる（実際にそうなった: 19 -> 36）。測りたいのは
+    // 「送った分だけ受け取ったか」であって、長さそのものではない。
+    assert.equal(got.ok.bytes, got.ok.sent);
+    assert.ok(got.ok.sent > 0, '空を送っている（何も測れていない）');
 
     assert.equal(got.mismatch.refused, true, 'hash 違いを通している');
     assert.equal(got.mismatch.placed, false, 'hash が合わないのに本物の名前へ置いた');

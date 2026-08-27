@@ -419,6 +419,60 @@ export function createDetailView({
     // **口はプロンプトから拾う。** 別に宣言させると、プロンプトを直した瞬間に
     // 宣言と食い違い、投入の直前で「そんな口は無い」で落ちる。
     const swapsBox = element('div', { class: 'unbake-detail-swaps' });
+    /*
+     * **取り出したのに出していない条件を出す**（2026-08-26 の読みで見つけた）。
+     *
+     * `civitaiClient.js` のコメントは「画面は既に出す用意ができていた」と書いて
+     * いて、根拠に `recipeReferenceInfo.js` の表示ラベルを挙げていた。だが
+     * **その面はどこからも呼ばれていない**（到達性の宣言に載っている孤児）ので、
+     * `vae` も `hires_*` も**記録には在るのに、どの画面にも出ていなかった**。
+     * 抽出だけ直して、出す所が無いままだった——**直したつもりで、見えない。**
+     *
+     * ここは**読むだけ**。直せる欄（`EDITABLE_FIELDS`）は再現に使う値で、
+     * こちらは「元の絵がどう作られたか」を伝えるための控え。
+     * とくに ADetailer は**こちらのグラフが持たない工程**なので、出しておかないと
+     * 「同じ材料なのに絵が違う」の理由が読み手から消える。
+     */
+    const REFERENCE_KEYS = [
+        ['model', 'Model'], ['vae', 'VAE'], ['clip_skip', 'Clip Skip'],
+        ['scheduler', 'Scheduler'], ['denoising_strength', 'Denoising Strength'],
+        ['distilled_cfg_scale', 'Distilled CFG'],
+        ['hires_upscaler', 'Hires Upscaler'], ['hires_upscale', 'Hires Upscale'],
+        ['hires_resize', 'Hires Resize'], ['hires_steps', 'Hires Steps'],
+        ['hires_cfg_scale', 'Hires CFG'],
+        ['adetailer_model', 'ADetailer Model'],
+        ['adetailer_confidence', 'ADetailer Confidence'],
+        ['adetailer_denoising_strength', 'ADetailer Denoising'],
+    ];
+    // **`original` からは読めない。** あれは直せる7項目だけを返す
+    // （`paramsOf`）ので、`vae` も `hires_*` も `undefined` になる
+    // ——ここを `original` で書いて、**一度、何も出ない控えを作った。**
+    const genParams = (recipe?.gen_params && typeof recipe.gen_params === 'object')
+        ? recipe.gen_params
+        : (record?.gen_params || {});
+    const referenceRows = [];
+    for (const [key, label] of REFERENCE_KEYS) {
+        const value = genParams[key];
+        if (value === null || value === undefined || value === '') continue;
+        referenceRows.push([label, String(value)]);
+    }
+    // 拡大器は条件の欄ではなく、記録の直下に在る。
+    const upscalers = record?.generation_metadata?.upscalers;
+    if (Array.isArray(upscalers) && upscalers.length) {
+        referenceRows.push(['Upscalers', upscalers.join(' / ')]);
+    }
+    if (referenceRows.length) {
+        fields.append(element('div', { class: 'unbake-detail-reference' }, [
+            element('b', { class: 'unbake-detail-reference-head', text: t('detail.reference') }),
+            ...referenceRows.map(([label, value]) => element(
+                'div', { class: 'unbake-detail-reference-row' }, [
+                    element('span', { class: 'unbake-detail-reference-key', text: label }),
+                    element('span', { class: 'unbake-detail-reference-value', text: value }),
+                ],
+            )),
+        ]));
+    }
+
     fields.append(swapsBox);
 
     // --- 語を足す（2026-08-22「振る」から移した）-----------------------------
@@ -818,6 +872,34 @@ export function createDetailView({
             : t('detail.runFailed', { detail: String(result?.error || '') });
     });
 
+    /**
+     * **URLを開く**（2026-08-26 利用者の指示）。
+     *
+     * 記録は出どころの URL を持っている（`origin.url` / `source_path`）のに、
+     * **画面のどこにも出ていなかった**——元のページを見るには、記録の中身を
+     * 自分で覗くしかない。
+     *
+     * **`http`/`https` 以外は出さない。** 記録の値をそのまま `href` にすると、
+     * `javascript:` を仕込まれた記録が「押せる口」になる。
+     * **`noopener` を付ける**——付けないと開いた先からこの画面を操作できる。
+     */
+    const sourceUrl = (() => {
+        const raw = record?.origin?.url || record?.source_path || '';
+        try {
+            const url = new URL(String(raw));
+            return /^https?:$/.test(url.protocol) ? url.href : '';
+        } catch {
+            return '';
+        }
+    })();
+    const openUrl = element('a', {
+        class: 'unbake-detail-source', text: t('record.openUrl'),
+        title: t('record.openUrl.help'),
+        href: sourceUrl || '#', target: '_blank', rel: 'noopener noreferrer',
+    });
+    // **無い記録では出さない。** 押せない口を置くより、無い方が読みやすい。
+    if (!sourceUrl) openUrl.style.display = 'none';
+
     // **モデルは欄のすぐ下。** 値とモデルは一緒に決めるものなので、
     // 間に画面の切り替えを挟まない（2026-08-22 利用者の指示でタブから移した）。
     const modelsHost = element('div', { class: 'unbake-detail-models-host' });
@@ -826,7 +908,7 @@ export function createDetailView({
         element('div', { class: 'unbake-detail-side' }, [
             fields,
             modelsHost,
-            element('div', { class: 'unbake-detail-actions' }, [run, stop, save, extract]),
+            element('div', { class: 'unbake-detail-actions' }, [run, stop, save, extract, openUrl]),
             status,
             cells,
         ]),

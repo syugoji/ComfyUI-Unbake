@@ -130,7 +130,13 @@ test('記録に負が在れば、そちらで上書きする', () => {
 test('文字列の checkpoint を資源の形にする', () => {
     // 組み立ては `file_name` を見るので、裸の文字列は「無い」になる。
     const out = toRecipeShape(RECORD);
-    assert.deepEqual(out.checkpoint, { file_name: 'Illustrious/anime/wai.safetensors' });
+    // **`evidence: 'name'` も付く。** 文字列だったということは、判っているのは
+    // 名前だけ——版IDも hash も無い。同名の別ファイルを掴む余地があるので、
+    // それを黙って他と同じ扱いにしないための印（`modelEvidence.js`）。
+    assert.deepEqual(out.checkpoint, {
+        file_name: 'Illustrious/anime/wai.safetensors',
+        evidence: 'name',
+    });
     assert.equal(out.loras[0].file_name, 'CADENZA.safetensors');
     assert.equal(out.loras[0].weight, 0.5);
 });

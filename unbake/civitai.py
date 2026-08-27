@@ -48,7 +48,86 @@ KIND_OF_TYPE = {
     "vae": "vae",
     "controlnet": "controlnet",
     "upscaler": "upscale_models",
+    # `models/hypernetworks` は ComfyUI 本体が持っていて `HypernetworkLoader` が
+    # 読む（実測 2026-08-26・folder_paths.py）。**入れ忘れていた**ので、
+    # Hypernetwork は「対応していない型」として拒んでいた。
+    "hypernetwork": "hypernetworks",
 }
+
+#: **Civitai が「Checkpoint」と呼ぶが、ComfyUI では `UNETLoader` で読むもの。**
+#:
+#: 2026-08-26 に実測して見つけた穴。Anima / Krea 2 / Z-Image は Civitai 上の
+#: `type` がどれも `Checkpoint` なので `models/checkpoints/` へ落ちるが、
+#: こちらが組むワークフローは `UNETLoader` を出す——読み口が見るのは
+#: `models/unet/` なので、**落とした直後にまだ「不足」と表示される**。
+#: 利用者の `anima_baseV10.safetensors` が `models/unet/Anima/anime/` に
+#: 在ったのは、手で置き直したから。
+#:
+#: `recipeWorkflowBuilder.js` のコメントは「バックエンドが既に系統で決めている」
+#: と書いていたが、**指している定数はこのリポジトリに無かった**——上流
+#: （comfyui-lora-manager, GPL-3.0）の仕掛けを、移したつもりで移せていなかった。
+#: 一覧は上流 `py/utils/constants.py` の `DIFFUSION_MODEL_BASE_MODELS` に倣う。
+DIFFUSION_MODEL_BASE_MODELS = frozenset([
+    "Anima",
+    # Flux 系（DiT。ComfyUI では UNETLoader で読む）
+    "Flux.1 D", "Flux.1 S", "Flux.1 Krea", "Flux.1 Kontext",
+    "Flux.2 D", "Flux.2 Klein 9B", "Flux.2 Klein 9B-base",
+    "Flux.2 Klein 4B", "Flux.2 Klein 4B-base",
+    # UNet ではない画像拡散モデル
+    "AuraFlow", "Chroma", "HiDream", "Hunyuan 1", "Kolors", "Lumina",
+    "PixArt a", "PixArt E",
+    # 動画拡散モデル
+    "CogVideoX", "Hunyuan Video", "LTXV", "LTXV2", "LTXV 2.3", "Mochi", "SVD",
+    "Wan Video", "Wan Video 1.3B t2v", "Wan Video 14B t2v",
+    "Wan Video 14B i2v 480p", "Wan Video 14B i2v 720p",
+    "Wan Video 2.2 TI2V-5B", "Wan Video 2.2 I2V-A14B", "Wan Video 2.2 T2V-A14B",
+    "Wan Video 2.5 T2V", "Wan Video 2.5 I2V",
+    # その他
+    "Ernie", "Ernie Turbo", "Nucleus", "Qwen", "ZImageBase", "ZImageTurbo",
+    "Krea 2",
+])
+
+#: Civitai がファイルそのものへ付ける種別のうち、拡散モデルを指すもの。
+#: **こちらが `baseModel` の一覧より先に見る**——一覧は人が足す物なので
+#: 新しい系統が出ると必ず遅れるが、この印は投稿された値そのもの。
+DIFFUSION_FILE_TYPES = ("UNet", "Diffusion Model")
+
+
+def early_access_until(version: Dict[str, Any]) -> Optional[str]:
+    """まだ有料の早期公開なら、いつまでかを返す。**過ぎていれば None。**
+
+    2026-08-26 に上流（comfyui-lora-manager, GPL-3.0）との差分を調べて見つけた。
+    こちらは 401/403 をまとめて「鍵が要る」と言っていたが、早期公開のモデルは
+    **鍵が在っても買っていなければ落とせない**——**鍵を入れ直させる案内は、
+    打つ手が違うので時間を捨てさせる**。
+
+    **終わった日付を「まだ有料」と読まない。** `earlyAccessEndsAt` は過去の
+    ものも残るので、日付を見ずに拾うと**もう買える必要が無いモデル**まで
+    「有料」と言うことになる。
+    """
+    raw = str(version.get("earlyAccessEndsAt") or "").strip()
+    if not raw:
+        return None
+    from datetime import datetime, timezone
+
+    try:
+        ends = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        # **読めない日付を「終わった」と読まない。** 早期公開だとは判っている。
+        return raw
+    if ends.tzinfo is None:
+        ends = ends.replace(tzinfo=timezone.utc)
+    if ends <= datetime.now(timezone.utc):
+        return None
+    return ends.date().isoformat()
+
+
+def _is_diffusion_model(version: Dict[str, Any]) -> bool:
+    """この「Checkpoint」は、実は `models/unet` 側か。"""
+    for item in version.get("files") or []:
+        if str((item or {}).get("type") or "") in DIFFUSION_FILE_TYPES:
+            return True
+    return str(version.get("baseModel") or "") in DIFFUSION_MODEL_BASE_MODELS
 
 
 def _get_json(url: str, api_key: str = "", timeout: int = 30) -> Optional[Dict[str, Any]]:
@@ -82,6 +161,36 @@ def _get_json(url: str, api_key: str = "", timeout: int = 30) -> Optional[Dict[s
         return None
 
 
+def _try_civarchive(model_id, version_id, allowed: bool, fetch, kind=None) -> Optional[Dict[str, Any]]:
+    """消えた版を受け皿から拾い直す。**設定で開けてあるときだけ。**
+
+    **`kind` はこちらで決めない。** 受け皿は Civitai と同じ `model.type` を
+    返さないので、呼び手が種類を渡していればそれを使い、無ければ置き場が
+    決められない——その場合は拾えたことにしない（**置き場を推測して
+    どこかへ置くよりは、落とせないと言うほうがよい**）。
+    """
+    if not allowed:
+        return None
+    from .civarchive import EXTRA_DOWNLOAD_HOSTS, resolve_version as _archive
+
+    found = _archive(
+        model_id, version_id,
+        allowed_hosts=set(DOWNLOAD_HOSTS) | set(EXTRA_DOWNLOAD_HOSTS),
+        fetch=fetch,
+    )
+    if not found:
+        return None
+
+    resolved_kind = kind or KIND_OF_TYPE.get(str(found.get("modelType") or "").lower())
+    if not resolved_kind:
+        # **置き場を推測してどこかへ置くよりは、落とせないと言うほうがよい。**
+        return None
+    if resolved_kind == "checkpoints" and str(found.get("baseModel") or "") in DIFFUSION_MODEL_BASE_MODELS:
+        # Civitai 経由と同じ振り替え——**受け皿から来ても置き場の決め方は変えない。**
+        resolved_kind = "diffusion_models"
+    return {**found, "kind": resolved_kind}
+
+
 def _primary_file(version: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """落とすべきファイル1つ。**`primary` を優先する。**
 
@@ -112,6 +221,9 @@ def resolve_version(
     host: str = API_HOSTS[0],
     api_key: str = "",
     fetch: Optional[Any] = None,
+    model_id: Optional[Any] = None,
+    allow_civarchive: bool = False,
+    civarchive_fetch: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """版IDから、落とすのに要るものを揃える。
 
@@ -139,6 +251,13 @@ def resolve_version(
             "retryAfter": wait,
         }
     if not isinstance(version, dict):
+        # **設定で開けてあるときだけ、受け皿を見る**（2026-08-26 利用者の指示）。
+        #
+        # 既定は OFF。開けていなければここは素通りして、今までどおり
+        # 「もう引けない」とだけ言う——**外へ問い合わせを増やさない。**
+        rescued = _try_civarchive(model_id, version_id, allow_civarchive, civarchive_fetch, kind)
+        if rescued:
+            return rescued
         # **取れなかったことを「存在しない」と混ぜない。**
         #
         # ただし**打つ手は同じ**（2026-08-23 利用者の指示で分類を付けた）。
@@ -156,11 +275,30 @@ def resolve_version(
         return {"ok": False, "error": "this version has no downloadable file", "code": "gone"}
 
     resolved_kind = kind or KIND_OF_TYPE.get(str((version.get("model") or {}).get("type", "")).lower())
+    # **落とす前に置き場を決め直す。** 種別が Checkpoint でも、読み口が
+    # `UNETLoader` なら `models/unet` へ置かないと「落としたのに不足」になる。
+    if not kind and resolved_kind == "checkpoints" and _is_diffusion_model(version):
+        resolved_kind = "diffusion_models"
     if not resolved_kind:
         return {
             "ok": False,
             "error": f"unsupported model type: {(version.get('model') or {}).get('type')}",
             "code": "setup",
+        }
+
+    # **買っていないものを「鍵が要る」と言わない。** 引く前に判る。
+    until = early_access_until(version)
+    if until:
+        return {
+            "ok": False,
+            "error": (
+                f"this version is in early access until {until};"
+                " it can only be downloaded after buying it on Civitai"
+            ),
+            # **`forbidden` と分ける。** 画面は `forbidden` を「鍵を確かめて
+            # ください」と訳すので、まとめると**打つ手の違う案内**が出る。
+            "code": "early_access",
+            "earlyAccessUntil": until,
         }
 
     url = str(file.get("downloadUrl") or "")

@@ -141,7 +141,7 @@ export function strengthOf(source) {
 export function modelsOf(record, recipe = null) {
     const out = [];
     const seen = new Set();
-    const push = (kind, name, role, raw = null) => {
+    const push = (kind, name, role, raw = null, altKinds = []) => {
         const text = String(name || '').trim();
         if (!text) return;
         const key = `${kind}:${text.toLowerCase()}`;
@@ -150,6 +150,8 @@ export function modelsOf(record, recipe = null) {
         // **元の資源も持つ。** 強度は記録の側に在るので、名前だけだと読めない。
         out.push({
             kind, name: text, role, index: out.length, source: raw,
+            // **当たらなかったときに引き直す置き場**（空なら引き直さない）。
+            altKinds,
             // **LoRA だけの通し番号。** 上書きレイヤは版 ID が無いとき順番で鍵を作るので、
             // checkpoint を混ぜて数えると鍵がずれる。
             loraIndex: out.filter(item => item.role === 'lora').length,
@@ -157,9 +159,22 @@ export function modelsOf(record, recipe = null) {
     };
     const source = recipe || record || {};
     const checkpoint = source.checkpoint ?? record?.checkpoint;
+    /*
+     * **チェックポイントは `checkpoints` に在るとは限らない**（2026-08-26 実機）。
+     *
+     * Anima / Krea 2 / Z-Image のように**UNet 単体で配られる**モデルは
+     * `models/diffusion_models` に入る。ここを `checkpoints` 決め打ちにして
+     * いたので、実在する 13.1 GB の `krea2Turbo_v10.safetensors` に対して
+     * **「この環境には入っていません」**と出ていた——在る物を無いと言い、
+     * 消す口も押せないままになる。
+     *
+     * 置き場は**引いてみるまで判らない**ので、候補を持たせて外れたら次を引く
+     *（`altKinds`）。系統の表を持ち込むより、実際に当たった方を採る方が確か。
+     */
     push('checkpoints', typeof checkpoint === 'string'
         ? checkpoint
-        : (checkpoint?.file_name || checkpoint?.name), 'checkpoint', checkpoint);
+        : (checkpoint?.file_name || checkpoint?.name), 'checkpoint', checkpoint,
+        ['diffusion_models', 'unet']);
     const loras = Array.isArray(source.loras) ? source.loras : (record?.loras || []);
     for (const lora of loras) {
         if (!lora) continue;
@@ -559,6 +574,19 @@ export function createModelsView({
         let plan;
         try {
             plan = await io.plan(entry.kind, target);
+            /*
+             * **外れたら別の置き場で引き直す**（2026-08-26 実機）。
+             *
+             * UNet 単体で配られるモデルは `diffusion_models` に入るので、
+             * `checkpoints` だけを見ると在る物を「入っていません」と言う。
+             * **当たった置き場を採る**——以降の削除もそちらへ向く。
+             */
+            for (const alt of entry.altKinds || []) {
+                if (plan?.ok) break;
+                let retry = null;
+                try { retry = await io.plan(alt, target); } catch { retry = null; }
+                if (retry?.ok) { plan = retry; entry.kind = alt; }
+            }
         } catch (error) {
             state.textContent = t('models.failed', { detail: error?.message || String(error) });
             return null;

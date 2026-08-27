@@ -1010,6 +1010,36 @@ test('保存できたら書庫から読み直して差し替える', async () =>
     assert.equal(panel.getRecords()[0].previewUrl, '/p?id=saved-1', '絵の口が控えのまま');
 });
 
+test('読み直しに、この回で取り込んだ分を渡す（全件の判定を組み直さない）', async () => {
+    /*
+     * **実機で 353件・約6秒**（2026-08-26 利用者の報告）。URL を1本
+     * ドロップするたび、取り込んだ1件のために他の 352件を組み直していた。
+     *
+     * 組み立て側は既に「計算済みは飛ばす」作りなので、原因は**読み直しが
+     * 全件の控えを捨てていた**こと。**捨てる先を教えれば足りる。**
+     */
+    setLocale('en');
+    const got = [];
+    const { panel } = mount({
+        ingest: async () => ({ records: [{ id: 'temp-1', title: 'dropped.png' }], errors: [] }),
+        recordsIo: {
+            save: async () => ({ ok: true, id: 'saved-1' }),
+            remove: async () => ({ ok: true }),
+            reload: async (changed) => {
+                got.push(changed);
+                return [{ id: 'saved-1', title: 'civitai_1', verdict: 'reproducible' }];
+            },
+        },
+    });
+    await panel.ingestRouted({ route: 'drop', file: 'x.png' });
+    await settle();
+    assert.equal(got.length, 1, '読み直していない');
+    assert.ok(Array.isArray(got[0]), `変わった先を渡していない: ${JSON.stringify(got[0])}`);
+    // **保存で付いた書庫の id が要る。** 控えの id では表の行に当たらない。
+    assert.deepEqual(got[0].map(record => record.libraryId ?? record.id), ['saved-1'],
+        `渡した顔ぶれが違う: ${JSON.stringify(got[0])}`);
+});
+
 test('読み直しに*行*の口を使わない（使うと一覧の絵が全部消える）', async () => {
     // **実機で起きた**（2026-08-23 利用者の報告）: 取り込んだ直後に一覧の絵が
     // 全部消え、再読み込みで直る。行は `preview: true` を持つが、面が読むのは

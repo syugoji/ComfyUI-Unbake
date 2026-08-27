@@ -201,6 +201,15 @@ export function createVerdictTable({ loadRecord, collectInputs, concurrency = 6 
         conditions: FIXED_CONDITIONS,
         describeConditions: () => describeConditions(FIXED_CONDITIONS),
 
+        /**
+         * 判定の材料（導入済み一覧）の控えを捨てる。
+         *
+         * **モデルを落とした後に要る**（2026-08-26 実機）。控えたままだと、
+         * 落とし終わっても**導入済み一覧が古いまま**で、判定は「未導入」の
+         * ままになる——利用者から見ると「落としたのに何も変わらない」。
+         */
+        resetInputs() { inputsPromise = null; },
+
         /** 表の1行。**まだ回していなければ null**（`pending` と同義）。 */
         get: (id) => rows.get(String(id)) || null,
 
@@ -233,6 +242,25 @@ export function createVerdictTable({ loadRecord, collectInputs, concurrency = 6 
          * @param {(done: number, total: number) => void} [onProgress]
          * @returns {Promise<{done: number, failed: number, ms: number}>}
          */
+        /**
+         * **控えを捨てる。** 記録が取り込み直されたら、前の判定は嘘になる。
+         *
+         * `run()` は `!rows.has(id)` で既に計算した記録を飛ばす（350件を
+         * 開くたびに組み直さないため）。**その控えは無効化されない**ので、
+         * 同じ id で取り込み直しても**古い判定が使われ続けた**
+         * ——2026-08-25 に利用者が踏んだ: 直す前の取り込みで `checkpoint: null`
+         * として計算された行が残り、直したあとに取り込み直しても
+         * **不足モデルが「無い」まま**だった。
+         *
+         * @param {Array<string|number>} ids 捨てる記録の `libraryId`
+         */
+        invalidate(ids) {
+            for (const id of ids || []) {
+                if (id === null || id === undefined) continue;
+                rows.delete(String(id));
+            }
+        },
+
         async run(records, onProgress = null) {
             cancelled = false;
             const started = nowMs();

@@ -32,6 +32,13 @@ const JOB_PREFIX = 'unbake.sweep.job.';
 const OUTPUT_INDEX_KEY = 'unbake.sweep.outputs';
 const DEFAULT_POLL_MS = 2000;
 const DEFAULT_TIMEOUT_MS = 2 * 60 * 60 * 1000;
+/**
+ * 投入がキューにも履歴にも見えない回数の上限。
+ *
+ * **1回で諦めない**——投げた直後は、まだキューにも履歴にも現れない一瞬が在る。
+ * 3回（既定の間隔で約6秒）続けて見えなければ、消えたものとして扱う。
+ */
+const MISSING_PROMPT_STRIKES = 3;
 
 /** 終わった状態。**ここに入ったセルは二度と投げ直さない。** */
 /**
@@ -262,6 +269,116 @@ export class SweepRunner {
         return index;
     }
 
+    /**
+     * 控えの絵が**本当に在るか**を確かめる（2026-08-26 実機）。
+     *
+     * 手元の入れ物（`localStorage`）の索引は、**ファイルを消しても残る**。
+     * すると次の再現で「もう出ている」と判断され、**死んだ URL を指したまま
+     * 1枚も作らない**——利用者からは「再現できませんでした」に見えるうえ、
+     * **存在しない画像と見比べる**ことになる（実機: `hshi_00001_.png`）。
+     *
+     * **ディスク由来（`source: 'disk'`）は確かめない。** あれは走査した
+     * その場の真実で、確かめ直すのは往復の無駄。
+     *
+     * **確かめられなければ捨てない。** 口が無い・繋がらないだけで作り直すと、
+     * 出ている絵をもう一度作ることになる。
+     */
+    async verifyReusable(outputs, signatures) {
+        /*
+         * **`this` ごと束ねて呼ぶ**（2026-08-26 実機で判明）。
+         *
+         * 元は `const request = this.request || environmentRequestOrNull();` と
+         * 書いていた。`request` は**クラスのメソッド**なので `this.request` は
+         * 常に真——後ろの環境ごしの取得には一度も届かない。しかも外して呼ぶと
+         * 中の `this.injectedRequest` で
+         *
+         *     TypeError: Cannot read properties of undefined (reading 'injectedRequest')
+         *
+         * が飛び、下の `catch` が「確かめられなければ捨てない」として飲み込む。
+         * つまり**この検算は一度も働いていなかった**——消えた絵をいつまでも
+         * 使い続け、存在しない画像と見比べていた（実機で再現）。
+         *
+         * 検査が緑だったのは、作り物が `runner.request` を**自前の関数**として
+         * 置いていたから。実物はメソッドなので、束ねないと呼べない。
+         */
+        const checked = { ...outputs };
+        for (const signature of signatures) {
+            const output = checked[signature];
+            if (!output?.url || output.source === 'disk') continue;
+            if (await this.outputIsAlive(output)) continue;
+            delete checked[signature];
+            SweepRunner.forgetOutputFile({
+                filename: output.filename, subfolder: output.subfolder || '',
+            });
+        }
+        return checked;
+    }
+
+    /**
+     * **`SaveImage` の出す名前をずらして、キャッシュを外す**（2026-08-27）。
+     *
+     * ComfyUI のキャッシュは**ノードの入力だけ**で決まる。同じグラフを投げ直しても、
+     * 印を変えても出ない（実測）。`filename_prefix` を変えると `SaveImage` の入力が
+     * 変わるので**そこだけ**が実行し直され、上流は当たったまま
+     * ——**絵は同じで、待ち時間はほぼ無い**（実測 1.0秒）。
+     *
+     * **前置きは `<元の名前>_` で始まる形にする。** 帰属は出力名の `civitai_<id>` を
+     * 読むので（`outputAttribution.namedRecordId`）、後ろに足す限り持ち主は変わらない。
+     * **前に足すと持ち主が消える**ので、ここは必ず後ろへ。
+     *
+     * 変えるのは**この1回だけ**。普段の出力名は素のままにしておく。
+     */
+    bustOutputCache(cell) {
+        const nodes = cell?.workflow?.prompt;
+        if (!nodes || typeof nodes !== 'object') return false;
+        // **投入ごとに違う語**。同じ語を使い回すと2度目からまた当たる。
+        const token = String(this.uuid()).replace(/[^a-z0-9]/gi, '').slice(0, 6) || 'redo';
+        let changed = false;
+        for (const node of Object.values(nodes)) {
+            if (node?.class_type !== 'SaveImage') continue;
+            const before = String(node.inputs?.filename_prefix ?? '');
+            if (!before) continue;
+            node.inputs.filename_prefix = `${before}_r${token}`;
+            changed = true;
+        }
+        return changed;
+    }
+
+    /**
+     * その絵が**まだ在るか**を宿主に聞く。**404 のときだけ「無い」と言う。**
+     *
+     * 口が無い・繋がらない・別のエラーは全部「判らない」＝在る扱いにする
+     * ——確かめられないことを不在と読むと、出ている絵を作り直しにいく。
+     *
+     * **`this` ごと束ねて呼ぶ**（`verifyReusable` の注記と同じ理由。`request` は
+     * クラスのメソッドなので、外して渡すと中の `this` が undefined になる）。
+     *
+     * 対照つきで実測（2026-08-27・127.0.0.1:8188）:
+     *   在るファイル → **200** ／ 無いファイル → **404**。判定は成立している。
+     */
+    async outputIsAlive(output) {
+        if (!output?.url) return true;
+        try {
+            const response = await this.request(output.url, { method: 'HEAD' });
+            if (response && response.ok === false && Number(response.status) === 404) return false;
+        } catch {
+            return true;
+        }
+        return true;
+    }
+
+    /** その投入がキュー（実行中・待ち）に居るか。 */
+    queueHasPrompt(queue, promptId) {
+        const wanted = String(promptId);
+        for (const key of ['queue_running', 'queue_pending']) {
+            for (const job of queue?.[key] || []) {
+                // ComfyUI の並びは `[番号, prompt_id, prompt, extra, outputs]`。
+                if (Array.isArray(job) && job.some(part => String(part) === wanted)) return true;
+            }
+        }
+        return false;
+    }
+
     rememberOutput(signature, output) {
         if (!signature || !output?.url) return false;
         const index = this.outputIndex();
@@ -272,6 +389,34 @@ export class SweepRunner {
     /** 索引を捨てる（全部回し直したいとき）。 */
     forgetOutputs() {
         return removeStored(OUTPUT_INDEX_KEY);
+    }
+
+    /**
+     * 消した絵を索引から落とす（2026-08-26 実機）。
+     *
+     * 索引は `localStorage` に残るので、**ファイルを消しても控えは生き残る**。
+     * すると次の再現で「もう出ている」と判断され、**死んだ URL を指したまま
+     * 1枚も作らない**——利用者からは「再現できませんでした」に見える
+     *（実機: 消した `hshi_00001_.png` がそれだった）。
+     *
+     * **ディスクの走査では直らない。** 消えたものは出てこないので、
+     * 索引の側から落とすしかない。
+     */
+    static forgetOutputFile({ filename, subfolder = '' } = {}) {
+        if (!filename) return 0;
+        const stored = readStored(OUTPUT_INDEX_KEY, {});
+        if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return 0;
+        let dropped = 0;
+        for (const [signature, output] of Object.entries(stored)) {
+            const sameName = String(output?.filename || '') === String(filename);
+            const sameFolder = String(output?.subfolder || '') === String(subfolder || '');
+            // **名前だけで落とさない。** 別のフォルダに同じ名前が在りうる。
+            if (!sameName || !sameFolder) continue;
+            delete stored[signature];
+            dropped += 1;
+        }
+        if (dropped) writeStored(OUTPUT_INDEX_KEY, stored);
+        return dropped;
     }
 
     // --- 計画 ---------------------------------------------------------
@@ -362,6 +507,23 @@ export class SweepRunner {
      */
     async waitForPrompt(promptId) {
         const startedAt = this.now();
+        /*
+         * **投げた分が消えていないかも見る**（2026-08-27 実機で確定）。
+         *
+         * ここは `/history/<id>` だけを見ていた。**履歴に出ないうちは待ち続ける**
+         * ので、投入そのものが消えると**2時間の上限まで待つ**——画面では
+         * ⟳ が回ったまま止まり、**行列の後ろは全部 ⏸ のまま動かない**。
+         *
+         * 消えるのは普通に起きる:
+         *   - **ComfyUI を再起動した**（キューも履歴も揮発する。実測 2026-08-27:
+         *     21:30:07 に再起動され、待っていた分が全部宙に浮いた）
+         *   - ComfyUI の画面で「Clear queue」を押した
+         *
+         * **キューにも履歴にも居ないなら、それは消えている。** ただし1回の
+         * 見落としで諦めない——投入直後は履歴にもキューにも現れない一瞬が在る。
+         * 続けて何度も見えなかったときだけ落とす。
+         */
+        let missingStrikes = 0;
         while (!this.stopRequested) {
             if (this.now() - startedAt >= this.timeoutMs) {
                 return { status: 'failed', error: t('core.sweep.cell.timeout') };
@@ -372,7 +534,23 @@ export class SweepRunner {
                 `/history/${encodeURIComponent(promptId)}`, {}, 'History check'
             ).catch(() => null);
             const entry = history?.[promptId];
-            if (!entry) continue;
+            if (!entry) {
+                const queue = await this.queueState().catch(() => null);
+                // **読めないときは数えない。** 「聞けなかった」と「消えた」を混ぜない。
+                if (queue && !this.queueHasPrompt(queue, promptId)) {
+                    missingStrikes += 1;
+                    if (missingStrikes >= MISSING_PROMPT_STRIKES) {
+                        return {
+                            status: 'failed', reason: 'vanished',
+                            error: t('core.sweep.cell.vanished'),
+                        };
+                    }
+                } else {
+                    missingStrikes = 0;
+                }
+                continue;
+            }
+            missingStrikes = 0;
             const status = String(entry?.status?.status_str || '').toLowerCase();
             if (status === 'error') {
                 return { status: 'failed', error: t('core.sweep.cell.failed') };
@@ -381,7 +559,10 @@ export class SweepRunner {
                 const images = sweepHistoryImages(entry);
                 return images.length
                     ? { status: 'completed', output: images[0], outputs: images }
-                    : { status: 'failed', error: t('core.sweep.cell.noImages') };
+                    // **理由は機械可読で返す**（2026-08-27）。呼び手はここを見て
+                    // 投げ直すので、**訳文で分岐させない**——locale を1つ足した日に
+                    // 静かに効かなくなる。
+                    : { status: 'failed', reason: 'no-images', error: t('core.sweep.cell.noImages') };
             }
         }
         return null;
@@ -425,14 +606,36 @@ export class SweepRunner {
         // **`reuseExisting: false` は「全部回し直す」。** 索引だけ無視して保存済みの
         // 状態を重ねると、前回 `completed` になったセルが飛ばされ、
         // **指示したのに1件も回らない**（それでも「完了」と出るので気づけない）。
+        /*
+         * **落ちたセルは「済み」として引き継がない**（2026-08-27 実機で確定）。
+         *
+         * `failed` は `DONE_STATES` に入っている。**投入の輪を素通りさせるため**で、
+         * 走っている最中の再開としては正しい。だが保存した状態をまたいで
+         * 引き継ぐと、**次に人が ▶ を押しても、その1件は永久に飛ばされる**
+         * ——投入も無く、結果も無いので、面は「他に在る古い絵」を黙って開く。
+         *
+         * 実測: 出た絵を消した後の再現が `not-written` で落ちる → 保存に `failed`
+         * が残る → **以降どれだけ押しても投入が1件も増えない**（履歴で確認）。
+         *
+         * **押し直しは「もう一度やれ」という意味。** 済んだ（`completed` /
+         * `reused`）ものだけを引き継ぎ、落ちたものは引き継がない。
+         */
         const storedCells = reuseExisting
-            ? new Map((stored?.cells || []).map(cell => [cell.signature, cell]))
+            ? new Map((stored?.cells || [])
+                .filter(cell => cell?.status !== 'failed')
+                .map(cell => [cell.signature, cell]))
             : new Map();
         // **ディスクが先、手元の入れ物が後。** 出力フォルダに実在する分のほうが
         // 強い証拠で、入れ物のほうは消えていることがある。
-        const outputs = reuseExisting
+        let outputs = reuseExisting
             ? { ...this.outputIndex(), ...(await this.loadDiskOutputs(recordId)) }
             : {};
+        if (reuseExisting) {
+            // **手元の控えだけを頼りにしない**（2026-08-26 実機）。
+            // 消えたファイルを指したままだと、1枚も作らずに終わる。
+            outputs = await this.verifyReusable(
+                outputs, plan.cells.map(cell => cell.signature));
+        }
 
         const cells = plan.cells.map(cell => {
             const reused = outputs[cell.signature];
@@ -440,6 +643,16 @@ export class SweepRunner {
                 return { ...cell, status: 'reused', output: reused, error: null };
             }
             const previous = storedCells.get(cell.signature);
+            // **控えの「もう出ている」も、絵が無ければ効かせない**（2026-08-26）。
+            // `outputs` から落ちた署名は、実在を確かめて消えていたもの。
+            if (previous?.output?.url && !outputs[cell.signature]
+                && previous.output.source !== 'disk') {
+                return {
+                    ...cell, ...previous,
+                    status: 'pending', output: null, error: null,
+                    recipe: cell.recipe, workflow: cell.workflow, signature: cell.signature,
+                };
+            }
             // 保存された状態を重ねる。**グラフと記録は今組んだものを使う**——
             // 保存には入っていないし、雛形が変わっていれば signature も変わる。
             return {
@@ -489,8 +702,89 @@ export class SweepRunner {
                     const submitted = alreadyQueued || await this.queueCell(job, cell);
                     if (!submitted) continue;
                     if (this.stopRequested) break;
-                    const verdict = await this.waitForPrompt(cell.promptId);
+                    let verdict = await this.waitForPrompt(cell.promptId);
                     if (!verdict) break;
+                    /*
+                     * **「成功したが画像0枚」は1度だけ投げ直す**
+                     *（2026-08-27 実機・「出た絵を消してから再現すると生成が始まらない」）。
+                     *
+                     * ComfyUI は**直前と同じグラフ**を投げると実行キャッシュに当てて
+                     * 何も実行せず、`status: success` のまま `outputs` を空で返す。
+                     * 絵を消した直後の再現がまさにこれで、**消したのに作り直されない**。
+                     *
+                     * **実測（同じ記録の連続4投入）**:
+                     *
+                     *     12c465f3  1回目            → 画像1枚（`_00006_`）
+                     *     （ここで `_00006_` を消す）
+                     *     afc15d63  2回目（同一）     → **outputs 空・画像0枚**
+                     *     8baeacb1  3回目（同一）     → 画像1枚（1.0秒で復活）
+                     *
+                     * **さらに悪い形が在る**（同じ日に実測して前の見立てを訂正した）。
+                     * キャッシュに当たった投入は `outputs` を空にするとは限らず、
+                     * **前回の画像名をそのまま返しながらファイルを1つも書かない**:
+                     *
+                     *     ①1回目  outputs=['7'] 履歴=`_00006_`  **実ファイル増えた**
+                     *     ②2回目  outputs=['7'] 履歴=`_00006_`  **増えない**
+                     *     ③3回目  outputs=['7'] 履歴=`_00006_`  **増えない**
+                     *
+                     * つまり `outputs` の空だけを見ていると**この形を丸ごと見逃す**
+                     * ——「再現しました（1枚）」と言いながら、指している絵が無い。
+                     * だから判定は **`outputs` の有無ではなく、出たと言われた絵が
+                     * 実在するか**で行う（`outputIsAlive`・404 のときだけ「無い」）。
+                     *
+                     * **同じものを投げ直しても出ない**（2026-08-27 実測・3連投で0枚）。
+                     * 印（`extra_pnginfo` の `unbake_sweep`）を変えても出ない
+                     * ——**キャッシュはノードの入力だけで決まる**。
+                     *
+                     * **効いたのは `filename_prefix` を変えることだけ**（1.0秒で復活）。
+                     * `SaveImage` の入力が変わるので**そこだけ**が実行し直され、
+                     * 上流は当たったまま＝**絵は同じで、待ち時間はほぼ無い**。
+                     *
+                     * **常にやらない。** 名前は帰属の手掛かり（`civitai_<id>`）なので、
+                     * 普段の出力名は素のままにしておきたい。**作られなかったと判った
+                     * 時だけ**、`civitai_<id>_r<token>` の形へ寄せる——前置きは
+                     * `civitai_<id>_` で始まるので、名乗りによる帰属はそのまま効く。
+                     *
+                     * **1度で止まるのは輪でないから**——ここは各セルを1回通るだけの
+                     * `if` で、通った後のセルは `completed` か `failed` になり、
+                     * どちらも `DONE_STATES` なので再開しても素通りする。
+                     * **`!cell.resubmitted` は今は一度も偽にならない**（変異で確認）。
+                     * それでも残すのは、**将来ここを輪にしたときの保険**として——
+                     * ただし**今それが repeat を止めている、とは読まないこと。**
+                     * 2度目も空なら原因はキャッシュではないので、そのまま
+                     * 「画像が保存されていません」として返す。
+                     */
+                    const missing = verdict.status === 'completed'
+                        && !(await this.outputIsAlive(verdict.output));
+                    if ((verdict.reason === 'no-images' || missing)
+                        && !cell.resubmitted && !this.stopRequested) {
+                        cell.resubmitted = true;
+                        this.bustOutputCache(cell);
+                        const again = await this.queueCell(job, cell);
+                        if (again && !this.stopRequested) {
+                            const second = await this.waitForPrompt(cell.promptId);
+                            if (!second) break;
+                            verdict = second;
+                        }
+                    }
+                    /*
+                     * **最後にもう一度だけ実体を見る**（2026-08-27・実機で確定）。
+                     *
+                     * 投げ直しても出ないことが在る。**同一グラフの連投は3回とも
+                     * 実ファイルを作らなかった**（履歴は3回とも `_00006_` と言った）。
+                     * つまり投げ直しは「効くこともある」程度の手当てにすぎない。
+                     *
+                     * **効かなかったときに「出た」と言わないことのほうが重い。**
+                     * 実体の無い絵を `completed` で返すと、上は「再現しました（1枚）」と
+                     * 言いながら**存在しない絵を開く**。索引にも覚えてしまう。
+                     */
+                    if (verdict.status === 'completed' && !(await this.outputIsAlive(verdict.output))) {
+                        verdict = {
+                            status: 'failed',
+                            reason: 'not-written',
+                            error: t('core.sweep.cell.notWritten'),
+                        };
+                    }
                     Object.assign(cell, verdict);
                     if (verdict.status === 'completed') {
                         this.rememberOutput(cell.signature, verdict.output);

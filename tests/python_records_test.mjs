@@ -612,10 +612,19 @@ class R:
 def opener_of(body, ctype):
     return lambda request, timeout=None: R(body, ctype)
 
+def _real_safetensors():
+    # **本物の器にする。** 中身の形を見る検算が入ったので、safetensors と
+    # 名乗る偽のバイト列は正しく弾かれる——弾かれること自体は正しいが、
+    # ここで測りたいのは「**普通の取得を止めていない**」ことなので、
+    # 器のほうを本物にする。
+    import json as _json
+    head = _json.dumps({"__metadata__": {}}).encode()
+    return len(head).to_bytes(8, "little") + head + bytes(8)
+
 out = {}
 for label, body, ctype in (
     ("html", b"<!doctype html><html>login</html>", "text/html; charset=utf-8"),
-    ("binary", b"MODELBYTES", "application/octet-stream"),
+    ("binary", _real_safetensors(), "application/octet-stream"),
 ):
     try:
         r = download.download_model(url="https://x/y", kind="loras",

@@ -243,12 +243,13 @@ const KNOWN_UNREACHED = [
     'web/panel/sweepView.js',
     'web/core/a1111LoraMerge.js',
     // `downloadSizeEstimate.js` は 2026-08-20 に配線した（落とす前に合計を出す）。
-    'web/core/modelCompanions.js',
+    // `modelCompanions.js` は 2026-08-26 に配線した——**口がフォークの
+    // `/api/lm/…` を向いたままだった**ので、繋ぎ替えたうえで落とす流れへ入れた
+    // （拡散モデルは本体だけでは動かないので、押す前の総量に伴走を足す）。
     'web/core/recipeCompositionScore.js',
     // `recipeLoraOverrides.js` は 2026-08-22 に配線した（詳細の帯のスライダー）。
     'web/core/recipeMetadata.js',
     'web/core/recipeMissingResources.js',
-    'web/core/recipeModelUsage.js',
     'web/core/recipeNotes.js',
     'web/core/recipeOutputs.js',
     'web/core/recipeReferenceInfo.js',

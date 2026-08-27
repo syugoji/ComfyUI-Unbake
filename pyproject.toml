@@ -6,15 +6,22 @@ license = { file = "LICENSE" }
 # **依存は無い。** `folder_paths` は ComfyUI 本体が、`PIL` は ComfyUI の環境が供給する。
 # ここへ何か足すときは、そのライセンスが配布物へ乗ることを先に確かめること。
 #
-# **同梱の `civitai-recipe-sync/` は `requests` を使うが、ここには足さない。**
+# **同梱の `civitai_recipe_sync/` は `requests` を使うが、ここには足さない。**
 # ComfyUI 本体の `requirements.txt` に `requests` が在る（実測 2026-08-25・27行目）ので、
 # `PIL` と同じ「宿主が供給するもの」に当たる。**名前だけ見て宿主だと決めない**——
 # 足す前に本体の `requirements.txt` を実際に見ること（別の拡張が入れたものを
 # 宿主のものだと思い込む事故が起こりうる）。
 #
-# なお同梱スクリプトは**別プロセスで動く独立した実行ファイル**で、`unbake/` からは
-# import しない。だから `tests/source_integrity_test.mjs` の import 検査は
-# `unbake/` だけを走査しており、同梱物は対象外になっている。
+# **2026-08-27 訂正。** ここは長らく「同梱スクリプトは別プロセスで動く独立した
+# 実行ファイルで、`unbake/` からは import しない」と書いていたが、**0.1.2 以降は
+# 同一プロセスで、`unbake/services/sync_script_runner.py` が普通に import している**。
+# 記述だけが子プロセス時代のまま残っていた。
+#
+# つまり `tests/source_integrity_test.mjs` の import 検査が同梱物を見ていないのは、
+# **「呼ばれないから」ではなく「相対 import を兄弟として除外しているから」**である
+# （同ファイルの `if (dots) continue;`）。**免除の根拠が入れ替わっている**ので、
+# 同梱スクリプトへ第三者パッケージが増えても、この検査は赤くならない。
+# `requests` 以外を足すときは、宿主が供給するかを**人が**確かめること。
 dependencies = []
 
 [project.urls]

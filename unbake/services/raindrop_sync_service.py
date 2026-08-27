@@ -17,7 +17,7 @@ Comfy Registry の自動走査が v0.1.0 と v0.1.1 を `Flagged` にした。�
 
 ## ライセンス境界について（**論拠が変わった。重要**）
 
-同期スクリプト（``civitai-recipe-sync/``）は **MIT**、この拡張は **GPL-3.0**。
+同期スクリプト（``civitai_recipe_sync/``）は **MIT**、この拡張は **GPL-3.0**。
 
 **以前の説明は「import しない・別プロセスだから arm's-length」だった。
 同一プロセスで読み込む以上、その論拠はもう使えない。** ただし**結論は変わらない**。
@@ -27,7 +27,7 @@ Comfy Registry の自動走査が v0.1.0 と v0.1.1 を `Flagged` にした。�
   * ここで起きているのは **GPL の側（この拡張）が MIT の成果物を取り込む**こと。
     MIT は GPL 適合の寛容型ライセンスなので、この組み合わせは明示的に許される。
     **結合物は GPL-3.0** になり、**取り込まれた MIT ファイルは MIT のまま**
-    （``civitai-recipe-sync/LICENSE`` が引き続きそれらを支配する）。
+    （``civitai_recipe_sync/LICENSE`` が引き続きそれらを支配する）。
   * 危ないのは逆向き——GPL のライブラリを非公開のコードが読み込む形。
     ここには当たらない。
 
@@ -42,7 +42,6 @@ import asyncio
 import json
 import logging
 import os
-import sys
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -64,7 +63,7 @@ MAX_LOG_LINE_CHARS = 500
 
 # 同期スクリプトの位置。**このパッケージの中だけを指す。**
 #
-# **`..` を含めてはいけない。** 以前は `("..", "civitai-recipe-sync", …)` で
+# **`..` を含めてはいけない。** 以前は `("..", "civitai_recipe_sync", …)` で
 # `custom_nodes/` の隣を見ており、配布物には入っていなかった——つまり
 # **Registry から入れた人はこの機能を一度も使えなかった**（必ず
 # 「同期スクリプトが見つかりません」で終わる）。同梱して中を指すようにした。
@@ -74,7 +73,7 @@ MAX_LOG_LINE_CHARS = 500
 # 自動走査が止める（2026-08-25 に v0.1.0 が `Flagged` になった）。
 # 実際には `settings.py` の既知キーに無く UI からも触れない**到達不能な分岐**
 # だったが、走査器はコードを読むのであって到達可能性は見ない。
-DEFAULT_SCRIPT_RELATIVE_PATH = ("civitai-recipe-sync", "civitai_image_download.py")
+DEFAULT_SCRIPT_RELATIVE_PATH = ("civitai_recipe_sync", "civitai_image_download.py")
 
 # 自動同期の既定間隔（時間）
 DEFAULT_AUTO_SYNC_INTERVAL_HOURS = 24
@@ -128,7 +127,6 @@ class RaindropSyncService:
         environment: Optional[UnbakeEnvironment] = None,
         settings_manager=None,
         recipes_dir_getter: Optional[Callable[[], str]] = None,
-        python_executable: Optional[str] = None,
         logger_override: Optional[logging.Logger] = None,
     ) -> None:
         # **既定値を持たない。** 元は `get_settings_manager()` へ落ちていたので、
@@ -138,7 +136,12 @@ class RaindropSyncService:
             settings_manager if settings_manager is not None else self._environment.settings
         )
         self._recipes_dir_getter = recipes_dir_getter
-        self._python = python_executable or sys.executable
+        # `self._python` は 2026-08-26 に外した。**代入だけで一度も使われて
+        # いなかった**——子プロセスをやめた（`sync_script_runner` を同一
+        # プロセス内で回す形にした）ときの取り残し。残しておくと
+        # Python の実行ファイルのパスが原文に残り、Registry の走査は
+        # 到達性を見ないので
+        # 「Python を起こす拡張」に見え続ける。
         self._logger = logger_override or logger
 
         self._runner: Optional[SyncScriptRunner] = None
@@ -208,7 +211,7 @@ class RaindropSyncService:
         candidate = _package_root().joinpath(*DEFAULT_SCRIPT_RELATIVE_PATH).resolve()
         if not candidate.is_file():
             raise RaindropSyncConfigError(
-                "同期スクリプト civitai-recipe-sync/civitai_image_download.py が"
+                "同期スクリプト civitai_recipe_sync/civitai_image_download.py が"
                 "パッケージ内に見つかりません。本来は同梱されているものなので、"
                 "この拡張を入れ直してください。"
             )

@@ -14,7 +14,7 @@ Unbake が回収する。だからここが要るのは**一覧**だけで、レ
 同梱の ``unbake/services/raindrop_sync_service.py``（717行）は Raindrop の
 クライアントではなく、**フォーク側の ``civitai_image_download.py`` を別プロセスで
 起動する実行器**だった（``resolve_script_path()`` が
-``civitai-recipe-sync/civitai_image_download.py`` を探す）。配線すると2つ壊れる:
+``civitai_recipe_sync/civitai_image_download.py`` を探す）。配線すると2つ壊れる:
 
 1. 同梱していない外部スクリプトへ依存する——**独立した拡張ではなくなる**
 2. そのスクリプトは ``.recipe.json`` を書く（実測で書き込み5箇所）——

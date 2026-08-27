@@ -285,3 +285,128 @@ test('刻印が在れば、土台が違っても帰属は刻印に従う', () =>
     assert.equal(found.recordId, 'ntd', '刻印より指紋を優先している');
     assert.equal(found.evidence, 'stamped');
 });
+
+// --- 8. 絵は自分の持ち主を名乗っている（2026-08-27 実機の報告）--------------
+//
+// 出す絵の名前は `filename_prefix` で決まり、その値は**再現した記録の
+// `civitai_image_id`** から作られる。つまり書いた側が出所を名前に残している。
+//
+// この手掛かりを1つも使っていなかったので、実データで
+// `civitai_78353204_00002/3/4_.png` の3枚が**指紋だけで別の記録
+// （`civitai_77742180`）へぶら下がっていた**——一致率 0.857（7項目中6項目）で、
+// 閾値 0.70 を普通に超える。**似た記録どうしは指紋に区別できない。**
+
+/** 名乗りと指紋が食い違う2件。土台も LoRA も同じで、違うのは寸法だけ。 */
+const twins = () => [
+    record({ id: 'rec-77742180', civitaiImageId: '77742180' }),
+    record({ id: 'rec-78353204', civitaiImageId: '78353204',
+        gen_params: { ...record().gen_params, steps: 21 } }),
+];
+
+test('名乗っている絵は、名乗ったとおりの記録へ付く（指紋より強い）', () => {
+    const indexed = indexRecords(twins());
+    const result = attributeOutput({
+        filename: 'civitai_78353204_00002_.png',
+        raw: { prompt: JSON.stringify(graph()) },
+    }, indexed);
+    assert.equal(result.recordId, 'rec-78353204',
+        '名前が正解を書いているのに、指紋の側を採っている');
+    assert.equal(result.evidence, 'named');
+});
+
+test('名乗っていない絵は、今までどおり指紋で当てる', () => {
+    const indexed = indexRecords(twins());
+    const result = attributeOutput({
+        filename: 'ComfyUI_00122_.png',
+        raw: { prompt: JSON.stringify(graph()) },
+    }, indexed);
+    assert.equal(result.evidence, 'inferred', '名乗りが指紋を塞いでいる');
+    assert.equal(result.recordId, 'rec-77742180');
+});
+
+test('名乗っているのに持ち主が居ない絵は、誰のものでもない', () => {
+    // **記録を消した後の絵がこれ。** ここで指紋へ落とすと、
+    // 消した記録の絵が生き残った似た記録へ移り、直した症状がそのまま戻る。
+    const indexed = indexRecords([record({ id: 'rec-77742180', civitaiImageId: '77742180' })]);
+    const result = attributeOutput({
+        filename: 'civitai_99999999_00001_.png',
+        raw: { prompt: JSON.stringify(graph()) },
+    }, indexed);
+    assert.equal(result.recordId, null, '消した記録の絵が別の記録へ移っている');
+    assert.equal(result.evidence, 'none');
+});
+
+test('名前が2つの記録に当たったら、どちらにも付けない', () => {
+    const indexed = indexRecords([
+        record({ id: 'rec-a', civitaiImageId: '55' }),
+        record({ id: 'rec-b', civitaiImageId: '55' }),
+    ]);
+    const result = attributeOutput({
+        filename: 'civitai_55_00001_.png',
+        raw: { prompt: JSON.stringify(graph()) },
+    }, indexed);
+    assert.equal(result.recordId, null, '同じ名前を名乗る2件から片方を選んでいる');
+});
+
+test('名前の前置きは `_` 区切りで見る（数字の食い込みで誤爆しない）', () => {
+    // `civitai_1234` の索引が `civitai_12345_...` を掴んではいけない。
+    const indexed = indexRecords([
+        record({ id: 'rec-short', civitaiImageId: '1234' }),
+        record({ id: 'rec-long', civitaiImageId: '12345' }),
+    ]);
+    const result = attributeOutput({
+        filename: 'civitai_12345_00001_.png',
+        raw: { prompt: JSON.stringify(graph()) },
+    }, indexed);
+    assert.equal(result.recordId, 'rec-long', '短い方の名前が長い方を食っている');
+});
+
+test('要約しか無い薄い記録でも、名乗りは効く', () => {
+    // **id と civitai の id しか持たない記録**でも、自分の名前の絵は自分に付く。
+    // 指紋は空欄だらけで何も主張できないので、ここが唯一の手掛かりになる。
+    //
+    // （当初は「指紋の索引が薄い記録を落とすから」と書いていたが、**それは嘘だった**
+    //  ——`conditionsFromRecord()` は object に対して `null` を返さず、
+    //  落とす分岐は現状ほぼ通らない。変異で発火しなかったので気づけた。）
+    const indexed = indexRecords([
+        { id: 'rec-thin', civitaiImageId: '4242' },
+        record({ id: 'rec-fat', civitaiImageId: '9' }),
+    ]);
+    const result = attributeOutput({
+        filename: 'civitai_4242_00001_.png',
+        raw: { prompt: JSON.stringify(graph()) },
+    }, indexed);
+    assert.equal(result.recordId, 'rec-thin', '条件の薄い記録が名乗りから外れている');
+});
+
+test('内訳に名乗りの数が出る（印と混ぜない）', () => {
+    const { tally } = attributeOutputs([
+        { filename: 'civitai_78353204_00001_.png', raw: { prompt: JSON.stringify(graph()) } },
+        { filename: 'ComfyUI_00001_.png', raw: { prompt: JSON.stringify(graph()) } },
+    ], twins());
+    assert.equal(tally.named, 1, '名乗りが数えられていない');
+    assert.equal(tally.inferred, 1);
+    // **足して1つにしない。** 強さが違うものを混ぜると、
+    // 一番強い主張が一番弱い根拠で通る。
+    assert.ok(Number.isFinite(tally.named), '内訳が NaN になっている');
+});
+
+test('消した記録の UUID を名乗る絵も、別の記録へ移らない', () => {
+    // 実データで `12213818-…_current_00001_.png`（消した記録の UUID）が
+    // `civitai_77742180` の「出た絵」に出ていた。名乗りを `civitai_` だけに
+    // 限ると、**UUID 名の絵だけが指紋へ落ちて別の記録の絵として出続ける。**
+    const indexed = indexRecords([record({ id: 'rec-77742180', civitaiImageId: '77742180' })]);
+    const dead = attributeOutput({
+        filename: '12213818-16c2-4af1-98b6-c017c8261d1b_current_00001_.png',
+        raw: { prompt: JSON.stringify(graph()) },
+    }, indexed);
+    assert.equal(dead.recordId, null, '消した記録の絵が生きた記録へ移っている');
+
+    // **自分の UUID を名乗る絵は、今までどおり自分に付く。**
+    const mine = attributeOutput({
+        filename: 'rec-77742180_current_00001_.png',
+        raw: { prompt: JSON.stringify(graph()) },
+    }, indexed);
+    assert.equal(mine.recordId, 'rec-77742180');
+    assert.equal(mine.evidence, 'named');
+});

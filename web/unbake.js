@@ -27,6 +27,7 @@
  */
 
 import { installedNamesFrom, resolveRecipeModels } from './core/modelResolver.js';
+import { extractCivitaiImageId } from './panel/civitaiImageId.js';
 import { createUnbakePanel } from './panel/panel.js';
 import { installSidebarOverlay } from './panel/sidebarOverlay.js';
 import { applySkin } from './panel/skin.js';
@@ -50,7 +51,8 @@ import {
 } from './core/generationRecord.js';
 import { buildRecipeWorkflow } from './core/recipeWorkflowBuilder.js';
 import { applyResolvedResources } from './core/civitaiResources.js';
-import { toRecipeShape } from './core/recordShape.js';
+import { hasVersionEvidence, toRecipeShape } from './core/recordShape.js';
+import { findVersionByFileName } from './core/civitaiModelLookup.js';
 import { applyDarkReaderLock } from './core/darkReaderLock.js';
 import { extractParamsFromBytes } from './core/extractedParams.js';
 import {
@@ -301,12 +303,61 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
      * **「既に在る」を失敗として投げない。** 呼び手が数を分けられるように、
      * 応答をそのまま返す（`{ok:false, error:"already there: …"}`）。
      */
+    let variantIndex = null;
+
+    /**
+     * 出た絵の索引を、**その記録のぶんだけ**書き換える（2026-08-26 利用者の指示）。
+     *
+     * 索引は開いたときに1度だけ組み、そのあと**一度も更新していなかった**。
+     * だから新しく出した絵は「出た絵」に出ず、消した絵も消えない
+     * ——どちらも再読み込みでしか直らなかった。
+     *
+     * **全部組み直さない。** 実測で初回の走査は 24往復・1,334ms かかる。
+     * 1枚出しただけでそれを回すのは、**待たせるためだけの往復**になる。
+     */
+    const variantsIo = {
+        /** 出た絵を足す。**同じファイルは二重に入れない。** */
+        note(recordId, outputs) {
+            const id = String(recordId ?? '');
+            if (!id || !variantIndex || !Array.isArray(outputs) || !outputs.length) return;
+            const current = variantIndex.get(id) || [];
+            const seen = new Set(current.map(item => `${item?.subfolder || ''}/${item?.filename || ''}`));
+            const added = [];
+            for (const output of outputs) {
+                const key = `${output?.subfolder || ''}/${output?.filename || ''}`;
+                if (!output?.filename || seen.has(key)) continue;
+                seen.add(key);
+                added.push(output);
+            }
+            if (!added.length) return;
+            // **新しいものを先頭へ。** 一覧は新しい順で並べている。
+            variantIndex.set(id, [...added, ...current]);
+        },
+        /** 消した絵を落とす。**どの記録に属していても落とす**（同じ絵は1つ）。 */
+        forget({ filename, subfolder = '' } = {}) {
+            if (!variantIndex || !filename) return;
+            const key = `${subfolder || ''}/${filename}`;
+            for (const [id, list] of variantIndex) {
+                const left = (list || []).filter(
+                    item => `${item?.subfolder || ''}/${item?.filename || ''}` !== key);
+                if (left.length !== (list || []).length) variantIndex.set(id, left);
+            }
+        },
+    };
+
     const downloadIo = {
-        async start(versionId) {
+        async start(versionId, { modelId = null } = {}) {
             const response = await fetch('/unbake/download', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ versionId: String(versionId) }),
+                body: JSON.stringify({
+                    versionId: String(versionId),
+                    // **識別子だけ。** 消えた版を受け皿から探すのに要る
+                    // （入口がモデルIDを求める）。URL でも置き場でもないので、
+                    // 「落とし先を決めるのはサーバ側」という約束は変わらない。
+                    ...(modelId === null || modelId === undefined
+                        ? {} : { modelId: String(modelId) }),
+                }),
             });
             return response.json();
         },
@@ -316,6 +367,34 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
          * これが無いと、押した人は総量を知らずに始めることになる——実測で、
          * 19件の待ち行列の10本目が **34 GB** だった（止めるまで気づけなかった）。
          */
+        /**
+         * **ファイル名から版を引く**（2026-08-26 実機で必要になった）。
+         *
+         * グラフの中だけに名前が在る素材（`Power Lora Loader` が束ねていた
+         * LoRA など）は、記録の `loras` に入らないので版IDを持たない。
+         * だから「不足」とは出るのに**落とす候補に出てこなかった**。
+         *
+         * 実測（`civitai_139981506` の6本）: **4本はファイル名だけで版を
+         * 特定できた**。残り2本は Civitai の検索に出てこない（消えたか、
+         * 別の所から来たもの）。**引けないものは引けないと言う。**
+         *
+         * **完全一致でしか決めない。** 似た名前で当てると、別の重みを
+         * 「同じ素材」として落とすことになる（`civitaiModelLookup` が
+         * 2つ以上当たったら決めない作りになっている）。
+         */
+        async lookupByName(fileName) {
+            const { findVersionByFileName } = await import('./core/civitaiModelLookup.js');
+            const request = environmentRequestOrNull();
+            if (!request) return null;
+            try {
+                const found = await findVersionByFileName(fileName, { request });
+                // **理由をそのまま返す。** 「今は聞けなかった」と「見つからない」は
+                // 打つ手が違う——前者は待てば通る。
+                return { match: found?.match || null, reason: found?.reason || 'none' };
+            } catch (error) {
+                return { match: null, reason: `network:${error?.message || error}` };
+            }
+        },
         async plan(versionIds) {
             const query = encodeURIComponent([...versionIds].join(','));
             const response = await fetch(`/unbake/download-plan?versionIds=${query}`);
@@ -328,6 +407,28 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
         async cancel() {
             const response = await fetch('/unbake/download-cancel', { method: 'POST' });
             return response.json();
+        },
+    };
+
+    /**
+     * **拡散モデルに付いてくるもの**（テキストエンコーダ・VAE）の口。
+     *
+     * **系統名しか送らない。** URL も置き場も送らない——送れる形にすると、
+     * 画面へ細工をした人が任意の場所へファイルを置ける口になる。落とし先は
+     * サーバ側の目録が持つ `folder` から ComfyUI が決める。
+     *
+     * この2つの口は 2026-08-26 に作った。目録（`known_model_catalog`）も
+     * 取得（`known_model_downloader`）も以前から在ったのに、**繋ぐ口が無くて
+     * 画面から一度も届いていなかった**（到達性の棚卸しで判明）。
+     */
+    const companionIo = {
+        async status(baseModel) {
+            const { fetchCompanionStatus } = await import('./core/modelCompanions.js');
+            return fetchCompanionStatus(baseModel);
+        },
+        async download(baseModel) {
+            const { downloadCompanions } = await import('./core/modelCompanions.js');
+            return downloadCompanions(baseModel);
         },
     };
 
@@ -345,13 +446,30 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
      * UI グラフを持つ記録は実測で36件しか無いので、**大半はこちらが組んだものを開く**。
      */
     async function openWorkflowInComfy(recipe, name) {
-        const uiGraph = recipe?.comfy_workflow || recipe?.ui_workflow || null;
+        /*
+         * **元のグラフをそのまま開く**（2026-08-26 利用者の指示）。
+         *
+         * 足りないノードは ComfyUI 自身が Workflow Overview に出してくれる
+         * ——そこには**入れる導線まで**在る。だから Unbake が入れ方を真似る
+         * 必要は無く、**元のグラフを開くことが答え**になる。
+         *
+         * ここは `comfy_workflow` / `ui_workflow` しか見ていなかったが、
+         * 記録が持っているのは `workflow`（UI グラフ）と `prompt`（API グラフ）
+         * ——**実測でどちらも取り落としていた**ので、組み直したグラフが開かれ、
+         * **足りないノードのエラーが1つも出なかった。**
+         */
+        const uiGraph = recipe?.comfy_workflow || recipe?.ui_workflow
+            || (recipe?.workflow && typeof recipe.workflow === 'object'
+                && Array.isArray(recipe.workflow.nodes) ? recipe.workflow : null);
         if (uiGraph && typeof app.loadGraphData === 'function') {
             app.loadGraphData(uiGraph);
             return { ok: true, how: 'ui' };
         }
         // 組んだものを開く。**Sweep と同じ組み立て**を通す（別の道を作らない）。
-        let prompt = recipe?.comfy_prompt || null;
+        // **記録が抱えている API グラフも見る。** 組み直しは最後の手。
+        let prompt = recipe?.comfy_prompt
+            || (recipe?.prompt && typeof recipe.prompt === 'object'
+                && !Array.isArray(recipe.prompt) ? recipe.prompt : null);
         if (!prompt) {
             const inputs = await collectAnalysisInputs();
             const built = buildRecipeWorkflow(recipe, {
@@ -399,7 +517,7 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
      * （書いた瞬間にレシピ編集器になり、稼働中の LoRA Manager と実ファイルを取り合う）。
      */
     const recordsIo = {
-        async save(record) {
+        async save(record, { replace = false } = {}) {
             const body = recordSaveBody(record);
             if (!body) return { ok: false, error: 'no-recipe' };
             if (!body.id) body.id = record.id || null;
@@ -420,6 +538,8 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
                 // 置き場も名前もサーバが決め、**中身を見て**画像か判断する。
                 body: JSON.stringify({
                     record: body, previewUrl, previewData: record?.previewData || null,
+                    // **頼まれたときだけ置き換える。** 既定は上書きしない。
+                    ...(replace ? { replace: true } : {}),
                 }),
             });
             return response.json();
@@ -498,6 +618,7 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
     const shared = {
         documentRef,
         downloadIo,
+        companionIo,
         openInComfy: openWorkflowInComfy,
         // **お気に入りはこちら側に持つ。** 記録は上流が書いた `.recipe.json` で、
         // こちらは読むだけと決めてある（上流の印は尊重して、消す道は作らない）。
@@ -567,8 +688,45 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
         onExtractParams: onExtractOutputParams,
         loadRecord: loadResolvedRecord,
         loadVariants,
+        loadFreshOutputs,
+        measureVramFit,
+        variantsIo,
+        // **消した絵を、走者の索引からも落とす**（2026-08-26 実機）。
+        forgetRunnerOutput: (what) => SweepRunner.forgetOutputFile(what),
         batchIo,
         raindropIo,
+        /**
+         * **取り込んだ分だけ判定を掛ける。**
+         *
+         * 判定の一巡（`startVerdictPass`）は**1セッションに1回**しか走らない。
+         * だから**一巡が終わったあとに取り込んだ記録は、永久に `pending` のまま**
+         * だった——判定も `missing` も付かないので、**不足モデルの取得が
+         * 「何も無い」で終わる**（2026-08-25 利用者の報告）。
+         *
+         * 一巡を丸ごとやり直すと 350件ぶん組み直すことになるので、
+         * **足りない分だけ**掛ける。
+         */
+        async verdictFor(records, { fresh = false } = {}) {
+            const list = (records || []).filter(record => record?.libraryId || record?.id);
+            if (!list.length) return;
+            if (fresh) {
+                /*
+                 * **材料から取り直す**（2026-08-26 実機で必要になった）。
+                 *
+                 * モデルを落とした直後は、`/object_info` の控えも判定表の
+                 * 材料の控えも**落とす前のまま**。捨てないと、落とし終わっても
+                 * 「未導入」のままで、利用者から見ると**何も変わらない**。
+                 */
+                try { await collectAnalysisInputs({ force: true }); } catch { /* 取れなくても続ける */ }
+                verdicts.resetInputs();
+            }
+            // **先に控えを捨てる。** 同じ id で取り込み直した記録は、
+            // 表に前の行が残っている——捨てないと `run()` が飛ばして
+            // **古い判定のまま**になる（実際にそうなった）。
+            verdicts.invalidate(list.map(record => record.libraryId ?? record.id));
+            await verdicts.run(list, () => {});
+            pushVerdicts();
+        },
         recordsIo: {
             ...recordsIo,
             /**
@@ -584,7 +742,7 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
              * 読み直したら**判定も掛け直す**——行から起こした記録は全部 `pending`
              * から始まるので、掛け直さないと判定の欄が一斉に「未確認」へ戻る。
              */
-            async reload() {
+            async reload(changed = null) {
                 const { records, messages } = await loadLibrary({ rescan: true });
                 for (const message of messages) logAll(message);
                 if (!records.length) return [];
@@ -592,6 +750,26 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
                 // **次に開く面も新しい方を見る。** 控えを残すと、全画面を開いた
                 // ときだけ取り込む前の一覧が出る。
                 libraryPromise = Promise.resolve({ records, messages: [] });
+                /*
+                 * **捨てるのは、変わった記録の控えだけ**（2026-08-26 利用者の指示）。
+                 *
+                 * 元は読み直しのたびに全件の控えを捨てていた。`run()` は計算済みを
+                 * 飛ばす作りなので、全部捨てると**全件を組み直す**ことになる
+                 * ——実機では URL を1本ドロップするたびに 353件・約6秒。
+                 * 取り込んだ1件のために、他の 352件を組み直していた。
+                 *
+                 * 捨てる理由は「取り込み直した記録の判定が嘘になる」ことなので、
+                 * **その記録だけ**捨てれば足りる。新しい記録は表に行が無いので、
+                 * 捨てなくても `run()` が計算する。
+                 *
+                 * **誰も教えてくれなければ、今までどおり全件捨てる**——
+                 * 変わった先が判らないまま古い判定を残す方が危ない。
+                 */
+                const touched = Array.isArray(changed)
+                    ? changed.map(record => record?.libraryId ?? record?.id)
+                        .filter(id => id !== null && id !== undefined)
+                    : records.map(record => record.libraryId ?? record.id);
+                verdicts.invalidate(touched);
                 verdictPassStarted = false;
                 startVerdictPass();
                 return records;
@@ -632,6 +810,73 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
                 return payload;
             },
             rescan: () => listLibraryRecords({ rescan: true }),
+            /**
+             * **出典から読み直す**（2026-08-26 利用者の指示）。
+             *
+             * 古い記録は `checkpoint` が名前だけで、版IDも hash も持たない。
+             * **版IDが無い記録は落とせない**ので、実機では 44件が
+             * 「落とせません」で止まっていた。出典の URL は記録が持っている
+             * （`origin.url` / `source_path`）ので、そこから読み直せば付く。
+             *
+             * **URL を持つものだけ。** 手元の画像から作った記録は読み直す先が
+             * 無いので触らない——触ると「読み直したのに変わらない」になる。
+             *
+             * **既に版IDが在るものは飛ばす。** 全件を外へ問い合わせると、
+             * 何百回も往復して待たされるうえ、相手にも負担をかける。
+             */
+            async refreshFromSource({ onProgress = null, shouldStop = null } = {}) {
+                const { records } = await loadLibrary({ rescan: false });
+                const targets = [];
+                for (const row of records || []) {
+                    const url = row?.origin?.url || row?.source_path || '';
+                    if (!/^https?:/i.test(String(url))) continue;
+                    if (!extractCivitaiImageId(String(url))) continue;
+                    targets.push({ id: row.libraryId ?? row.id, url: String(url) });
+                }
+                const result = { total: targets.length, refreshed: 0, skipped: 0, failed: 0, empty: 0 };
+                for (const [index, target] of targets.entries()) {
+                    if (shouldStop?.()) break;
+                    onProgress?.({ ...result, at: index + 1 });
+                    // **既に版IDが在るなら触らない。** 読み直す意味が無い。
+                    let current = null;
+                    try { current = await readLibraryRecord(target.id); } catch { current = null; }
+                    if (hasVersionEvidence(current)) { result.skipped += 1; continue; }
+                    try {
+                        // **落とし込みの器を通さない。** 経路はもう判っている
+                        // （URL から画像 ID が取れたものだけを対象にしている）。
+                        const found = extractCivitaiImageId(target.url);
+                        const got = await ingest({
+                            route: 'civitai',
+                            imageId: found.id,
+                            domain: found.domain || null,
+                            url: target.url,
+                        });
+                        const fresh = (got?.records || [])[0];
+                        if (!fresh) { result.failed += 1; continue; }
+                        /*
+                         * **良くなっていなければ書かない**（2026-08-26 実機で判明）。
+                         *
+                         * Civitai は画像そのものは返すが `meta` を持たないことがある
+                         * （実測 345件中 9件）。その空を `replace: true` で書いていたので、
+                         * **元の記録が空で塗り潰されていた**——チェックポイントも LoRA も
+                         * 生成条件も消え、「落とせば試せる」に出ていたものが消えた。
+                         *
+                         * この釦の目的は「版ID や hash の無い古い記録を作り直す」ことなので、
+                         * **版IDが取れなかった回は、書く理由がそもそも無い。**
+                         * 空の応答は「情報が無い」の証拠にもならない（取り込みの側は
+                         * 同じことを既に言っている）。
+                         */
+                        if (!hasVersionEvidence(fresh)) { result.empty += 1; continue; }
+                        const saveOutcome = await recordsIo.save(fresh, { replace: true });
+                        if (saveOutcome?.ok) result.refreshed += 1;
+                        else result.failed += 1;
+                    } catch {
+                        result.failed += 1;
+                    }
+                }
+                onProgress?.({ ...result, at: targets.length });
+                return result;
+            },
             // **言語を変えたら面を組み直す。** 保存しただけでは、
             // 既に文字が入っている見出し・列名・ボタンが古い言語のまま残る。
             onLanguageChange: async (code) => {
@@ -683,7 +928,7 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
     // 1バイトも取りに行かない。取ったら使い回す。
 
     /** 帰属の結果（記録id → 絵の配列）。**1回だけ組む。** */
-    let variantIndex = null;
+
     let variantPromise = null;
 
     async function ensureVariantIndex() {
@@ -703,10 +948,13 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
             const { byRecord, tally } = attributeOutputs(outputs, sharedRecords);
             // **内訳を必ず出す。** 「N枚を紐付けた」だけだと、
             // そのうち何枚が推定なのかが読めない。
+            // **名乗りを印と混ぜない**（2026-08-27）。強さが違うので、
+            // 足して1つの数にすると**一番強い主張が一番弱い根拠で通る**。
             logAll(t('variants.tally', {
-                attributed: tally.stamped + tally.inferred,
+                attributed: tally.stamped + tally.named + tally.inferred,
                 total: tally.total,
                 stamped: tally.stamped,
+                named: tally.named,
                 inferred: tally.inferred,
             }));
             variantIndex = byRecord;
@@ -714,6 +962,7 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
         })();
         return variantPromise;
     }
+
 
     /**
      * 索引を**押される前に**組んでおく（2026-08-24 利用者の指摘
@@ -740,6 +989,85 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
     }
 
     /** 記録1件ぶんの絵と、基準にする本体を揃える。 */
+    /**
+     * その記録の出力を、**サーバへ引き直して**返す（2026-08-26 実機）。
+     *
+     * `loadVariants` が読む索引は開いたときに1度組んだもので、**その後に出た
+     * 絵は入っていない**。ComfyUI は同じグラフを2回目に投げると実行しない
+     * （キャッシュ）ので、そのとき「0枚」に見えるのだが、**絵は既に在る**
+     * ——索引が古いだけで「見つかりません」と言っていた。
+     *
+     * **全部を組み直さない。** 記録1件ぶんだけ引く。
+     */
+    async function loadFreshOutputs(record) {
+        const id = String(record?.libraryId ?? record?.id ?? '');
+        if (!id) return [];
+        let result;
+        try {
+            result = await listRecordOutputs(id);
+        } catch {
+            return [];
+        }
+        return (result?.outputs || [])
+            .filter(entry => entry?.filename)
+            .map(entry => {
+                const query = new URLSearchParams({
+                    filename: String(entry.filename || ''),
+                    subfolder: String(entry.subfolder || ''),
+                    type: 'output',
+                });
+                return {
+                    url: `/api/view?${query.toString()}`,
+                    filename: entry.filename,
+                    subfolder: entry.subfolder || '',
+                };
+            });
+    }
+
+    /**
+     * **VRAM とモデルの大きさを実測する**（2026-08-26 実機の報告）。
+     *
+     * 「動作が極端に遅くなり生成が始まりません」の正体は、13.1 GB の
+     * 拡散モデルを 12.0 GB の GPU で回していたこと。**グラフは正しかった。**
+     *
+     * どちらも ComfyUI 本体が配っている:
+     *   `/system_stats`             → `devices[].vram_total`
+     *   `/experiment/models/<置き場>` → `[{name, size}]`
+     *
+     * **取れなければ黙る。** 古い ComfyUI には `/experiment/models` が無い
+     * ——測れないことを「入らない」と読むと、出るはずの警告が全件に出る。
+     */
+    let vramFitCache = null;
+    async function measureVramFit(folders) {
+        const want = [...new Set((folders || []).filter(Boolean))].sort();
+        if (!want.length) return null;
+        const key = want.join(',');
+        if (vramFitCache?.key === key) return vramFitCache.value;
+        let vramTotal = 0;
+        try {
+            const stats = await (await fetch('/system_stats')).json();
+            for (const device of stats?.devices || []) {
+                vramTotal = Math.max(vramTotal, Number(device?.vram_total) || 0);
+            }
+        } catch { return null; }
+        if (vramTotal <= 0) return null;
+        const sizes = {};
+        for (const folder of want) {
+            try {
+                const list = await (await fetch(`/experiment/models/${encodeURIComponent(folder)}`)).json();
+                if (!Array.isArray(list)) continue;
+                const table = {};
+                for (const entry of list) {
+                    if (entry?.name) table[entry.name] = Number(entry.size) || 0;
+                }
+                sizes[folder] = table;
+            } catch { /* この置き場は測れない。**他の置き場は測れる。** */ }
+        }
+        const value = Object.keys(sizes).length ? { sizes, vramTotal } : null;
+        vramFitCache = { key, value };
+        return value;
+    }
+
     async function loadVariants(record) {
         const index = await ensureVariantIndex();
         const id = String(record?.libraryId ?? record?.id ?? '');
@@ -777,8 +1105,18 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
      */
     function startVerdictPass() {
         if (verdictPassStarted || !sharedRecords.length) return;
+        /*
+         * **これから組む件数だけを言う**（2026-08-26 利用者の指示）。
+         *
+         * `run()` は計算済みを飛ばすので、全件数を出すと**実際には1件しか
+         * 組まないのに「353件」**と読める。件数は待ち時間の目安として
+         * 読まれるので、飛ばす分を数に入れない。
+         */
+        const pending = sharedRecords.filter(
+            record => record?.libraryId && !verdicts.get(record.libraryId));
+        if (!pending.length) { pushVerdicts(); return; }
         verdictPassStarted = true;
-        logAll(t('list.verdictRunning', { total: sharedRecords.length }));
+        logAll(t('list.verdictRunning', { total: pending.length }));
         verdicts.run(sharedRecords, (done, total) => {
             if (done % 25 === 0 || done === total) pushVerdicts();
         }).then(({ done, failed, ms }) => {
@@ -992,7 +1330,26 @@ export function libraryRowToRecord(row) {
         // **誰が書いたか。** 消すときに文言が変わる——LoRA Manager が書いた記録は、
         // ファイルを消しても**向こうの一覧には再スキャンまで残って見える**。
         owner: row.owner || 'lora-manager',
-        origin: { kind: 'library', url: null, filename: null, subfolder: null },
+        // **出典を落とさない**（2026-08-26 の実機検証で判明）。
+        // ここが `null` 固定だったので、URL を開く口は一度も出ず、
+        // 「出典から読み直す」も対象0件で終わっていた。
+        origin: {
+            kind: 'library',
+            url: typeof row.source_path === 'string' && /^https?:/i.test(row.source_path)
+                ? row.source_path : null,
+            filename: null, subfolder: null,
+        },
+        source_path: row.source_path || null,
+        /*
+         * **出す絵の名前になる id**（2026-08-27 実機の報告）。
+         *
+         * 要約はこれを持っているのに、ここで落としていた。落としたせいで
+         * **`civitai_78353204_00002_.png` が、名前で自分の持ち主を名乗っているのに
+         * 指紋だけで別の記録（77742180）へぶら下がっていた**——
+         * 帰属は `civitai_<id>` を読む（`outputAttribution.namedRecordId`）ので、
+         * ここを通さないとその手掛かりが下流に1つも届かない。
+         */
+        civitaiImageId: row.civitai_image_id ?? null,
         // 参照画像は id でしか引けない（パスを画面へ渡さない）。
         previewUrl: row.preview ? `/unbake/record-preview?id=${encodeURIComponent(row.id)}` : null,
         hasGraph: Boolean(row.has_graph),
@@ -1094,8 +1451,17 @@ export async function loadLibrary(options = {}) {
  */
 /** 種別ごとの出どころ。**`/object_info` のどこを見るか。** */
 const INSTALLED_SOURCES = {
-    checkpoints: ['CheckpointLoaderSimple', 'ckpt_name'],
-    loras: ['LoraLoader', 'lora_name'],
+    // **`unet` も見る。**（2026-08-25 利用者の報告で判明）
+    //
+    // ComfyUI は本体を `models/checkpoints` だけでなく `models/unet`
+    // （`diffusion_models`）にも置く。Flux 系や Qwen 系はそちら側で、
+    // 実測で利用者の `unet/Anima/anime/anima_baseV10.safetensors` が
+    // **差し替えの選択肢に一度も出ていなかった**——在るのに選べない。
+    //
+    // **組み立ては既に `UNETLoader` を出せる**（`recipeWorkflowBuilder.js`）ので、
+    // 選ばせても落ちない。見えていなかったのは選択肢の側だけだった。
+    checkpoints: [['CheckpointLoaderSimple', 'ckpt_name'], ['UNETLoader', 'unet_name']],
+    loras: [['LoraLoader', 'lora_name']],
 };
 
 /** 一度取った `/object_info` を使い回す（行ごとに呼ばれるので毎回は取らない）。 */
@@ -1118,7 +1484,17 @@ export async function listInstalledModels(kind) {
     try {
         installedInputs = installedInputs || collectAnalysisInputs();
         const { objectInfo } = await installedInputs;
-        return installedModelOptions(objectInfo, source[0], source[1]);
+        // **重複を落とす。** 同じ名前が両方の口に出ることがある。
+        const seen = new Set();
+        const out = [];
+        for (const [classType, inputName] of source) {
+            for (const name of installedModelOptions(objectInfo, classType, inputName)) {
+                if (seen.has(name)) continue;
+                seen.add(name);
+                out.push(name);
+            }
+        }
+        return out;
     } catch {
         // **失敗を次回へ持ち越さない。** 起動直後の1回が落ちたときに
         // 掴んだままにすると、拒否済みの約束をずっと返し続ける。
@@ -1217,7 +1593,7 @@ export async function onExtractOutputParams(item) {
  *
  * **Civitai だけは別物。** 来るのは URL だけでバイト列は来ないので、
  * ID から API で取り直して**再構成**する必要がある。その変換器は別リポジトリ
- * （`civitai-recipe-sync`・MIT）に1枚単位で在り、**まだ配線していない。**
+ * （`civitai_recipe_sync`・MIT）に1枚単位で在り、**まだ配線していない。**
  * ここで黙って空を返さず、何が要るかを言葉で返す。
  *
  * @param {object} routed `routeDrop()` の結果
@@ -1280,7 +1656,82 @@ export async function mapWithLimit(items, limit, run) {
     return out;
 }
 
+/**
+ * 名前しか無い資源に、**版IDを引いて足す**。
+ *
+ * ComfyUI で作られた絵は `additionalResources` / `models` に「名前と強度」しか
+ * 置かない。版IDが無いと取得先が判らず、**落とせば済むものが「再現不可」**になる
+ * （2026-08-25 利用者の報告）。
+ *
+ * **引けなければ何も足さない。** `civitaiModelLookup` は1つに決まるときだけ返し、
+ * 同名のファイルが2つ以上あれば `ambiguous` で沈黙する。ここで「たぶんこれ」を
+ * 補うと、道具は黙って違うモデルで再現することになる。
+ *
+ * **印は消さない。** 版IDが付いても、当てた根拠は依然ファイル名の一致である。
+ * `evidence` を `name` のまま残すので、画面は「名前だけで照合」を出し続ける
+ * ——**取得できるようになったことと、同じ物だと確かめたことは別**。
+ * SHA256 まで突き合わせたときに初めて `hash` へ上がる（それはサーバ側の仕事）。
+ */
+async function attachLookedUpVersions(recipe, { domain, apiKey }) {
+    if (!recipe || typeof recipe !== 'object') return recipe;
+    const fill = async (resource) => {
+        if (!resource || typeof resource !== 'object') return resource;
+        // 既に版ID か hash が在るなら触らない。**強い根拠を弱いもので上書きしない。**
+        if (resource.modelVersionId || resource.id || resource.hash) return resource;
+        const name = resource.file_name || resource.name || '';
+        if (!name) return resource;
+        const found = await findVersionByFileName(name, { domain, apiKey });
+        if (found.reason !== 'unique' || !found.match) return resource;
+        return {
+            ...resource,
+            modelVersionId: found.match.versionId,
+            modelId: found.match.modelId,
+            // **手元と突き合わせるための材料**。ここでは突き合わせない。
+            lookupSha256: found.match.sha256,
+            lookupModelName: found.match.modelName,
+            lookupVersionName: found.match.versionName,
+        };
+    };
+    const out = { ...recipe };
+    out.checkpoint = await fill(out.checkpoint);
+    if (Array.isArray(out.loras)) {
+        const filled = [];
+        for (const lora of out.loras) filled.push(await fill(lora));
+        out.loras = filled;
+    }
+    return out;
+}
+
+/**
+ * 落とし込みの唯一の入口。**ここで形を1度だけ揃える。**
+ *
+ * `D-20260824-01` の実測①が言っている通り、この道具には**記録の形**と
+ * **レシピの形**の2つがあり、下流（詳細・計画・組み立て・判定）は
+ * **レシピの形しか読まない**。素の記録を流すと**値が在るのに画面が空になる**。
+ *
+ * 同じ食い違いを**5回**踏んだ。5回目がこれで、2026-08-25 に利用者が
+ * `civitai_139981506` で見つけた:
+ *
+ *   - `gen_params` が `{}`（seed / steps / cfg / sampler は**直下**に在った）
+ *   - `checkpoint` が資源オブジェクトではなく**ただの文字列**
+ *   - その結果、Civitai のページの Generation data と画面が一致しない
+ *   - 根拠の印も付かない（`evidence` を読む先が資源オブジェクトなので）
+ *
+ * **原因は「読む側が足りない」ではなく「揃えていない」。** 押し込み口が
+ * 6箇所あり、`toRecipeShape()` を通していたのは**ライブラリから読む1本だけ**だった。
+ * だから個々の経路ではなく**この関数の出口**で通す。経路が増えても漏れない。
+ *
+ * `toRecipeShape()` は**既にレシピの形のものは触らない**ので、二重に通しても害はない。
+ */
 export async function ingest(routed) {
+    const result = await ingestRouted(routed);
+    return {
+        ...result,
+        records: (result?.records || []).map(record => toRecipeShape(record)),
+    };
+}
+
+async function ingestRouted(routed) {
     const records = [];
     const errors = [];
     /** 判定材料は1回だけ取る（`routed` 1件のうちで使い回す）。 */
@@ -1462,7 +1913,20 @@ export async function ingest(routed) {
         const captured = recordFromCivitaiImage(fetched.item, fetched.meta, {
             url: routed.url, domain: routed.domain,
         });
-        if (captured.ok) { records.push(captured.record); return { records, errors }; }
+        if (captured.ok) {
+            // **捕捉できた絵にも版IDを引く。**（2026-08-25 利用者の報告で判明）
+            //
+            // グラフを持つ絵は `recordFromCivitaiImage` で読めるが、**そこに在るのは
+            // 実行時のファイル名だけ**で版IDも hash も無い。B を recipe 経路にしか
+            // 繋いでいなかったので、**捕捉できた絵（実測14%）は取得先が判らないまま**
+            // ——「落とせば試せる」が出ず、不足モデルを落とせなかった。
+            //
+            // **先に形を揃えてから引く。** 捕捉直後の `checkpoint` はただの文字列で、
+            // 資源の形になっていないと引く相手が読めない。
+            const shaped = toRecipeShape(captured.record);
+            records.push(await attachLookedUpVersions(shaped, { domain: routed.domain, apiKey }));
+            return { records, errors };
+        }
 
         // **大半はグラフを持っていない。** 実測（画像30件）で `comfy` を持つのは
         // **2件（6.9%）**だけで、残りは A1111 形式の平たい値だった。
@@ -1478,7 +1942,10 @@ export async function ingest(routed) {
             const found = await fetchModelVersion(versionId, { domain: routed.domain, apiKey });
             if (found.ok) versions.set(String(versionId), found.version);
         }
-        const recipe = recipeFromCivitaiMeta(fetched.item, fetched.meta, versions);
+        const recipe = await attachLookedUpVersions(
+            recipeFromCivitaiMeta(fetched.item, fetched.meta, versions),
+            { domain: routed.domain, apiKey },
+        );
         const fromRecipe = buildRecordFromRecipe(recipe, {
             kind: 'civitai',
             url: routed.url || `https://civitai.com/images/${routed.imageId}`,

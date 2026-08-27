@@ -49,6 +49,49 @@ function firstOf(text, keys) {
     return null;
 }
 
+/**
+ * 1つのノードが何本も持つ形の LoRA を読む（2026-08-26 実測）。
+ *
+ * 実物（`Lora Loader (LoraManager)`）はこう入っている:
+ *
+ *     inputs.loras.__value__ = [{ name, strength, clipStrength, active }, …]
+ *     inputs.text            = "<lora:名前:0.25> <lora:別の名前:0.50> …"
+ *
+ * **`__value__` だけを読む。`text` は読まない。**
+ *
+ * `text` は表示用の写しなので、そこからも読めば取りこぼしが減る——と考えて
+ * 一度そうしたが、**実測すると利益が0で害だけだった**。手元の 895 枚で
+ * `text` に `<lora:…>` を含むのは `CLIPTextEncode` 系の9ノードだけで、
+ * `loras` を持つのに `__value__` が無いノードは**1つも無かった**。
+ * つまり写しの経路が拾うのは**プロンプト本文に書かれた A1111 の記法**だけ
+ * ——ComfyUI はそれを LoRA として適用しないので、採ると
+ * 「使っていない LoRA を使ったことにする」という嘘になる。
+ *
+ * **`active: false` は入れない。** 切ってある LoRA を効いていることにすると、
+ * 「同じ材料なのに絵が違う」という一番読みにくい食い違いになる。
+ *
+ * @param {object} inputs ノードの `inputs`
+ * @returns {{name: string, strength: number|null}[]}
+ */
+export function readMultiLoraWidget(inputs) {
+    const out = [];
+    const bag = inputs?.loras;
+    const list = Array.isArray(bag?.__value__) ? bag.__value__
+        : (Array.isArray(bag) ? bag : null);
+    if (list) {
+        for (const item of list) {
+            const name = typeof item?.name === 'string' ? item.name.trim() : '';
+            if (!name) continue;
+            if (item?.active === false) continue;
+            out.push({
+                name,
+                strength: typeof item?.strength === 'number' ? item.strength : null,
+            });
+        }
+    }
+    return out;
+}
+
 /** API 形式のグラフから、人が見て分かる要点だけを抜く。 */
 export function summarizePrompt(prompt) {
     const summary = {
@@ -91,6 +134,16 @@ export function summarizePrompt(prompt) {
                 strength: typeof inputs.strength_model === 'number' ? inputs.strength_model : null,
             });
         }
+        // **1つのノードが何本も持つ形**（2026-08-26 実測で見つけた）。
+        //
+        // `lora_name` だけを見ていたので、`Lora Loader (LoraManager)` を使った
+        // 絵は **LoRA が1本も採れていなかった**——手元の 897 枚のうち 34 枚
+        // （3.8%）がこれで、1枚あたり8本入っていた。**採れないのではなく、
+        // 「LoRA を使っていない」という別の嘘になる**のが悪い。
+        //
+        // 種類名では見分けない。`loras.__value__` という形を持つノードを拾う
+        // ——同じ形の別ノードが出ても、そのまま読める。
+        for (const entry of readMultiLoraWidget(inputs)) summary.loras.push(entry);
         if (SAMPLER_TYPES.has(type)) {
             if (summary.seed === null && typeof inputs.seed === 'number') summary.seed = inputs.seed;
             if (summary.seed === null && typeof inputs.noise_seed === 'number') summary.seed = inputs.noise_seed;

@@ -91,7 +91,7 @@ def normalize_sha256(value: object) -> str:
 
 
 def classify_model_payload(
-    file_path: str, size: Optional[int] = None
+    file_path: str, size: Optional[int] = None, *, name: Optional[str] = None
 ) -> PayloadVerdict:
     """Judge a file by its container's leading bytes.
 
@@ -99,9 +99,15 @@ def classify_model_payload(
 
     Returns ``PAYLOAD_UNKNOWN`` for extensions this function does not know how
     to judge; callers must treat that as "no evidence", not as a pass.
+
+    ``name`` は**拡張子だけを取る相手**。落とし途中のファイルは
+    ``model.safetensors.unbake-part`` のように**約束の無い拡張子**を持つので、
+    これを渡さないと常に ``PAYLOAD_UNKNOWN`` になり、**検査が在るのに
+    何も見ていない**状態になる（2026-08-26 に実際にそうなった。
+    通しの検査を書いて初めて判った）。
     """
 
-    extension = os.path.splitext(file_path)[1].lower()
+    extension = os.path.splitext(name or file_path)[1].lower()
     if extension not in MODEL_EXTENSIONS:
         return PayloadVerdict(PAYLOAD_UNKNOWN, "extension carries no container contract")
 

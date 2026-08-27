@@ -540,6 +540,9 @@ export function buildSweepPlan(recipe, template, options = {}) {
         // 掃引が組むのは**実際に投入されるグラフ**。再現側と同じ材料を渡さないと、
         // 判定側と実行側で正規化がずれる（埋め込みが片方だけ効く）。
         const workflow = buildRecipeWorkflow(variedRecipe, {
+            // **投げるのはこちらなので、こちらの名前で保存する**（2026-08-26）。
+            // 作者の行き先へ落とすと、出した絵を自分で見つけられない。
+            ownOutputs: true,
             objectInfo: options.objectInfo,
             knownModelCatalog: options.knownModelCatalog,
             // 大きすぎる再現の上限。**組み立てまで届かないと効かない。**

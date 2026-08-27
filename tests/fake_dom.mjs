@@ -94,6 +94,26 @@ export class FakeNode {
         this.append(...nodes);
     }
 
+    /**
+     * 自分の下に居るか（`Node.contains` と同じ。**自分自身も含む**）。
+     *
+     * **無いと「焦点が面の中に在るか」を測れない**（2026-08-27）。
+     * 実装側が `root.contains(activeElement)` で分岐しているのに、偽の DOM に
+     * これが無いと**その分岐が検査から見えない**——通ったのか飛ばされたのか
+     * 区別できないまま緑になる。
+     */
+    contains(other) {
+        for (const node of this.walk()) {
+            if (node === other) return true;
+        }
+        return false;
+    }
+
+    /** 焦点を取る。**書き込む先は書類の `activeElement`**（本物と同じ場所）。 */
+    focus() {
+        if (this.ownerDocument) this.ownerDocument.activeElement = this;
+    }
+
     remove() {
         if (!this.parentNode) return;
         this.parentNode.children = this.parentNode.children.filter(child => child !== this);
@@ -193,11 +213,14 @@ export function fakeDocument() {
         querySelector: (selector) => matchOne([doc.head, doc.body].filter(Boolean), selector),
         head: null,
         body: null,
+        // **焦点は書類が持つ**（本物と同じ）。初期値は本文——面の外を指す。
+        activeElement: null,
         addEventListener() {},
         removeEventListener() {},
     };
     doc.head = new FakeNode('head', doc);
     doc.body = new FakeNode('body', doc);
+    doc.activeElement = doc.body;
     return doc;
 }
 

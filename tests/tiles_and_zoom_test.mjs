@@ -621,3 +621,69 @@ test('浮かせた1行は面の中に閉じる（宿主の操作盤へ出ない�
     assert.match(toastBody, /inset-inline-start:\s*10px/, '左下に寄せていない');
     assert.match(toastBody, /margin-inline-end:\s*auto/, '右へ押し出したままになっている');
 });
+
+/*
+ * **選んでいる最中は、押すと選択に足す**（2026-08-27 利用者の指示）。
+ *
+ * 複数選びたいとき、的は左上の小さな四角1つだけだった。**絵はタイルの
+ * ほとんどを占めているのに、押すと詳細が開いて選ぶ流れが切れる**——
+ * 選び直すには面を閉じて、また小さな四角を狙うことになる。
+ *
+ * **1件も選んでいない時は今までどおり詳細。** ここを常に選択にすると、
+ * 一番よく使う「絵を押して中身を見る」が押せなくなる。
+ * つまり**選択が0件かどうかが、そのまま作法の切り替えになる**。
+ */
+test('何も選んでいなければ、絵を押すと今までどおり詳細が開く', async () => {
+    setLocale('ja');
+    const panel = mount([rec('1'), rec('2')], { listView: 'tiles' });
+    panel.root.byClass('unbake-tile-image').dispatch('click', {});
+    await settle();
+    assert.ok(panel.root.byClass('unbake-detail'), '詳細が開かない');
+    assert.deepEqual(panel.selected, [], '押しただけで選ばれている');
+});
+
+test('1件でも選んでいれば、絵を押すと選択に足す（詳細は開かない）', async () => {
+    setLocale('ja');
+    const panel = mount([rec('1'), rec('2'), rec('3')], { listView: 'tiles' });
+    const box = panel.root.allByClass('unbake-pick')[0];
+    box.checked = true;
+    await box.dispatch('click', {});
+    assert.deepEqual(panel.selected, ['1'], '選ぶ口が効いていない');
+
+    // 2件目の**絵**を押す。
+    const images = panel.root.allByClass('unbake-tile-image');
+    await images[1].dispatch('click', {});
+    await settle();
+    assert.deepEqual(panel.selected.sort(), ['1', '2'], '絵を押しても選択に足されない');
+    assert.equal(panel.root.byClass('unbake-detail'), null,
+        '選んでいる最中なのに詳細が開いた（選ぶ流れが切れる）');
+
+    // **もう一度押せば外れる。** 足すだけだと、間違えた分を戻せない。
+    await panel.root.allByClass('unbake-tile-image')[1].dispatch('click', {});
+    await settle();
+    assert.deepEqual(panel.selected, ['1'], '押し直しても外れない');
+});
+
+test('絵以外（名前や札）を押しても、選んでいる最中なら選択に足す', async () => {
+    setLocale('ja');
+    const panel = mount([rec('1'), rec('2')], { listView: 'tiles' });
+    const box = panel.root.allByClass('unbake-pick')[0];
+    box.checked = true;
+    await box.dispatch('click', {});
+
+    // タイルそのもの（絵の外側）を押す。
+    await tilesOf(panel)[1].dispatch('click', {});
+    await settle();
+    assert.deepEqual(panel.selected.sort(), ['1', '2'],
+        '同じタイルなのに、押した場所で反応が変わっている');
+});
+
+test('選ぶ口を押しても、タイルへ伝わって裏返らない', async () => {
+    // **伝わると、入れた直後に外れる**（本物の DOM は上へ伝える）。
+    setLocale('ja');
+    const panel = mount([rec('1'), rec('2')], { listView: 'tiles' });
+    const boxes = panel.root.allByClass('unbake-pick');
+    let bubbled = 0;
+    await boxes[0].dispatch('click', { stopPropagation: () => { bubbled += 1; } });
+    assert.equal(bubbled, 1, '選ぶ口が伝播を止めていない');
+});

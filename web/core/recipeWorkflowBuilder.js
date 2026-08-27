@@ -11,6 +11,9 @@ import { resolveSamplerScheduler } from './genParamsMapper.js';
 // 「導入済みと出るのに投入は拒否される」食い違いが復活する。
 import { normalizeModelName } from './recipeMissingModels.js';
 import { stripModelExtension } from './modelFileNames.js';
+// **A1111 の資源欄を読むのは1箇所に閉じる。** 解析を書き足すと、
+// `air` の有無で片方だけが読める、という食い違いがまた生まれる。
+import { normalizeResources, parseA1111Parameters } from './a1111Parameters.js';
 import { createRecipeWorkflowName } from './recipeWorkflowName.js';
 
 const WORKFLOW_CONTAINER_KEYS = ['comfy', 'comfy_workflow', 'workflow'];
@@ -636,10 +639,45 @@ function requiredManifestLoras(manifest) {
  *   タグ名が手元のファイルを指すかを返す判定器（`objectInfo` 由来）。
  *   渡さないと「タグが同定の情報を持たない」場合を見分けられない。
  */
+/**
+ * A1111 の `Civitai resources:` が**LoRA として名指しした版ID**（2026-08-27）。
+ *
+ * **タグに無い＝使っていない、が成り立たない形が実在する。** Civitai の生成画面は
+ * インラインタグを**一部の LoRA にしか書かない**が、`Civitai resources:` には
+ * 使った全部を版ID付きで並べる。実測（`Civitai_Recipe_77742180`）:
+ *
+ *   プロンプトのタグ ……… `<lora:tove-nikke-richy-v1_ixl:1>` の **1本だけ**
+ *   `Civitai resources` … LoRA **4本**（版ID 1056404 / 1135769 / 1373674 / 1809862）
+ *   レシピの台帳 ………… **同じ4本**（版IDが完全一致）
+ *
+ * タグを唯一の権威として扱った結果、**4本中3本が黙って落ちた**
+ * （748cm 0.45・Kawaii tech 0.9・Velvet's Mythic 0.7）。改造 LoRA Manager が
+ * 出した絵は4本とも積んでおり、**そこが「再現した絵が違う」の正体だった。**
+ *
+ * **添字で対応付けない**（`a1111Parameters.js` が既に警告している罠）。
+ * 突き合わせるのは**版IDだけ**で、これは一意である。
+ */
+function declaredLoraVersionIds(rawA1111Parameters) {
+    const out = new Set();
+    if (!rawA1111Parameters) return out;
+    let parsed = null;
+    try { parsed = parseA1111Parameters(rawA1111Parameters); } catch { return out; }
+    if (!parsed?.ok) return out;
+    for (const resource of normalizeResources(parsed.resources)) {
+        if (resource?.kind !== 'lora') continue;
+        const id = Number(resource.modelVersionId);
+        if (Number.isFinite(id) && id > 0) out.add(id);
+    }
+    return out;
+}
+
 function mergePromptLoras(
     recipeLoras,
     promptLoras,
-    { promptAuthoritative = false, isInstalledName = null, warnings = null } = {}
+    {
+        promptAuthoritative = false, isInstalledName = null, warnings = null,
+        declaredVersionIds = null,
+    } = {}
 ) {
     const result = Array.isArray(recipeLoras) ? recipeLoras.map(lora => ({ ...lora })) : [];
     const structuredCount = result.length;
@@ -739,9 +777,41 @@ function mergePromptLoras(
             fallback.promptTagsUnidentifiable = true;
             return fallback;
         }
-        return result.filter((_, index) => (
-            index >= structuredCount || matchedStructuredIndexes.has(index)
+        /*
+         * **A1111 自身が名指しした LoRA は落とさない**（2026-08-27）。
+         *
+         * タグを唯一の権威にできるのは「タグに無い＝使っていない」が読めるときだけ。
+         * `Civitai resources:` が版ID付きで並べているなら、**それは同じ A1111
+         * メタデータの中の、より完全な申告**である。タグの役目は
+         * **どれを使ったか**ではなく**そのタグが指す1本の重み**にしかならない。
+         */
+        const declared = declaredVersionIds instanceof Set ? declaredVersionIds : null;
+        const keptByDeclaration = new Set();
+        if (declared && declared.size > 0) {
+            result.forEach((lora, index) => {
+                if (index >= structuredCount || matchedStructuredIndexes.has(index)) return;
+                const id = Number(lora?.modelVersionId);
+                if (Number.isFinite(id) && declared.has(id)) keptByDeclaration.add(index);
+            });
+        }
+        const kept = result.filter((_, index) => (
+            index >= structuredCount
+            || matchedStructuredIndexes.has(index)
+            || keptByDeclaration.has(index)
         ));
+        /*
+         * **落としたことを黙らせない。** ここは長らく無言で、実測では
+         * 4本中3本が消えた絵に**警告が1行も付いていなかった**
+         * ——絵が違うことに気づいても、原因を画面から辿る道が無い。
+         */
+        const dropped = structuredCount - result
+            .slice(0, structuredCount)
+            .filter((_, index) => matchedStructuredIndexes.has(index) || keptByDeclaration.has(index))
+            .length;
+        if (dropped > 0 && Array.isArray(warnings)) {
+            warnings.push(t('core.recipeWorkflowBuilder.86', { p1: dropped, p2: structuredCount }));
+        }
+        return kept;
     }
     return result;
 }
@@ -3067,7 +3137,7 @@ function carriedLoraEntries(node) {
     })).filter(entry => entry.name);
 }
 
-function insertLoras(prompt, loras, warnings) {
+function insertLoras(prompt, loras, warnings, source = null) {
     const candidates = (Array.isArray(loras) ? loras : [])
         .map(lora => ({ ...lora, workflowFilename: getResourceFilename(lora) }))
         .filter(lora => lora.workflowFilename
@@ -3083,6 +3153,8 @@ function insertLoras(prompt, loras, warnings) {
     if (availableLoras.length === 0) return;
 
     const existing = Object.values(prompt).filter(node => isLoraLoaderClass(node?.class_type));
+    /** 記録のグラフ側の強度を採った本数（下で1行にまとめて言う）。 */
+    let keptGraphStrengths = 0;
     const pendingLoras = [];
     for (const lora of availableLoras) {
         const names = loraCandidateNames(lora).map(loraCompactName).filter(Boolean);
@@ -3109,18 +3181,49 @@ function insertLoras(prompt, loras, warnings) {
         const strengths = getLoraStrengths(lora);
         // 名前は実ファイル名へ直す（拡張子や下位フォルダが無いと選べない）。
         matched.inputs.lora_name = lora.workflowFilename;
-        // **運搬ノードから開いた分の強さは触らない。** 開く前は1節の中に
-        // 在った値で、そのまま当たっていた——記録側の数字で書き換えると、
-        // 「運搬ノードが在る環境と同じ絵」という前提が崩れる。
-        if (!matched._meta?.unbake_expanded_lora) {
+        /*
+         * **既に在るローダの強さは、記録側の数字で書き換えない。**
+         *
+         * 元からそうなっていたのは**運搬ノードから開いた分**だけだった
+         * （開く前は1節の中に在った値で、そのまま当たっていた）。
+         * **同じ理由が、記録が持つ生成グラフそのものにも当てはまる**
+         * ——`comfy_prompt` は「その絵を実際に出したグラフ」で、
+         * 一覧の `loras` はそこから作った**要約**にすぎない。
+         *
+         * 実測（2026-08-27・`civitai_128383826`「絵が改造 LoRA Manager から変わった」）:
+         *
+         *     ノード26 rimixO                    グラフ 0.4 → 要約 1.0 で上書き
+         *     ノード30 Dramatic Lighting Slider  グラフ 3.0 → 要約 1.0 で上書き
+         *
+         * 要約は2本とも `strength: 1` を持っており、**桁が違う**。
+         * 3.0 で当てた絵を 1.0 で出せば、当然まったく別の絵になる。
+         */
+        // **前半は今は後半に含まれる**（運搬ノードは埋め込みグラフにしか無いので、
+        // 変異させても赤くならない）。残すのは、運搬の展開が組み直し経路でも
+        // 起こるようになった日に守りが消えないため——**今それが効いている、
+        // とは読まないこと。**
+        const keepGraphStrength = matched._meta?.unbake_expanded_lora || source === 'embedded';
+        if (!keepGraphStrength) {
             if ('strength_model' in matched.inputs) matched.inputs.strength_model = strengths.model;
             if ('strength_clip' in matched.inputs) matched.inputs.strength_clip = strengths.clip;
+        } else if (source === 'embedded' && !matched._meta?.unbake_expanded_lora) {
+            // **黙って守らない。** 要約と食い違うときは、どちらを採ったかを言う。
+            // **数えてから1行だけ出す**——1件ずつ出すと同じ文が並び、
+            // 何本食い違ったのかがかえって読めなくなる。
+            const inGraph = Number(matched.inputs?.strength_model);
+            if (Number.isFinite(inGraph) && Number.isFinite(strengths.model)
+                && inGraph !== strengths.model) {
+                keptGraphStrengths += 1;
+            }
         }
         matched._meta ||= {};
         matched._meta.lora_aliases = [...new Set(loraCandidateNames(lora).map(String))];
         if (lora._replayRequirement) {
             matched._meta.replay_requirement = { ...lora._replayRequirement };
         }
+    }
+    if (keptGraphStrengths > 0 && Array.isArray(warnings)) {
+        warnings.push(t('core.recipeWorkflowBuilder.87', { p1: keptGraphStrengths }));
     }
     if (pendingLoras.length === 0) return;
 
@@ -3305,13 +3408,28 @@ function repairAmbiguousAeVae(prompt, recipe, warnings) {
  * 名前が既定のままだと、再現した絵が `ComfyUI_00356_.png` として出て、
  * **他のどの絵とも見分けが付かない**（実機で確認した）。
  */
-function nameDefaultSaveOutputs(prompt, recipe) {
+function nameDefaultSaveOutputs(prompt, recipe, ownOutputs = false) {
     if (!prompt || typeof prompt !== 'object') return;
     const saves = Object.values(prompt)
         .filter(node => normalizedClassType(node?.class_type) === 'saveimage');
     if (saves.length !== 1) return;
     const node = saves[0];
     const current = String(node?.inputs?.filename_prefix ?? '');
+    /*
+     * **こちらが投げる回は、こちらの名前で保存する**（2026-08-26 実機）。
+     *
+     * 「作者が決めた行き先を上書きしない」は、**人が開いて回すグラフ**の話。
+     * Unbake が自分で投げた回まで作者の行き先へ落とすと、**出した絵を自分で
+     * 見つけられない**——実機では `Anima/2026-08-17/hshi` へ落ちて、
+     * 記録に紐づかず「絵は出ませんでした」と言い続けていた。
+     *
+     * 開く側（`openWorkflowInComfy`）は元のグラフをそのまま渡すので、
+     * **人が見るグラフの行き先は変わらない。**
+     */
+    if (ownOutputs) {
+        node.inputs = { ...node.inputs, filename_prefix: createRecipeWorkflowName(recipe) };
+        return;
+    }
     // **既定以外は触らない。** 作者が決めた行き先を上書きしない。
     //
     // 一度 `ComfyUI_00042` のような連番付きも「既定」に含めたが、**それは誤り
@@ -3372,6 +3490,31 @@ const CONSTANT_NODE_ALIASES = new Set([
  * **表示するだけの未導入ノード。** 誰も出力を使っていないときだけ消す。
  * 使われているなら値の出所なので、消すと線が切れる。
  */
+/**
+ * **どのノードパックを入れれば元のグラフのまま動くか**（2026-08-26 利用者の指示）。
+ *
+ * 「不足ノード: X」とだけ言われても、**何を入れればよいか判らない**。
+ * 名前が判るものは名前で言う——判らないものは黙る（推測で名前を出すと、
+ * 入れても直らないものを入れさせることになる）。
+ */
+const NODE_PACKS = new Map([
+    ['power lora loader (rgthree)', 'rgthree-comfy'],
+    ['display any (rgthree)', 'rgthree-comfy'],
+    ['joinstringmulti', 'ComfyUI-KJNodes'],
+    ['showtext|pysssss', 'ComfyUI-Custom-Scripts'],
+    ['easy showanything', 'ComfyUI-Easy-Use'],
+]);
+
+/** 不足しているノードから、入れるべきパックの名前を集める。**重複は畳む。** */
+export function packsFor(classNames) {
+    const packs = new Set();
+    for (const name of classNames || []) {
+        const pack = NODE_PACKS.get(String(name).trim().toLowerCase());
+        if (pack) packs.add(pack);
+    }
+    return [...packs];
+}
+
 const DISPLAY_ONLY_ALIASES = new Set([
     'showtext|pysssss', 'easy showanything', 'preview any', 'display any (rgthree)',
 ]);
@@ -3417,10 +3560,245 @@ function inlineReferencesToValue(prompt, id, value) {
  * 肩代わりできなかったものは残る → 従来どおり `embeddedGraphProblems` が拾い、
  * 標準構成への作り直しになる。**部分的に代替して黙って通すことはしない。**
  */
+/**
+ * `Power Lora Loader (rgthree)` を `LoraLoader` の連鎖へ**等価変換**する。
+ *
+ * 2026-08-26 の実機で見つけた。`civitai_139981506` はこのノードで **7本の
+ * LoRA を束ねて**いて、落とすと当然まったく違う絵になる（利用者の報告
+ * 「かなり異なる画像が生成された」）。
+ *
+ * **等価だと言えるから変換する。** このノードは `lora_N` を順に適用して
+ * `MODEL` と `CLIP` を返すだけで、`LoraLoader` を数珠つなぎにしたものと
+ * 同じ計算をする。実物の形（実測）:
+ *
+ *     { model: ["44",0], clip: ["45",0],
+ *       lora_1: { on: true, lora: "x.safetensors", strength: 0.5 }, … }
+ *
+ * **`on: false` は入れない。** 切ってある LoRA を効かせると、
+ * 「同じ材料なのに絵が違う」という一番読みにくい形になる。
+ *
+ * **`strengthTwo` が在ればそれを CLIP 側に使う。** 無ければ両方 `strength`
+ * ——このノードは既定で両方を同じ値にする。
+ *
+ * @returns {{converted: number, loras: string[]}} 変換した本数と名前
+ */
+export function expandPowerLoraLoader(prompt, objectInfo) {
+    const installed = name => !objectInfo || Object.prototype.hasOwnProperty.call(objectInfo, name);
+    // **`LoraLoader` が無ければ触らない。** 置き換え先が無いのに崩すと、
+    // 元のグラフより悪くなる。
+    if (!installed('LoraLoader')) return { converted: 0, loras: [] };
+
+    const out = { converted: 0, loras: [] };
+    for (const [id, node] of Object.entries(prompt || {})) {
+        if (String(node?.class_type || '').trim().toLowerCase() !== 'power lora loader (rgthree)') {
+            continue;
+        }
+        const inputs = node?.inputs || {};
+        let model = inputs.model;
+        let clip = inputs.clip;
+        if (!Array.isArray(model) || !Array.isArray(clip)) continue;
+
+        // `lora_1`, `lora_2`, … を番号順に。**順番が効き方を決める。**
+        const entries = Object.entries(inputs)
+            .filter(([key, value]) => /^lora_[0-9]+$/.test(key) && value && typeof value === 'object')
+            .sort((a, b) => Number(a[0].slice(5)) - Number(b[0].slice(5)));
+
+        let nextId = Math.max(0, ...Object.keys(prompt).map(Number).filter(Number.isFinite)) + 1;
+        for (const [, entry] of entries) {
+            if (entry.on === false) continue;
+            const name = String(entry.lora || '').trim();
+            if (!name || name.toLowerCase() === 'none') continue;
+            const strength = Number(entry.strength);
+            const clipStrength = Number(entry.strengthTwo ?? entry.strength);
+            const linkId = String(nextId);
+            nextId += 1;
+            prompt[linkId] = {
+                inputs: {
+                    lora_name: name,
+                    strength_model: Number.isFinite(strength) ? strength : 1,
+                    strength_clip: Number.isFinite(clipStrength) ? clipStrength : 1,
+                    model,
+                    clip,
+                },
+                class_type: 'LoraLoader',
+                _meta: { title: `LoraLoader (${name})` },
+            };
+            model = [linkId, 0];
+            clip = [linkId, 1];
+            out.converted += 1;
+            out.loras.push(name);
+        }
+
+        // **元のノードを指していた線を、連鎖の端へ付け替える。**
+        // 0番は MODEL、1番は CLIP（このノードの出力の並び）。
+        for (const other of Object.values(prompt)) {
+            for (const [key, value] of Object.entries(other?.inputs || {})) {
+                if (!Array.isArray(value) || String(value[0]) !== String(id)) continue;
+                other.inputs[key] = Number(value[1]) === 1 ? clip : model;
+            }
+        }
+        delete prompt[id];
+    }
+    return out;
+}
+
+/**
+ * **絵に届かないノードを落とす**（2026-08-26 実機で必要になった）。
+ *
+ * `civitai_139981506` は `JoinStringMulti` を持っていて、その出力は
+ * `PreviewAny` にしか行っていない——**絵には1ミリも影響しない**。それでも
+ * 「不足ノード」として数えられ、**グラフを丸ごと捨てて標準構成へ落ちて**いた。
+ * その巻き添えで、せっかく開いた LoRA 7本も消えていた。
+ *
+ * **どれが絵に効くかは ComfyUI 自身が知っている。** `/object_info` の
+ * `output_node` が真のノードから**逆向きに辿った先**が、絵を作るのに要る全部。
+ * そこに入らないものは、消しても出る絵は変わらない。
+ *
+ * **根が1つも見つからなければ何もしない。** 判らないときに消すと、
+ * 消してはいけないものを消す。
+ *
+ * @returns {{dropped: number, classes: string[]}}
+ */
+export function pruneNodesNotFeedingOutput(prompt, objectInfo) {
+    const out = { dropped: 0, classes: [] };
+    if (!prompt || !objectInfo || typeof objectInfo !== 'object') return out;
+
+    /*
+     * **根は「絵を出す口」だけ。** `output_node` が真なだけでは足りない
+     * ——`PreviewAny` のような**文字を見るための口**も真になるので、
+     * そこから逆に辿ると表示専用の枝まで「要る」ことになる（実機でそうなった）。
+     *
+     * 絵を出す口は**絵を受け取っている**。入力に `images` / `image` の線が
+     * 在るかどうかで見分ける——種類名の一覧を持たずに済み、知らない
+     * 保存ノードでも当たる。
+     */
+    const takesImage = (node) => Object.entries(node?.inputs || {})
+        .some(([key, value]) => Array.isArray(value) && /^images?$/.test(key));
+    const roots = Object.entries(prompt)
+        .filter(([, node]) => objectInfo[node?.class_type]?.output_node === true
+            && takesImage(node))
+        .map(([id]) => String(id));
+    if (!roots.length) return out;
+
+    const needed = new Set();
+    const stack = [...roots];
+    while (stack.length) {
+        const id = stack.pop();
+        if (needed.has(id)) continue;
+        needed.add(id);
+        for (const value of Object.values(prompt[id]?.inputs || {})) {
+            if (Array.isArray(value) && value.length >= 1) stack.push(String(value[0]));
+        }
+    }
+
+    for (const id of Object.keys(prompt)) {
+        if (needed.has(String(id))) continue;
+        out.classes.push(String(prompt[id]?.class_type || ''));
+        delete prompt[id];
+        out.dropped += 1;
+    }
+    return out;
+}
+
+/**
+ * 文字列を出すだけのノードから、その値を読む。**読めなければ null。**
+ *
+ * `PrimitiveStringMultiline` のように、線の入力が無く文字の入力が1つだけの
+ * ノードを対象にする。2つ以上あるものは、どれが出力の値か決められない。
+ */
+function constantStringOf(node) {
+    const entries = Object.entries(node?.inputs || {}).filter(([key]) => !key.startsWith('_'));
+    if (entries.some(([, value]) => Array.isArray(value))) return null;
+    const strings = entries.filter(([, value]) => typeof value === 'string');
+    if (strings.length !== 1) return null;
+    return strings[0][1];
+}
+
+/**
+ * `JoinStringMulti` を、**連結済みの文字列**へ畳む（2026-08-26 実機）。
+ *
+ * `civitai_139981506` はこれで**プロンプト本文を組み立てて**いた:
+ *
+ *     316 + 317 → 315(JoinStringMulti) → 314(PreviewAny/素通し)
+ *              → 354(CLIPTextEncode).text → KSampler.positive
+ *
+ * **飾りではない。** 落とすとプロンプトごと消えるので、グラフを丸ごと捨てる
+ * しかなくなっていた——その巻き添えで LoRA 7本も消えていた。
+ *
+ * 中身は「入力を `delimiter` で繋ぐ」だけなので、**入力が全部その場で読める
+ * 定数なら、繋いだ結果を直に置ける**。読めないものが1つでも在れば触らない
+ * ——途中まで畳むと、繋がる順も中身も変わる。
+ *
+ * `return_list: true` は扱わない（返るものが文字列ではなく並びになる）。
+ *
+ * @returns {{folded: number}}
+ */
+export function inlineJoinStringMulti(prompt, objectInfo) {
+    const out = { folded: 0 };
+    if (!prompt) return out;
+    const installed = name => Boolean(objectInfo)
+        && Object.prototype.hasOwnProperty.call(objectInfo, name);
+    if (installed('JoinStringMulti')) return out;
+
+    for (const [id, node] of Object.entries(prompt)) {
+        if (String(node?.class_type || '').trim().toLowerCase() !== 'joinstringmulti') continue;
+        const inputs = node?.inputs || {};
+        if (inputs.return_list === true) continue;
+
+        const count = Number(inputs.inputcount);
+        const wanted = Number.isFinite(count) && count > 0 ? count : 0;
+        const delimiter = typeof inputs.delimiter === 'string' ? inputs.delimiter : '';
+
+        const parts = [];
+        let readable = true;
+        for (let index = 1; index <= Math.max(wanted, 1); index += 1) {
+            const value = inputs[`string_${index}`];
+            if (value === undefined || value === null) continue;
+            if (typeof value === 'string') { parts.push(value); continue; }
+            if (!Array.isArray(value)) { readable = false; break; }
+            const source = prompt[String(value[0])];
+            const constant = constantStringOf(source);
+            if (constant === null) { readable = false; break; }
+            parts.push(constant);
+        }
+        if (!readable) continue;
+
+        inlineReferencesToValue(prompt, id, parts.join(delimiter));
+        delete prompt[id];
+        out.folded += 1;
+    }
+    return out;
+}
+
 function substituteMissingNodes(prompt, objectInfo, warnings) {
     if (!prompt || !objectInfo || typeof objectInfo !== 'object') return;
     const installed = name => Object.prototype.hasOwnProperty.call(objectInfo, name);
     const done = { constants: 0, dropped: 0, aliased: 0 };
+
+    // **文字を繋ぐだけのノードは、繋いだ結果に畳む**（2026-08-26）。
+    // 実機ではこれがプロンプト本文を組み立てていて、落とすと本文ごと消えた。
+    if (!installed('JoinStringMulti')) {
+        const folded = inlineJoinStringMulti(prompt, objectInfo);
+        if (folded.folded > 0) {
+            warnings.push(t('core.recipeWorkflowBuilder.joinString', { count: folded.folded }));
+        }
+    }
+
+    // **絵に届かないノードを先に落とす**（2026-08-26）。
+    // 残すと「不足ノード」に数えられ、**グラフを丸ごと捨てる**ことになる
+    // ——実機では表示専用の枝1本のために LoRA 7本が消えていた。
+    pruneNodesNotFeedingOutput(prompt, objectInfo);
+
+    // **束ねる LoRA ノードは、落とさずに開く**（2026-08-26）。
+    // 落とすと LoRA がまるごと消えて、まったく違う絵になる。
+    if (!installed('Power Lora Loader (rgthree)')) {
+        const expanded = expandPowerLoraLoader(prompt, objectInfo);
+        if (expanded.converted > 0) {
+            warnings.push(t('core.recipeWorkflowBuilder.powerLora', {
+                count: expanded.converted, list: expanded.loras.join('、'),
+            }));
+        }
+    }
 
     for (const [id, node] of Object.entries(prompt)) {
         const cls = String(node?.class_type || '');
@@ -3514,6 +3892,20 @@ function validateOrRepairEmbeddedPrompt(prompt, recipe, objectInfo, warnings) {
             throw new Error(t('core.recipeWorkflowBuilder.48', { p1: details }));
         }
         warnings.push(t('core.recipeWorkflowBuilder.49', { p1: details }));
+        /*
+         * **何が変わるのかを言う**（2026-08-26 利用者の指示）。
+         *
+         * 元は「標準構成へ再構築しました」だけで、**どれだけ違う絵になるのかが
+         * 読めなかった**。実機では LoRA を束ねるノードが落ちて 7本ぶん効かず、
+         * 「かなり異なる画像」になった——そうと判れば驚かずに済む。
+         *
+         * **入れるべきパックが判るものは、名前で言う。** 「不足ノード: X」だけ
+         * では、何を入れればよいか判らない。
+         */
+        const packs = packsFor(problems.missingNodes);
+        if (packs.length) {
+            warnings.push(t('core.recipeWorkflowBuilder.packs', { list: packs.join('、') }));
+        }
         // **この関数が持っているのは `objectInfo` だけ。** `options` は無い
         // ——`options` と書いて 21件が `options is not defined` で落ちた（実測 2026-08-21）。
         return { prompt: standardPrompt(recipe, warnings, { objectInfo }), rebuilt: true };
@@ -3816,6 +4208,26 @@ function applyA1111PromptParser(prompt, recipe, objectInfo, warnings, source) {
         );
     }
 
+    /*
+     * **`smZ_steps` は歩数を渡す**（2026-08-27・改造 LoRA Manager との突き合わせ）。
+     *
+     * これを渡していなかったので、smZ の既定 **1** が当たっていた。効くのは
+     * **プロンプト編集構文**（`[昼:夜:10]` のように途中で語を差し替える書き方）で、
+     * 何歩目で切り替えるかをこの値で割る。1 のままだと**切り替えが起きない**。
+     *
+     * `civitai_77742180` の突き合わせでは、`filename_prefix` を除く実差が
+     * **ここ1点だけ**だった（LoRA Manager は 30 を渡していた）。その記録は
+     * 編集構文を持たないので絵は変わらないが、**持つ記録では変わる。**
+     *
+     * **歩数はグラフから読む。** 記録の `steps` を読み直すと、途中で縮めた
+     * ときに食い違う——実際に投げるサンプラーが持っている値が正しい。
+     */
+    let steps = 0;
+    for (const node of Object.values(prompt)) {
+        const value = Number(node?.inputs?.steps);
+        if (Number.isFinite(value) && value > steps) steps = value;
+    }
+
     let swapped = 0;
     for (const node of Object.values(prompt)) {
         if (node?.class_type !== 'CLIPTextEncode') continue;
@@ -3835,6 +4247,8 @@ function applyA1111PromptParser(prompt, recipe, objectInfo, warnings, source) {
             crop_w: 0, crop_h: 0,
             target_width: 1024, target_height: 1024,
             text_g: '', text_l: '',
+            // **最小は 1**（ノードの下限）。歩数が読めないグラフでは既定のまま。
+            smZ_steps: steps > 0 ? steps : 1,
         };
         swapped++;
     }
@@ -4329,6 +4743,9 @@ export function buildRecipeWorkflow(recipe, options = {}) {
             promptAuthoritative: Boolean(rawA1111Parameters),
             isInstalledName: isInstalledLoraName,
             warnings,
+            // **同じ A1111 メタデータの、より完全な申告。** タグに出てこない
+            // LoRA でも、ここに版IDが在るなら使われている。
+            declaredVersionIds: declaredLoraVersionIds(rawA1111Parameters),
         }
     );
 
@@ -4490,7 +4907,7 @@ export function buildRecipeWorkflow(recipe, options = {}) {
     // A manifest-backed embedded graph is evidence, not a template. Never
     // inject a new branch; strict audit will reject missing/disconnected LoRAs.
     if (!(replayManifest && source === 'embedded')) {
-        insertLoras(prompt, effectiveRecipe.loras, warnings);
+        insertLoras(prompt, effectiveRecipe.loras, warnings, source);
     }
     // Standard/A1111 reconstruction can also create a VAELoader from an
     // ambiguous `VAE: ae` value. Run the 4ch checkpoint guard after every
@@ -4566,7 +4983,7 @@ export function buildRecipeWorkflow(recipe, options = {}) {
     persistPreviewOnlyOutputs(prompt, effectiveRecipe, warnings);
     // **昇格の後に呼ぶ。** 昇格で作った SaveImage には既に名前が付いているので、
     // ここは「元から在って既定のままだった1つ」だけに効く。
-    nameDefaultSaveOutputs(prompt, effectiveRecipe);
+    nameDefaultSaveOutputs(prompt, effectiveRecipe, options?.ownOutputs === true);
     // **最後に、モデル名を ComfyUI が返す実文字列へ揃える。** ここまでの経路は
     // 照合のためにパスを `/` へ正規化しており、その文字列がそのまま入力値として
     // 出ていた。ComfyUI の検証は完全一致なので、Windows のようにサブフォルダを

@@ -257,8 +257,9 @@ def save_record(
     *,
     preview_url: Optional[str] = None,
     preview_bytes: Optional[bytes] = None,
+    replace: bool = False,
 ) -> Dict[str, Any]:
-    """記録を1件書く。**既に在るものは上書きしない。**
+    """記録を1件書く。**既定では上書きしない。**
 
     上書きを許すと、取り込み直しのたびに手を入れた記録が黙って戻る。
     同じ id で書きたいときは、呼び手が先に消す（``overwrite`` は作らない）。
@@ -289,8 +290,26 @@ def save_record(
         raise RecordError(f"cannot create {target_dir}: {error}") from error
 
     path = target_dir / f"{record_id}{UNBAKE_SUFFIX}"
+    replaced = False
     if path.exists():
-        return {"ok": False, "error": "already saved", "id": record_id, "path": str(path)}
+        if not replace:
+            return {"ok": False, "error": "already saved", "id": record_id, "path": str(path)}
+        # **置き換える前に、元を1つだけ残す**（2026-08-26 利用者の検証で必要になった）。
+        #
+        # 取り込み直しで上書きしない決まりは、手で直した内容を守るためだった。
+        # だが**そのせいで、取り出しを直しても記録が古いまま**になり、版IDの
+        # 無い記録は永久に落とせないままになる（実際に `civitai_139981506` が
+        # そうなった）。頼まれたときだけ置き換え、**元は `.bak` へ退ける**
+        # ——`.bak` は走査の対象（`.unbake.json`）に当たらないので、
+        # 一覧が二重になることはない。
+        backup = path.with_name(path.name + ".bak")
+        try:
+            if backup.exists():
+                backup.unlink()
+            os.replace(path, backup)
+            replaced = True
+        except OSError as error:
+            raise RecordError(f"cannot back up {path}: {error}") from error
 
     # **書いている途中の形をディスクへ残さない。** 走査は別スレッドで走りうるので、
     # 半分だけ書かれた JSON を読ませると「壊れた記録」として理由つきで出てしまう。
@@ -317,6 +336,9 @@ def save_record(
         preview = fetch_preview(str(wanted), target_dir / record_id)
     return {
         "ok": True, "id": record_id, "path": str(path), "bytes": len(payload),
+        # **置き換えたかどうかを返す。** 「新しく残した」と「古いのを退けて
+        # 書き直した」は、押した人にとって別のことなので混ぜない。
+        "replaced": replaced,
         # **「画像も落ちた」と「記録は残った」を分けて返す。** 呼び手が
         # 「記録は残ったが絵は無い」と言えるようにする。
         "preview": preview,

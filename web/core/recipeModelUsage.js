@@ -140,3 +140,46 @@ export function rankMissingByUnlock(missingNames, index) {
     }
     return rows.sort((a, b) => b.unlocks - a.unlocks || a.name.localeCompare(b.name));
 }
+
+/**
+ * **不足から索引を作る**（買い足しの相談用・2026-08-26）。
+ *
+ * `buildModelUsageIndex` はグラフを組み直して「そのモデルを**使う**記録」を
+ * 数える。正しいが高い——実測で記録 352件の組み直しに約7秒かかり、
+ * 押すたびに払える値段ではない。
+ *
+ * 買い足しの相談で知りたいのは「そのモデルを使う記録」ではなく
+ * **「そのモデルが足りなくて止まっている記録」**で、判定が既に `missing` として
+ * 持っている。**組み直さずに同じ形の索引が作れる。**
+ *
+ * 返す形は `buildModelUsageIndex` と同じなので、`rankMissingByUnlock` が
+ * そのまま使える。**数えている母集団が違う**ことだけは呼び手が知っていること
+ * ——こちらは「待っている記録」で、あちらは「使っている記録」。
+ *
+ * @param {Array<object>} records `missing` を持つ記録（判定済み）
+ * @returns {{usage: Map<string, Array<{id: string, title: string}>>}}
+ */
+export function buildMissingUsageIndex(records) {
+    const usage = new Map();
+    for (const record of Array.isArray(records) ? records : []) {
+        const missing = record?.missing;
+        if (!missing) continue;
+        const who = {
+            id: String(record.libraryId ?? record.id ?? ''),
+            title: String(record.title || record.id || ''),
+        };
+        const items = [...(missing.models || []), ...(missing.resources || [])];
+        // **同じ記録を1つのモデルに2回数えない。**（本体と資源の両方に出ることがある）
+        const seen = new Set();
+        for (const item of items) {
+            const name = String(item?.name || '').trim();
+            if (!name) continue;
+            const key = usageKey(name);
+            if (seen.has(key)) continue;
+            seen.add(key);
+            if (!usage.has(key)) usage.set(key, []);
+            usage.get(key).push(who);
+        }
+    }
+    return { usage };
+}

@@ -33,9 +33,15 @@
  * - **支援者の一覧**——同意・撤回・偽名を書けてしまう（`D-20260820-03` で「出さない」決着）
  * - **初回から5日後に自動で出るバナー**——こちらは**押されたときだけ開く**。
  *   自分から出ていく口を作らない
- * - **不具合報告・コミュニティへの導線**——置きたいが**置けない**。
- *   リポジトリがまだ公開されておらず、`github.com/syugoji/ComfyUI-Unbake` は
- *   **実測で 404**（2026-08-24）。**押すと存在しない場所へ飛ぶ口を作らない**
+ * - **コミュニティ（Discord）への導線**——こちらには集まる場所が無い。
+ *   空の部屋へ案内しない。
+ *
+ * **不具合報告は置いた**（2026-08-26）。2026-08-24 の時点では
+ * `github.com/syugoji/ComfyUI-Unbake` が**実測で 404** だったので
+ *「押すと存在しない場所へ飛ぶ口」を作らずにいたが、**2026-08-25 に公開**され、
+ * リポジトリも issues も 200 を返す。前提が消えたので緩めた。
+ * **払う口とは別の節・別の class** にしてある——同じ数え方に混ぜると
+ *「送り先の数」の見張りが黙って緩む。
  *
  * ## 「寄付」という語を使わない
  *
@@ -66,6 +72,12 @@ function makeElement(documentRef, tag, attributes = {}, children = []) {
  * `noteKey` はボタンの下に出る小さな注記の鍵。PayPal 側は**口数で額が決まる**ので、
  * それを書かないと「$1 しか送れない」と読まれる。
  */
+/**
+ * **困ったときの行き先。** 送り先（`OWN_RAILS`）とは別に持つ。
+ * ここは払う話ではないので、同じ表にも同じ class にも混ぜない。
+ */
+export const HELP_URL = 'https://github.com/syugoji/ComfyUI-Unbake/issues';
+
 export const OWN_RAILS = Object.freeze([
     { id: 'kofi', label: 'Ko-fi', url: 'https://ko-fi.com/syugoji', noteKey: 'donate.kofiFree' },
     {
@@ -204,6 +216,22 @@ export function createDonateView({ documentRef, onCopy = null, onClose = null })
 
     const own = usableRails(OWN_RAILS);
     box.append(section('mine', own, { copyable: true }));
+
+    /*
+     * **困ったときの節。** 押す口は1つだけで、飛び先は固定
+     *（設定から差し込めない——`OWN_RAILS` と同じ理由で、知らない相手へ
+     * 飛ばす経路を作らない）。
+     */
+    box.append(element('section', { class: 'unbake-donate-section', 'data-for': 'help' }, [
+        element('h3', { class: 'unbake-donate-section-title', text: t('donate.help.title') }),
+        element('p', { class: 'unbake-donate-section-body', text: t('donate.help.body') }),
+        element('div', { class: 'unbake-donate-links' }, [
+            element('a', {
+                class: 'unbake-donate-help-link', href: HELP_URL,
+                target: '_blank', rel: 'noopener noreferrer', text: t('donate.help.report'),
+            }),
+        ]),
+    ]));
 
     box.append(status);
     box.append(element('p', { class: 'unbake-donate-footer', text: t('donate.footer') }));

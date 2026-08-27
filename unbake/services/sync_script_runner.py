@@ -3,13 +3,20 @@
 Copyright (C) 2026 syugoji
 SPDX-License-Identifier: GPL-3.0-or-later
 
-**なぜ子プロセスをやめたか。** Comfy Registry の自動走査が v0.1.0 と v0.1.1 を
-`Flagged` にした。理由は通知されないが、0.1.1 で「設定から来た任意のパスを実行する」
-分岐を消しても結果が変わらなかったので、**`create_subprocess_exec` そのもの**が
-引っかかっていると判断した。カスタムノードが Python の子プロセスを起こす形は、
-走査器から見れば任意コード実行と区別が付かない。
+**なぜ子プロセスをやめたか。** 当初の理由は「Comfy Registry の自動走査が
+`create_subprocess_exec` を嫌っているらしい」だったが、**その推測は 2026-08-27 に
+実測で否定された**——通っているノード（`comfyui-lora-manager` 1.2.1・Active）は
+`subprocess` も `spec_from_file_location` も**本番コードで配っている**。
+経緯と対照は `_Planning/decisions/D-20260824-01.md` の
+「★★ `Flagged` を追いかけるのをやめる」に凍結してある。**ここを読んで
+走査器の好みを推し量らないこと。**
 
-**同梱スクリプトは1文字も変えない。** `civitai-recipe-sync/civitai_image_download.py`
+**それでも同一プロセスのままにしている。** 走査とは無関係に、この形の方が良いため:
+子プロセスは Python の実行ファイルの場所を自前で決める必要があり、進捗を
+標準出力の解析で拾うことになり、宿主の環境と食い違い得る。**中断が即時でなく
+協調になる**のが唯一の代償で、それは受け入れている。
+
+**同梱スクリプトは1文字も変えない。** `civitai_recipe_sync/civitai_image_download.py`
 は MIT で別途単体配布もしているので、こちらの都合で分岐させると両方が腐る。
 代わりに**読み込み方と差し替え方**でつじつまを合わせる。
 
@@ -23,8 +30,11 @@ SPDX-License-Identifier: GPL-3.0-or-later
 （module 直下の代入・約20個）。一度 import して使い回すと、**利用者が設定を
 変えても初回の値のまま**動く。しかも失敗せず、古い場所へ書きに行く。
 
-`importlib.util.spec_from_file_location` で毎回**別のモジュール実体**を作る。
-`importlib.reload` ではないので、前回の名前空間は一切残らない。
+**同梱物として普通に取り込み、呼ばれるたびに `importlib.reload()` する**
+（`_load_fresh_module()`）。module 直下の代入がもう一度走るので、設定が読み直される。
+**以前はここを `importlib.util.spec_from_file_location` でパスから読んでいた**が、
+2026-08-26 に普通の import へ変えた。**前回の名前空間は残る**（reload は同じ
+module オブジェクトを作り直す）ので、消えてほしい状態をここへ溜めないこと。
 
 ### 2. `emit_event` と `print` を**モジュール大域へ**差し込む
 
@@ -58,11 +68,10 @@ SPDX-License-Identifier: GPL-3.0-or-later
 from __future__ import annotations
 
 import asyncio
-import importlib.util
+import importlib
 import os
 import sys
 import threading
-import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
@@ -146,23 +155,45 @@ class SyncScriptRunner:
             return 0
 
     def _load_fresh_module(self):
-        """**毎回まっさらな実体として読む。** 前回の設定を持ち越さない。
+        """**同梱物として普通に取り込み、設定だけ読み直す。**
 
-        モジュール名を毎回変えるのは、`sys.modules` に居座らせないため。
-        `sys.modules` へは登録しない——登録すると次回 import が古い方を掴む。
+        以前は `importlib.util.spec_from_file_location` で**パスから**読み込んで
+        いた。動きはするが、走査器から見ると「文字列で指した場所を実行する」形で、
+        **こちらが 0.1.1 で消した「設定から来た任意のパスを実行する」分岐と
+        区別が付かない**。Comfy Registry は 0.1.0 / 0.1.1 / 0.1.2 を `Flagged` に
+        しており（2026-08-26 実測。理由は公開されていない）、0.1.2 で子プロセスを
+        やめても結果が変わらなかった。**残っている同種の形はここだけ**なので外す。
+
+        **これは推測にもとづく変更だった。2026-08-27 に実測で否定された**
+        ——`comfyui-lora-manager` 1.2.1（Active・763,734 downloads・08-16 公開）は
+        `spec_from_file_location` + `exec_module` を `py/nodes/gguf_import_helper.py`
+        の**本番コードで配っている**。**この形は `Flagged` の原因ではない。**
+        それでも戻さないのは、普通の import の方が読みやすく、置き場の綴りが
+        壊れたときに ImportError で即座に分かるため（パス指定は実行時まで黙る）。
+
+        置き場の名前を `civitai-recipe-sync` → `civitai_recipe_sync` へ変えたのは、
+        **取り込める名前にするため**だけで、**スクリプトは1文字も変えていない**
+        （MIT の木は LICENSE ごとそのまま。`__init__.py` も置かない——GPL の
+        ファイルを MIT の木へ混ぜない。名前空間パッケージとして取り込める）。
+
+        **設定は読み込み時に確定する**（module 直下の代入が約20個）ので、
+        使い回すと利用者が設定を変えても初回の値のまま動く。`reload` で
+        module 直下をもう一度走らせて読み直す。`_patch()` は読み直しの**後**に
+        当てるので、差し込んだ出口が消えることはない。
+
+        **`__main__` にはならない**ので、末尾の `sys.exit()` と `input()` は動かない
+        （以前 `module.__name__` を書き換えていたのと同じ効果を、普通の取り込みが
+        そのまま持つ）。
         """
         if not self._script_path.is_file():
             raise FileNotFoundError(
                 f"同梱スクリプトが見つかりません: {self._script_path}"
             )
-        name = f"_unbake_rdsync_{uuid.uuid4().hex}"
-        spec = importlib.util.spec_from_file_location(name, str(self._script_path))
-        if spec is None or spec.loader is None:
-            raise ImportError(f"同梱スクリプトを読み込めません: {self._script_path}")
-        module = importlib.util.module_from_spec(spec)
-        # **`__main__` にしない。** すると末尾の `sys.exit()` と `input()` が動く。
-        module.__name__ = name
-        spec.loader.exec_module(module)
+        # **関数の中で取り込む。** module 直下に置くと、ComfyUI の起動時に
+        # スクリプトの読み込みが走る（設定と環境を読む副作用が起動へ乗る）。
+        from ...civitai_recipe_sync import civitai_image_download as module
+
+        importlib.reload(module)
         return module
 
     @staticmethod

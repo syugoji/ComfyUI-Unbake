@@ -155,7 +155,18 @@ class RecipeOutputIndex:
         wanted = str(recipe_id)
         results = []
         for path, (mtime, rid, sweep) in self._entries.items():
-            if rid != wanted:
+            # **Sweep の印も照合に使う**（2026-08-26 実機で判明）。
+            #
+            # ここは `recipe_id`（LoRA Manager が焼く参照）としか比べていなかった。
+            # `sweep` は読んで控えにも入れているのに**一度も照合に使っていない**ので、
+            # **Unbake 自身が出した絵は、Unbake の口から1枚も引けなかった**
+            # ——この関数の説明が「自分が Sweep で回した分がここに貯まる」と
+            # 言っているまさにその分が、丸ごと落ちていた。
+            #
+            # 実測: `civitai_137684933_00002_.png` は
+            # `unbake_sweep = {..., "record_id": "137684933"}` を持つのに、
+            # `/unbake/outputs?id=137684933` は 0 件を返した。
+            if rid != wanted and str((sweep or {}).get("record_id") or "") != wanted:
                 continue
             try:
                 size = os.path.getsize(path)

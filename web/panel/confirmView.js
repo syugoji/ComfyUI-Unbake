@@ -74,6 +74,29 @@ export function sizeText(value) {
 export function createConfirmView({
     documentRef, title, files = [], warnings = [], onConfirm,
     onSuppressChange = null, onClose = null,
+    /*
+     * **消す面を、消さない問いに使い回さない**（2026-08-26 実機で判明）。
+     *
+     * 再現の前に聞く2つ（分割復号・VRAM に載らない）も この面を借りていたが、
+     * 中身は消す用のままだった——**何も消さないのに**「これは取り消せません」
+     * 「0 個のファイル・合計 —」「消す」と出ていた。
+     * 読んだ人は、押したら何かが消えると思う。
+     */
+    destructive = true,
+    confirmLabel = null,
+    /*
+     * **並べたものを選べるようにする**（2026-08-26 利用者の指示）。
+     *
+     * 「本当に落とす（6 件・299 MB）」だけでは、**何が 299 MB なのかが
+     * 判らない**。内訳を出し、要らないものを外せるようにする。
+     * **押す回数は増やさない**——調べた回にこの面が出て、ここで落とす。
+     */
+    selectable = false,
+    /**
+     * 進む口の字を、**選び直すたびに**作り直す関数。
+     * 「本当に落とす（6 件・299 MB）」の数字を、外した分だけ減らすために要る。
+     */
+    confirmLabelFor = null,
 }) {
     const doc = documentRef || globalThis.document;
     const element = (tag, attributes, children) => makeElement(doc, tag, attributes, children);
@@ -103,8 +126,10 @@ export function createConfirmView({
         if (event?.key === 'Escape') { event.stopPropagation?.(); onClose?.(); }
     });
 
-    // **取り消せないことを、色ではなく字で言う。**
-    box.append(element('p', { class: 'unbake-confirm-danger', text: t('confirm.irreversible') }));
+    // **取り消せないことを、色ではなく字で言う。**（消す面だけ）
+    if (destructive) {
+        box.append(element('p', { class: 'unbake-confirm-danger', text: t('confirm.irreversible') }));
+    }
 
     for (const warning of warnings) {
         box.append(element('p', { class: 'unbake-confirm-warning', text: warning }));
@@ -115,28 +140,72 @@ export function createConfirmView({
     // 実機で最初にそう出た（消えるのは記録ファイルと対の画像で、空ではない）。
     // **`Number(null)` は 0 で `Number.isFinite` を通る。** 値の側で先に落とす
     // ——ここを型変換のあとで判定すると、`null` が 0 として合計に混ざる。
-    const known = files
-        .filter(file => file?.bytes !== null && file?.bytes !== undefined && file?.bytes !== '')
-        .map(file => Number(file.bytes))
-        .filter(value => Number.isFinite(value));
-    const total = known.length ? known.reduce((sum, value) => sum + value, 0) : null;
-    const partial = known.length > 0 && known.length < files.length;
-    box.append(element('p', {
-        class: 'unbake-sweep-help',
-        text: partial
-            ? t('confirm.filesPartial', { count: files.length, size: sizeText(total) })
-            : t('confirm.files', { count: files.length, size: sizeText(total) }),
-    }));
+    /** 今えらばれている分だけを数える。**外したものを総量に残さない。** */
+    function countedText(picked) {
+        const known = picked
+            .filter(file => file?.bytes !== null && file?.bytes !== undefined && file?.bytes !== '')
+            .map(file => Number(file.bytes))
+            .filter(value => Number.isFinite(value));
+        const total = known.length ? known.reduce((sum, value) => sum + value, 0) : null;
+        const partial = known.length > 0 && known.length < picked.length;
+        return partial
+            ? t('confirm.filesPartial', { count: picked.length, size: sizeText(total) })
+            : t('confirm.files', { count: picked.length, size: sizeText(total) });
+    }
+
+    // **数える物が無ければ、行ごと出さない。**「0 個のファイル」は
+    // 消す物が無いという意味に読めるが、ここでは数える物が無いだけ。
+    const countLine = files.length
+        ? element('p', { class: 'unbake-sweep-help', text: countedText(files) })
+        : null;
+    if (countLine) box.append(countLine);
+
+    /** 行 → 印。**選べる面のときだけ置く。** */
+    const boxes = new Map();
     const listNode = element('ul', { class: 'unbake-confirm-list' });
     for (const file of files) {
-        listNode.append(element('li', { class: 'unbake-confirm-file' }, [
+        const parts = [
             element('span', { class: 'unbake-confirm-file-name', text: String(file.name) }),
-            element('span', { class: 'unbake-confirm-file-size', text: sizeText(file.bytes) }),
-        ]));
+        ];
+        // **一行に添える短い覚え書き**（2026-08-26）。買い足しの相談では
+        // 「これを何件が待っているか」が、大きさと同じくらい判断を決める。
+        if (file.note) {
+            parts.push(element('span', { class: 'unbake-confirm-file-note', text: String(file.note) }));
+        }
+        parts.push(element('span', { class: 'unbake-confirm-file-size', text: sizeText(file.bytes) }));
+        if (selectable) {
+            // **既定は全部えらばれている。** 外したい人だけが触る。
+            const pick = element('input', {
+                class: 'unbake-confirm-pick', type: 'checkbox',
+                'aria-label': String(file.name),
+            });
+            pick.checked = true;
+            pick.addEventListener('change', () => refreshPicked());
+            boxes.set(file, pick);
+            parts.unshift(pick);
+        }
+        listNode.append(element('li', { class: 'unbake-confirm-file' }, parts));
     }
     box.append(listNode);
 
-    // **「二度と表示しない」。** 押した回だけでなく、設定として残る（戻す口は設定画面）。
+    /** えらばれている行。**選べない面では全部。** */
+    function pickedFiles() {
+        if (!selectable) return files;
+        return files.filter(file => boxes.get(file)?.checked !== false);
+    }
+
+    function refreshPicked() {
+        const picked = pickedFiles();
+        if (countLine) countLine.textContent = countedText(picked);
+        // **1つも選んでいなければ進ませない。** 押しても何も起きない口を残さない。
+        confirm.disabled = picked.length === 0;
+        // **数字を選択に追随させる。** 外したのに総量が減らないと、
+        // どちらが本当なのか読めなくなる。
+        if (confirmLabelFor) confirm.textContent = confirmLabelFor(picked);
+    }
+
+    // **「二度と表示しない」は消す面だけ。** この切り替えは「消す前に聞くか」の
+    // 設定なので、消さない問いに出すと**別の物を切ったつもりになる。**
     const suppress = element('input', {
         class: 'unbake-confirm-suppress', type: 'checkbox',
         id: 'unbake-confirm-suppress', 'aria-label': t('confirm.suppress'),
@@ -157,12 +226,17 @@ export function createConfirmView({
         class: 'unbake-confirm-cancel', type: 'button', text: t('confirm.cancel'),
     });
     const confirm = element('button', {
-        class: 'unbake-confirm-go', type: 'button', text: t('confirm.delete'),
+        class: 'unbake-confirm-go', type: 'button',
+        text: confirmLabel || t('confirm.delete'),
     });
-    box.append(suppressRow);
-    box.append(suppressHelp);
+    if (destructive) {
+        box.append(suppressRow);
+        box.append(suppressHelp);
+    }
     box.append(element('div', { class: 'unbake-confirm-actions' }, [cancel, confirm]));
     box.append(status);
+    // **釦の字を、開いた時点の顔ぶれに合わせる**（呼び手が件数を書ける）。
+    if (selectable) refreshPicked();
 
     let busy = false;
     let result = null;
@@ -175,7 +249,8 @@ export function createConfirmView({
         cancel.disabled = true;
         status.textContent = t('confirm.working');
         try {
-            result = await onConfirm();
+            // **えらばれた分だけを渡す。** 外したものを落としに行かない。
+            result = await onConfirm(pickedFiles());
         } catch (error) {
             result = { ok: false, error: error?.message || String(error) };
         }
@@ -192,11 +267,17 @@ export function createConfirmView({
             });
             confirm.disabled = true;
         } else {
+            // **失敗の並びは、相手によって形が違う。** 数を渡してくる呼び手も
+            // 居るので、並びのときだけ繋ぐ——`.join` を無条件で呼ぶと、
+            // **結果を出そうとした所で例外になり、何も出なくなる。**
+            const failedList = Array.isArray(result?.failed) ? result.failed.join(' / ') : '';
             status.textContent = t('confirm.failed', {
-                detail: String(result?.error || (result?.failed || []).join(' / ') || ''),
+                detail: String(result?.error || failedList || ''),
             });
             confirm.disabled = false;
         }
+        // **結果をそのまま返す。** 押した側（と検査）が終わりを待てる。
+        return result;
     });
 
     return {
@@ -205,6 +286,8 @@ export function createConfirmView({
         get result() { return result; },
         get busy() { return busy; },
         get suppressed() { return suppress.checked === true; },
+        /** 今えらばれている行。**呼び手が押す前に読める。** */
+        get picked() { return pickedFiles(); },
         destroy() { root.remove(); },
     };
 }

@@ -67,6 +67,24 @@ export function toRecipeShape(record) {
     if (!record || typeof record !== 'object') return record;
     const out = { ...record };
 
+    /*
+     * **土台のモデルの名前を1つに揃える**（2026-08-26 実機で踏んだ）。
+     *
+     * 記録は `baseModel`（キャメル）で持ち、レシピは `base_model`（スネーク）で
+     * 持つ。組み立て側（`recipeWorkflowBuilder`）は**スネークしか見ていない**
+     * ので、キャメルで持つ記録は系統が判らず、UNet 構成にならない。
+     *
+     * 実機の `civitai_139981506` がこれだった。`anima_aestheticV11` を
+     * `models/unet/` へ正しく落とし、ComfyUI の `UNETLoader` の一覧にも
+     * 出ているのに、**`CheckpointLoaderSimple` の一覧を探しに行くので
+     * 「未導入」のまま**——落としても永久に直らない形。
+     *
+     * **読む側を5箇所直すより、出口で1度揃える。** 読む所が増えても漏れない。
+     */
+    if (!out.base_model && typeof record.baseModel === 'string' && record.baseModel.trim()) {
+        out.base_model = record.baseModel;
+    }
+
     if (looksLikeRecordShape(record)) {
         const width = numberOf(record.width);
         const height = numberOf(record.height);
@@ -93,7 +111,11 @@ export function toRecipeShape(record) {
     // **文字列の checkpoint は、そのままでは読まれない。** 組み立ては
     // `file_name` / `localPath` を見るので、裸の文字列は「無い」になる。
     if (typeof out.checkpoint === 'string' && out.checkpoint.trim()) {
-        out.checkpoint = { file_name: out.checkpoint.trim() };
+        // **名前しか無いことを記録する。** グラフに書いてあるのは実行時のファイル名で、
+        // それが手元のどのファイルかは名前でしか当てられない——版IDも hash も無い。
+        // 同名の別ファイルを掴む余地があるので、黙って他と同じ扱いにしない
+        // （`modelEvidence.js`）。
+        out.checkpoint = { file_name: out.checkpoint.trim(), evidence: 'name' };
     }
 
     // LoRA も名前が違う（記録は `name` / `strength`、レシピは `file_name` / `weight`）。
@@ -114,4 +136,27 @@ export function toRecipeShape(record) {
     }
 
     return out;
+}
+
+/**
+ * **落とす先が決まるか**——版ID か hash を1つでも持っているか。
+ *
+ * 2つの場所で同じ問いを立てる:
+ *
+ *   1. 読み直す前  「もう版IDが在るなら、読み直す意味が無い」
+ *   2. 書く前      「読み直しても版IDが取れないなら、書く意味が無い」
+ *
+ * **2つ目が無かった**（2026-08-26 実機で判明）。Civitai は画像そのものは
+ * 返すが `meta` を持たないことがあり（実測 345件中 9件）、その空を
+ * `replace: true` で書いていたので**元の記録が空で塗り潰された**——
+ * チェックポイントも LoRA も生成条件も消え、「落とせば試せる」に出ていた
+ * ものが一覧から消えた。
+ *
+ * **空の応答は「情報が無い」の証拠ではない。** 取り込みの側は同じことを
+ * 既に言っている（絞り込みで消えた場合も同じ形になる）。
+ */
+export function hasVersionEvidence(recipe) {
+    const items = [recipe?.checkpoint, ...(recipe?.loras || []), ...(recipe?.embeddings || [])];
+    return items.some(item => item && typeof item === 'object'
+        && (item.modelVersionId || item.versionId || item.hash || item.lookupSha256));
 }

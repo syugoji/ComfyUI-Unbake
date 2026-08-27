@@ -483,18 +483,40 @@ test('上流（LoRA Manager）への導線は出さない', async () => {
     assert.equal(hrefs.length, 2, '送り先の数が想定と違う');
 });
 
-test('存在しない場所へ飛ぶ口を作らない（不具合報告の導線は置かない）', () => {
+test('不具合報告の導線が、公開した置き場へ向く', () => {
+    /*
+     * **置けなかったのが置けるようになった。** 2026-08-24 の時点では
+     * `github.com/syugoji/ComfyUI-Unbake` が**実測で 404** だったので、
+     * 「押すと存在しない場所へ飛ぶ口」を作らないために出していなかった。
+     * **2026-08-25 に公開**され、リポジトリも issues も 200 を返す。
+     *
+     * 前提が消えたので緩める——**黙って足さず、検査を先に書き換えてから**。
+     */
     setLocale('en');
     const doc = fakeDocument();
     const panel = createUnbakePanel(new FakeNode('div', doc), { documentRef: doc, width: 900 });
     panel.root.byClass('unbake-donate-open').dispatch('click', {});
-    const hrefs = panel.donateView.root.allByClass('unbake-donate-button')
+    const help = panel.donateView.root.allByClass('unbake-donate-help-link')
         .map(b => b.getAttribute('href') || '');
-    // 上流は不具合報告と Discord も並べているが、**こちらは置けない**——
-    // リポジトリがまだ公開されておらず `github.com/syugoji/ComfyUI-Unbake` は実測で 404
-    // （2026-08-24）。**公開したらここを緩める**のであって、黙って足さない。
-    assert.deepEqual(hrefs.filter(h => /github\.com\/syugoji/.test(h)), [],
-        '公開されていないリポジトリへの導線が入っている');
+    assert.equal(help.length, 1, `不具合報告の口が1つでない: ${help.join(' / ')}`);
+    assert.match(help[0], /^https:\/\/github\.com\/syugoji\/ComfyUI-Unbake\/issues$/,
+        `飛び先が違う: ${help[0]}`);
+});
+
+test('不具合報告を、送り先として数えない', () => {
+    /*
+     * **払う口と、困ったときの口は別。** 同じ数え方に混ぜると
+     * 「送り先の数が想定と違う」の見張りが黙って緩む。
+     */
+    setLocale('en');
+    const doc = fakeDocument();
+    const panel = createUnbakePanel(new FakeNode('div', doc), { documentRef: doc, width: 900 });
+    panel.root.byClass('unbake-donate-open').dispatch('click', {});
+    const rails = panel.donateView.root.allByClass('unbake-donate-button')
+        .map(b => b.getAttribute('href') || '');
+    assert.equal(rails.length, 2, `送り先の数が変わっている: ${rails.join(' / ')}`);
+    assert.deepEqual(rails.filter(h => /github\.com/.test(h)), [],
+        '不具合報告が送り先に混ざっている');
 });
 
 test('`http(s)` 以外は送り先にしない', async () => {

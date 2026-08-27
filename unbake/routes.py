@@ -22,6 +22,8 @@ SPDX-License-Identifier: GPL-3.0-or-later
 ``GET  /unbake/outputs``               出力画像。``?id=`` で印つきの分、
                                        無ければ**生の値**をページで返す
 ``GET  /unbake/raindrop``              「あとで読む箱」の一覧（**読むだけ**）
+``GET  /unbake/model-companions``      この系統が本体のほかに要るもの（**落とさない**）
+``POST /unbake/download-model-companions`` 足りない伴走を落とす
 ``GET  /unbake/download-plan``         落とす前に大きさを調べる（**落とさない**）
 ``POST /unbake/download``              モデルを1つ落とす（**版IDだけを受ける**）
 ``GET  /unbake/download``              進み具合
@@ -51,6 +53,8 @@ from __future__ import annotations
 
 import base64
 import json
+import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -219,6 +223,23 @@ def scan_outputs(*, offset: int = 0, limit: int = 200, keys: Optional[List[str]]
 #: 人が追えなくなる。
 _download: Dict[str, Any] = {"state": "idle"}
 
+#: 版ID → いま引いているもの。**1本ずつという前提をここで外す。**
+#:
+#: 元は `_download` 1つで「もう1本走っている」を拒んでいた。**4GB前後の
+#: チェックポイントを何本も待つと、1本ずつでは実用にならない**（実測で
+#: 1件 3.9GB）。Civitai は接続ごとに絞ることがあるので、本数を増やすと
+#: 合計は素直に速くなる。
+#:
+#: **上限を置く。** 無制限に開くと、こちらの回線も相手の側も痛める。
+#: 上流（改造版 LoRA Manager）も semaphore で抑えている。
+_downloads: Dict[str, Dict[str, Any]] = {}
+
+#: 同時に引く本数の上限。**設定にしない**——押した人が増やせる数字にすると、
+#: 「速くならないのに相手へ負荷をかける」方向へ倒す余地ができる。
+MAX_PARALLEL_DOWNLOADS = 3
+
+_downloads_lock = threading.Lock()
+
 
 #: 見本として返してよい型。**記録の参照画像と同じ判断**（拡張子は名乗りにすぎない）。
 _PREVIEW_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
@@ -288,10 +309,47 @@ def model_preview_path(kind: str, name: str) -> Optional[Path]:
 
 
 def download_state() -> Dict[str, Any]:
-    return dict(_download)
+    """進み具合。**走っている全部を返す**（2026-08-26 利用者の報告）。
+
+    元は最後に始めた1本（`_download`）しか返していなかった。並列にしたので
+    **3本走っていても1本ぶんしか見えず**、しかもその1本が終わっていると
+    「何も走っていない」に見える——「何バイト落ちたのか判らない」の正体。
+
+    **判らない総量を 0 と混ぜない。** `Content-Length` を返さない相手が
+    居るので、総量の判らない本数を別に数えて返す。
+    """
+    with _downloads_lock:
+        running = [dict(item) for item in _downloads.values()
+                   if item.get("state") == "running"]
+    done_bytes = sum(int(item.get("bytes") or 0) for item in running)
+    total_bytes = 0
+    unknown = 0
+    for item in running:
+        total = int(item.get("totalBytes") or 0)
+        if total > 0:
+            total_bytes += total
+        else:
+            unknown += 1
+    return {
+        **dict(_download),
+        "running": [
+            {
+                "versionId": item.get("versionId"),
+                "name": item.get("filename") or item.get("name"),
+                "bytes": int(item.get("bytes") or 0),
+                "totalBytes": int(item.get("totalBytes") or 0) or None,
+            }
+            for item in running
+        ],
+        "runningCount": len(running),
+        "doneBytes": done_bytes,
+        "totalBytes": total_bytes or None,
+        "unknownTotals": unknown,
+    }
 
 
-def start_download(version_id: str, *, kind: Optional[str] = None) -> Dict[str, Any]:
+def start_download(version_id: str, *, kind: Optional[str] = None,
+                   model_id: Optional[str] = None) -> Dict[str, Any]:
     """モデルを1つ落とす。**版IDだけを受ける。**
 
     **画面から URL を受け取らない。** 受け取ると、画面へ細工をした人が
@@ -301,13 +359,28 @@ def start_download(version_id: str, *, kind: Optional[str] = None) -> Dict[str, 
     ここは「何を落としてよいか」を決める境界なので、書き込む側で持つ。）
     """
     global _download
-    if _download.get("state") == "running":
-        return {"ok": False, "error": "another download is running", "state": _download}
+    key = str(version_id)
+    with _downloads_lock:
+        # **同じ版を2本走らせない。** 同じ `.part` を2つが書くと、
+        # 追記が混ざって**壊れた理由が判らないファイル**ができる。
+        if key in _downloads and _downloads[key].get("state") == "running":
+            # **「置き場に在る」と同じ種類にしない**（2026-08-26 の読みで直した）。
+            # あちらは「もう要らない」、こちらは「いま引いている最中」で、
+            # 打つ手が違う。同じ種類にすると、画面はどちらも「既に在る」と数える。
+            return {"ok": False, "error": "this version is already downloading",
+                    "code": "downloading", "state": dict(_downloads[key])}
+        running = sum(1 for item in _downloads.values() if item.get("state") == "running")
+        if running >= MAX_PARALLEL_DOWNLOADS:
+            return {"ok": False, "error": "too many downloads at once",
+                    "code": "busy", "state": {"running": running,
+                                              "limit": MAX_PARALLEL_DOWNLOADS}}
 
     # **鍵を渡す。** 渡していなかったので、早期公開・制限つきの版は
     # *解決の段*で落ちていた（落とす段は同じ鍵を使っている）。
     resolved = resolve_version(
         version_id, kind=kind, api_key=str(get_settings().get("civitai_api_key", "") or ""),
+        allow_civarchive=bool(get_settings().get("use_civarchive")),
+        model_id=model_id,
     )
     if not resolved.get("ok"):
         return {
@@ -330,11 +403,16 @@ def start_download(version_id: str, *, kind: Optional[str] = None) -> Dict[str, 
         "totalBytes": resolved.get("bytes"),
         "canceled": False,
     }
+    # **版ごとの控えも同じ実体にする。** 別の辞書にすると、中断の印が
+    # 片方にしか立たず「押したのに止まらない」になる。
+    with _downloads_lock:
+        _downloads[key] = _download
+    mine = _download
 
     def progress(written: int, total: Optional[int]) -> None:
-        _download["bytes"] = written
+        mine["bytes"] = written
         if total:
-            _download["totalBytes"] = total
+            mine["totalBytes"] = total
 
     try:
         result = download_model(
@@ -345,7 +423,9 @@ def start_download(version_id: str, *, kind: Optional[str] = None) -> Dict[str, 
             expected_bytes=resolved.get("bytes"),
             api_key=api_key,
             on_progress=progress,
-            should_cancel=lambda: bool(_download.get("canceled")),
+            # **自分の実体を見る。** `_download` は最後に別の辞書へ差し替わるので、
+            # そちらを見ると中断の印を取り落とす。
+            should_cancel=lambda: bool(mine.get("canceled")),
         )
     except DownloadError as error:
         # **止めたことを失敗と混ぜない**（2026-08-23 利用者の指示）。押した本人は
@@ -353,16 +433,33 @@ def start_download(version_id: str, *, kind: Optional[str] = None) -> Dict[str, 
         # 途中まで書いた `.part` は `download_model` が消している。
         code = getattr(error, "code", "unknown")
         state = "canceled" if code == "canceled" else "failed"
-        _download = {**_download, "state": state, "error": str(error), "code": code}
+        _download = {**mine, "state": state, "error": str(error), "code": code}
+        with _downloads_lock:
+            _downloads[key] = _download
         return {"ok": False, "error": str(error), "code": code, "state": dict(_download)}
 
-    _download = {**_download, "state": "done", **result}
+    _download = {**mine, "state": "done", **result}
+    with _downloads_lock:
+        _downloads[key] = _download
     return {"ok": True, **result, "state": dict(_download)}
 
 
-def cancel_download() -> Dict[str, Any]:
+def cancel_download(version_id: Optional[str] = None) -> Dict[str, Any]:
+    """中断を頼む。**版IDを渡さなければ、走っている全部に頼む。**
+
+    画面の「止める」は1つしか無いので、既定は全部にする——**1本だけ止まって
+    残りが走り続ける**と、押した人からは止まっていないように見える。
+    """
     _download["canceled"] = True
-    return dict(_download)
+    stopped = []
+    with _downloads_lock:
+        for key, item in _downloads.items():
+            if version_id is not None and key != str(version_id):
+                continue
+            if item.get("state") == "running":
+                item["canceled"] = True
+                stopped.append(key)
+    return {**dict(_download), "canceled": True, "stopped": stopped}
 
 
 def raindrop_bookmarks(
@@ -415,6 +512,7 @@ def save_one_record(
     recipe: Dict[str, Any],
     preview_url: Optional[str] = None,
     preview_data: Optional[str] = None,
+    replace: bool = False,
 ) -> Dict[str, Any]:
     """記録を1件ディスクへ残す（`I-20260821-03`）。
 
@@ -429,6 +527,7 @@ def save_one_record(
         get_settings(), recipe,
         preview_url=preview_url,
         preview_bytes=decode_preview_data(preview_data),
+        replace=replace,
     )
     if result.get("ok"):
         library.scan()
@@ -550,6 +649,9 @@ def register_routes() -> bool:
         try:
             result = save_one_record(
                 recipe, payload.get("previewUrl"), payload.get("previewData"),
+                # **頼まれたときだけ置き換える**（2026-08-26 利用者の検証で必要になった）。
+                # 既定は今までどおり「上書きしない」。
+                replace=bool(payload.get("replace")),
             )
         except RecordError as error:
             return web.json_response({"ok": False, "error": str(error)}, status=400)
@@ -709,9 +811,100 @@ def register_routes() -> bool:
         import asyncio
 
         result = await asyncio.to_thread(
-            start_download, version_id, kind=payload.get("kind") or None
+            start_download, version_id, kind=payload.get("kind") or None,
+            model_id=str(payload.get("modelId") or "").strip() or None
         )
         return web.json_response(result, status=200 if result.get("ok") else 400)
+
+    @routes.get("/unbake/model-companions")
+    async def _get_model_companions(request):
+        """この系統が、拡散モデル本体のほかに何を要るのかを返す。**落とさない。**
+
+        **チェックポイントだけ落としても、何も動かない系統がある。**
+        Civitai は Flux / Qwen-Image / HiDream / Chroma / Z-Image / Krea 2 /
+        Anima について拡散モデルしか配らないので、テキストエンコーダと VAE は
+        別に要る。しかも**落とし終わってから初めて足りないと判る**
+        ——押す前に総量を出せないと、2往復めが必ず要る。
+
+        目録（`known_model_catalog`）と取得（`known_model_downloader`）は
+        以前から在ったが、**この口が無いので画面から一度も届いていなかった**
+        （2026-08-26 の到達性の棚卸しで判明）。
+        """
+        from .services.known_model_catalog import companions_for
+        from .services.known_model_downloader import find_installed_path
+
+        base_model = str(request.query.get("baseModel", "")).strip()
+        if not base_model:
+            return web.json_response({"ok": False, "error": "baseModel is required"}, status=400)
+
+        entries = companions_for(base_model)
+        companions = []
+        for entry in entries:
+            installed = find_installed_path(entry.folder, entry.filename)
+            companions.append({
+                "key": entry.key,
+                "filename": entry.filename,
+                "folder": entry.folder,
+                "bytes": entry.size_bytes,
+                "installed": bool(installed),
+                # **手で入れるしかないものを、落とせるものと混ぜない。**
+                # 混ぜると「押したのに来ない」になる。
+                "downloadable": bool(entry.downloadable and entry.url),
+                "pageUrl": entry.page_url,
+                "license": entry.license,
+            })
+        missing = [item for item in companions if not item["installed"]]
+        return web.json_response({
+            "ok": True,
+            "baseModel": base_model,
+            "companions": companions,
+            "missingCount": len(missing),
+            # **判らない大きさを 0 と混ぜない。** 混ぜると総量が実際より小さく出る。
+            "missingBytes": sum(item["bytes"] for item in missing if isinstance(item["bytes"], int)),
+            "missingUnknown": sum(1 for item in missing if not isinstance(item["bytes"], int)),
+        })
+
+    @routes.post("/unbake/download-model-companions")
+    async def _post_download_model_companions(request):
+        """足りない伴走を落とす。**系統名しか受けない**（URL もパスも受けない）。
+
+        落とし先は目録が持っている `folder` から ComfyUI に決めさせる
+        ——呼び手が置き場を指せる口にすると、そこが任意の場所へ書ける口になる。
+        """
+        from .services.known_model_catalog import companions_for
+        from .services.known_model_downloader import download_known_model, find_installed_path
+
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        base_model = str((payload or {}).get("baseModel") or "").strip()
+        if not base_model:
+            return web.json_response({"ok": False, "error": "baseModel is required"}, status=400)
+
+        results = []
+        for entry in companions_for(base_model):
+            if find_installed_path(entry.folder, entry.filename):
+                results.append({"key": entry.key, "filename": entry.filename,
+                                "ok": True, "skipped": True, "reason": "already_installed"})
+                continue
+            outcome = await download_known_model(entry.key)
+            results.append({
+                "key": entry.key,
+                "filename": entry.filename,
+                "ok": bool(outcome.get("success")),
+                "skipped": bool(outcome.get("skipped")),
+                "reason": outcome.get("reason"),
+                "error": outcome.get("error"),
+                "pageUrl": outcome.get("page_url"),
+            })
+        # **1本でも落ちなければ ok にしない。** 成功として報せると、
+        # 残りに気づけないまま「動かない」に戻る。
+        return web.json_response({
+            "ok": all(item["ok"] for item in results) if results else True,
+            "baseModel": base_model,
+            "companions": results,
+        })
 
     @routes.get("/unbake/download-plan")
     async def _get_download_plan(request):
@@ -746,13 +939,18 @@ def register_routes() -> bool:
                         "filename": resolved.get("filename"),
                         "kind": resolved.get("kind"),
                         "bytes": resolved.get("bytes"),
+                        # **系統を返す。** 伴走（テキストエンコーダ・VAE）が
+                        # 要るかは系統でしか判らず、これが無いと押す前の総量に
+                        # 入れられない——落とし終わってから足りないと判ることになる。
+                        "baseModel": resolved.get("baseModel"),
                         "error": None,
                     })
                 else:
                     # **調べられなかったことを、大きさ0と混ぜない。**
                     out.append({
                         "versionId": version_id, "name": None, "filename": None,
-                        "kind": None, "bytes": None, "error": resolved.get("error"),
+                        "kind": None, "bytes": None, "baseModel": None,
+                        "error": resolved.get("error"),
                     })
             return out
 
@@ -933,6 +1131,8 @@ def registered_paths() -> List[str]:
         "/unbake/record-original",
         "/unbake/model-preview",
         "/unbake/outputs",
+        "/unbake/model-companions",
+        "/unbake/download-model-companions",
         "/unbake/download-plan",
         "/unbake/download",
         "/unbake/download-cancel",

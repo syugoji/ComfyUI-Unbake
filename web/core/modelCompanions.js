@@ -16,8 +16,16 @@ import { environmentRequestOrNull } from './environment.js';
  * close it right after the main file lands.
  */
 
-const STATUS_ENDPOINT = '/api/lm/model-companions';
-const DOWNLOAD_ENDPOINT = '/api/lm/download-model-companions';
+/*
+ * **口はこちらのもの**（2026-08-26 の到達性の棚卸しで直した）。
+ *
+ * ここは元々 `/api/lm/…` を叩いていた——**フォーク（LoRA Manager）のサーバの
+ * 口**である。持ってきたまま繋ぎ替えていなかったので、この面は
+ * 「LoRA Manager も入っている環境でだけ動くかもしれないもの」だった。
+ * Unbake は単体で入る拡張なので、これは動かないのと同じ。
+ */
+const STATUS_ENDPOINT = '/unbake/model-companions';
+const DOWNLOAD_ENDPOINT = '/unbake/download-model-companions';
 
 // The same base model appears on every version of a model page, so the modal
 // would otherwise ask the backend once per row.
@@ -41,14 +49,17 @@ export async function fetchCompanionStatus(baseModel, { fetchImpl = null } = {})
 
     let status = null;
     try {
-        const response = await request(`${STATUS_ENDPOINT}?base_model=${encodeURIComponent(key)}`);
+        const response = await request(`${STATUS_ENDPOINT}?baseModel=${encodeURIComponent(key)}`);
         if (response?.ok) {
             const data = await response.json();
-            if (data?.success && Array.isArray(data.companions)) {
+            if (data?.ok && Array.isArray(data.companions)) {
                 status = {
                     companions: data.companions,
-                    missingCount: Number(data.missing_count) || 0,
-                    missingBytes: Number(data.missing_bytes) || 0,
+                    missingCount: Number(data.missingCount) || 0,
+                    missingBytes: Number(data.missingBytes) || 0,
+                    // **大きさの判らないものを数え落とさない。** 落とすと
+                    // 「0 MB」と出て、実際には何GBも引くことになる。
+                    missingUnknown: Number(data.missingUnknown) || 0,
                 };
             }
         }
@@ -68,11 +79,11 @@ export async function downloadCompanions(baseModel, { fetchImpl = null } = {}) {
         const response = await request(DOWNLOAD_ENDPOINT, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ base_model: baseModel.trim() }),
+            body: JSON.stringify({ baseModel: baseModel.trim() }),
         });
         if (!response?.ok) return null;
         const data = await response.json();
-        if (!data?.success || !Array.isArray(data.companions)) return null;
+        if (!Array.isArray(data?.companions)) return null;
         // The cache would otherwise keep reporting the files as missing.
         statusCache.delete(baseModel.trim());
         return data.companions;
@@ -89,54 +100,14 @@ export function formatBytes(bytes) {
     return `${Math.round(value / 1024 ** 2)} MB`;
 }
 
-/**
- * Add "+N files (X GB)" badges to already-rendered version rows.
+/*
+ * ここには `annotateVersionCompanions()` が在った（2026-08-26 に外した）。
  *
- * The rows are built synchronously from the Civitai payload, so the badge is
- * attached afterwards rather than blocking the list on a round trip.
+ * フォークの画面の作り（`.version-item[data-version-id]` / `.version-meta` /
+ * FontAwesome の `fa-puzzle-piece` / グローバルの `document`）を前提に書かれて
+ * いて、**Unbake の画面にはその要素が1つも無い**。呼び手も無かった。
  *
- * @param {HTMLElement} container element holding the rows
- * @param {Array<{id: any, baseModel?: string}>} versions
+ * **動かないものを「在る」ままにしない。** 残っていると、次に読む人は
+ * 「伴走の表示はもう在る」と読む——実際にはどの面にも出ない。
+ * 出す所は、落とす前の見積り（`downloadMissing`）に持たせた。
  */
-export async function annotateVersionCompanions(container, versions, options = {}) {
-    if (!container || !Array.isArray(versions)) return;
-    const {
-        translate: translateFn = (key, params, fallback) => fallback ?? key,
-        fetchImpl = null,
-        // The batch preview lists the same models under a different markup.
-        rowSelector = version => `.version-item[data-version-id="${version.id}"] .version-meta`,
-    } = options;
-
-    const baseModels = [...new Set(
-        versions.map(version => version?.baseModel).filter(value => typeof value === 'string' && value.trim())
-    )];
-    if (!baseModels.length) return;
-
-    const statuses = new Map();
-    await Promise.all(baseModels.map(async baseModel => {
-        statuses.set(baseModel, await fetchCompanionStatus(baseModel, { fetchImpl }));
-    }));
-
-    versions.forEach((version, index) => {
-        const status = statuses.get(version?.baseModel);
-        if (!status || status.missingCount <= 0) return;
-
-        const row = container.querySelector(rowSelector(version, index));
-        if (!row || row.querySelector('.companion-badge')) return;
-
-        const label = translateFn(
-            'modals.download.companionsNeeded',
-            { count: status.missingCount, size: formatBytes(status.missingBytes) },
-            `+${status.missingCount} required files (${formatBytes(status.missingBytes)})`
-        );
-        const badge = document.createElement('span');
-        badge.className = 'companion-badge';
-        badge.title = status.companions
-            .filter(item => !item.installed)
-            .map(item => item.filename)
-            .join('\n');
-        badge.innerHTML = '<i class="fas fa-puzzle-piece"></i> ';
-        badge.appendChild(document.createTextNode(label));
-        row.appendChild(badge);
-    });
-}

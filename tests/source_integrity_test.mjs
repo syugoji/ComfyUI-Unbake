@@ -48,7 +48,7 @@ const HOST_PROVIDED_PYTHON = new Set(['folder_paths', 'PIL', 'server', 'aiohttp'
 
 const PY_STDLIB = new Set([
     '__future__', 'asyncio', 'base64', 'collections', 'contextlib', 'copy', 'csv',
-    'dataclasses', 'datetime', 'enum', 'functools', 'glob', 'hashlib', 'inspect',
+    'concurrent', 'dataclasses', 'datetime', 'enum', 'functools', 'glob', 'hashlib', 'inspect',
     'importlib', 'io', 'itertools', 'json', 'logging', 'math', 'os', 'pathlib',
     'random', 're', 'shutil', 'struct', 'subprocess', 'sys', 'tempfile', 'threading',
     'time', 'traceback', 'types', 'typing', 'urllib', 'uuid', 'zipfile',
@@ -153,6 +153,50 @@ test('unbake/ の import が標準ライブラリ・兄弟・宿主提供のも�
         }
     }
     assert.deepEqual(bad, [], '上流フォークか外部パッケージを参照している');
+});
+
+/**
+ * **同梱スクリプトの import も見る。**
+ *
+ * 上の検査は相対 import を「兄弟」として無条件に通す（`if (dots) continue;`）ので、
+ * `from ...civitai_recipe_sync import …` は素通りする。子プロセスで動かしていた頃は
+ * それでよかった——別プロセスの依存はこちらの配布物の話ではなかった。
+ * **0.1.2 で同一プロセスへ移した時点で、その前提は消えている**（`sync_script_runner.py`）。
+ * 今このスクリプトが第三者パッケージを1つ足せば、それは **`dependencies = []` と
+ * 宣言している配布物の実行時依存**になる。
+ *
+ * `pyproject.toml` にはこの穴を注意書きで残していたが、**散文は検査を素通りする**ので
+ * ここで機械に見せる。**スクリプトは1文字も変えない方針**なので、通常このリストは動かない。
+ * 動いたときは「上流が依存を増やした」という報告そのものになる。
+ */
+const SYNC_SCRIPT_ALLOWED = new Set([
+    // ComfyUI 本体の `requirements.txt` が持つ（実測 2026-08-25・27行目）。
+    // **`pyproject.toml` の `dependencies = []` はこれを根拠にしている。**
+    'requests',
+]);
+
+test('同梱スクリプトの import が標準ライブラリと宿主提供のものだけ', async () => {
+    const files = await filesUnder(join(ROOT, 'civitai_recipe_sync'), ['.py']);
+    assert.ok(files.length > 0, '同梱スクリプトが1つも見つからない（置き場の改名か配り漏れ）');
+    const bad = [];
+    for (const f of files) {
+        const text = await readFile(f, 'utf8');
+        for (const m of text.matchAll(/^\s*from\s+(\.*)([A-Za-z0-9_.]*)\s+import\s/gm)) {
+            const [, dots, mod] = m;
+            if (dots) continue;
+            const top = mod.split('.')[0];
+            if (!PY_STDLIB.has(top) && !HOST_PROVIDED_PYTHON.has(top) && !SYNC_SCRIPT_ALLOWED.has(top)) {
+                bad.push(rel(f) + ': from ' + mod);
+            }
+        }
+        for (const m of text.matchAll(/^\s*import\s+([A-Za-z0-9_.]+)/gm)) {
+            const top = m[1].split('.')[0];
+            if (!PY_STDLIB.has(top) && !HOST_PROVIDED_PYTHON.has(top) && !SYNC_SCRIPT_ALLOWED.has(top)) {
+                bad.push(rel(f) + ': import ' + m[1]);
+            }
+        }
+    }
+    assert.deepEqual(bad, [], '同梱スクリプトが宣言外の依存を持ち込んでいる');
 });
 
 test('web/core に大域の fetch 識別子が1つも無い（環境は呼び手が注入する）', async () => {
@@ -377,6 +421,9 @@ test('ディスクを変える HTTP の口が、宣言した一覧と完全に�
     assert.deepEqual(posts.sort(), [
         'POST /unbake/download',
         'POST /unbake/download-cancel',
+    // **伴走（テキストエンコーダ・VAE）を落とす。** 受けるのは系統名だけで、
+    // 置き場は目録の `folder` から ComfyUI が決める（呼び手はパスを指せない）。
+    'POST /unbake/download-model-companions',
         // **モデルを消す**（2026-08-21 ユーザー決定・ゴミ箱へは送らず完全に消す）。
         'POST /unbake/model-delete',
         // 見本を取りに行く口（2026-08-21）。**models フォルダへは書かない**
@@ -483,7 +530,7 @@ test('検査自体が発火することを確かめる（沈黙する検査を�
  * 「配線が正しい」と「配布物に入っている」は別で、前者だけ見ていると後者が抜ける。
  */
 test('同期スクリプトは同梱されており、起動先を外から差し替えられない', async () => {
-    const rel = join('civitai-recipe-sync', 'civitai_image_download.py');
+    const rel = join('civitai_recipe_sync', 'civitai_image_download.py');
     const script = await readFile(join(ROOT, rel), 'utf8');
     assert.ok(script.length > 10000, rel + ' が同梱されていない（または中身が空）');
 
@@ -517,10 +564,10 @@ test('同梱した同期スクリプトの出所が NOTICE に書いてある', 
     // 見たいのは「別ライセンスの同梱物が在ることが書いてあるか」であって、
     // 中身が何ファイルかではない。
     const notice = await readFile(join(ROOT, 'NOTICE'), 'utf8');
-    assert.match(notice, /civitai-recipe-sync/,
-        'NOTICE が同梱の civitai-recipe-sync/ に触れていない');
+    assert.match(notice, /civitai_recipe_sync/,
+        'NOTICE が同梱の civitai_recipe_sync/ に触れていない');
     assert.match(notice, /\bMIT\b/, 'NOTICE が同梱物のライセンス（MIT）に触れていない');
-    const license = await readFile(join(ROOT, 'civitai-recipe-sync', 'LICENSE'), 'utf8');
+    const license = await readFile(join(ROOT, 'civitai_recipe_sync', 'LICENSE'), 'utf8');
     assert.match(license, /MIT License/, '同梱スクリプトの LICENSE が MIT の正文でない');
 });
 
@@ -608,4 +655,100 @@ test('README に利用者の手元でしか意味を持たない数値を書か�
         const hits = banned.filter(re => re.test(readme)).map(re => re.source);
         assert.deepEqual(hits, [], `${file} に書き手の環境の数値が残っている: ${hits.join(', ')}`);
     }
+});
+
+test('落とし込みの出口が、records を必ず toRecipeShape へ通している', async () => {
+    // **配線そのものを見る。** `toRecipeShape()` の中身を検査しても、
+    // `ingest()` がそれを呼ばなくなったことは捕まらない——実際、変異検査で
+    // 「出口で揃えるのをやめる」が素通りしたので、この検査を足した。
+    //
+    // 押し込み口は6箇所ある。個々を見張ると増えたときに漏れるので、
+    // **出口が1本であること**と**そこを通していること**の2つで見る。
+    const source = await readFile(join(ROOT, 'web', 'unbake.js'), 'utf8');
+
+    const wrapper = /export async function ingest\(routed\)\s*\{([\s\S]*?)\n\}/.exec(source);
+    assert.ok(wrapper, 'export された ingest() が読めない');
+    assert.match(wrapper[1], /toRecipeShape\(/,
+        'ingest() が records を toRecipeShape へ通していない（記録の形がそのまま下流へ流れる）');
+
+    // **中の実装が直接 export されていないこと。** されていると、
+    // 揃える工程を飛ばして呼べる口ができる。
+    assert.ok(!/export\s+(async\s+)?function\s+ingestRouted/.test(source),
+        'ingestRouted が export されている（揃えずに呼べる口になる）');
+});
+
+test('Raindrop の取り込みと、URL の落とし込みが同じ経路を通る', async () => {
+    // **取り込み器を2本持たない。** 2本あると、`.red` の扱いのような決めごとが
+    // 片方にだけ残って静かに食い違う（出典の 326/340 が `.red` なので実害が出る）。
+    //
+    // docstring は「同じ `routed` を作って渡すだけ」と宣言しているが、
+    // **宣言は壊れても赤くならない**ので、構造で固定する。
+    const panel = await readFile(join(ROOT, 'web', 'panel', 'panel.js'), 'utf8');
+
+    // Raindrop 側が独自に取得・組み立てをしていないこと。
+    const importOne = /importOne:\s*\(target\)\s*=>\s*([A-Za-z_$][\w$]*)\(/.exec(panel);
+    assert.ok(importOne, 'Raindrop の importOne が読めない');
+    assert.equal(importOne[1], 'ingestRouted',
+        'Raindrop が落とし込みとは別の関数で取り込んでいる');
+
+    // 落とし込み側も同じ関数を通ること。
+    assert.match(panel, /await\s+ingestRouted\(routed\)/,
+        '落とし込みが ingestRouted を通っていない');
+
+    // その関数が `ingest()` を1本だけ呼ぶこと。
+    const body = /async function ingestRouted\(routed\)\s*\{([\s\S]*?)\n    \}/.exec(panel);
+    assert.ok(body, 'panel の ingestRouted が読めない');
+    assert.match(body[1], /await ingest\(routed\)/, 'ingest() を通していない');
+
+    // **Raindrop の面が、自前で取得や組み立てをしていないこと。**
+    const raindrop = await readFile(join(ROOT, 'web', 'panel', 'raindropView.js'), 'utf8');
+    for (const forbidden of ['fetchCivitaiImage', 'recipeFromCivitaiMeta', 'recordFromCivitaiImage']) {
+        assert.ok(!raindrop.includes(forbidden),
+            `raindropView が ${forbidden} を自前で呼んでいる（取り込み器が2本になる）`);
+    }
+});
+
+test('版IDの引き直しは、捕捉した絵にも当たる', async () => {
+    // **2026-08-25 利用者の報告。** 「不足モデルのダウンロードができない」。
+    // 原因は B（`attachLookedUpVersions`）を **recipe 経路にしか繋いでいなかった**こと。
+    // グラフを持つ絵（実測14%）は捕捉経路を通るので、**取得先が判らないまま**だった
+    // ——版IDが無いと `downloadable` に分類されず、落とす導線が出ない。
+    //
+    // **経路が2本ある以上、両方を見る。** 片方だけ直しても、次に片方が増えたら同じ穴が開く。
+    const source = await readFile(join(ROOT, 'web', 'unbake.js'), 'utf8');
+    const branch = /if \(captured\.ok\) \{([\s\S]*?)\n        \}/.exec(source);
+    assert.ok(branch, '捕捉できたときの分岐が読めない');
+    assert.match(branch[1], /attachLookedUpVersions\(/,
+        '捕捉経路で版IDを引いていない（落とす導線が出ない）');
+    // **形を揃えてから引く。** 捕捉直後の checkpoint はただの文字列で、
+    // 資源の形になっていないと引く相手が読めない。
+    assert.match(branch[1], /toRecipeShape\(/,
+        '形を揃える前に引こうとしている');
+    const shapeAt = branch[1].indexOf('toRecipeShape(');
+    const lookAt = branch[1].indexOf('attachLookedUpVersions(');
+    assert.ok(shapeAt < lookAt, '引いてから揃えている（順序が逆）');
+});
+
+test('取得は並列だが、本数に上限がある', async () => {
+    // **上限が要る。** 無制限に開くと、こちらの回線も相手の側も痛める。
+    // 上流（改造版 LoRA Manager）も semaphore で抑えている。
+    const panel = await readFile(join(ROOT, 'web', 'panel', 'panel.js'), 'utf8');
+    assert.match(panel, /Array\.from\(\{ length: Math\.min\(3, wanted\.length\) \}/,
+        '走者の数に上限が無い（または並列になっていない）');
+
+    // **並列では `break` が使えない。** 自分より後ろは既に走っている。
+    // 中断は「新しく始めない」で表す。
+    const runOne = /const runOne = async \(item, index\) => \{([\s\S]*?)\n            \};/.exec(panel);
+    assert.ok(runOne, '取得1本ぶんの関数が読めない');
+    assert.ok(!/\n\s+break;/.test(runOne[1]),
+        '並列の中で break を使っている（後ろが走ったまま止まったことになる）');
+    assert.match(runOne[1], /if \(downloadCanceled\) return;/,
+        '中断を見ていない');
+
+    // サーバ側にも同じ上限が在ること。**片方だけ増やすと、拒まれ続ける。**
+    const routes = await readFile(join(ROOT, 'unbake', 'routes.py'), 'utf8');
+    assert.match(routes, /MAX_PARALLEL_DOWNLOADS\s*=\s*3/,
+        'サーバ側の上限が3でない（画面側と食い違う）');
+    assert.match(routes, /this version is already downloading/,
+        '同じ版を2本走らせない守りが無い（同じ .part を2つが書く）');
 });

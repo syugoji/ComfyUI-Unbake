@@ -69,6 +69,15 @@ const DISPLAY_FIELDS = [
     { key: 'verdict_palette', kind: 'select', label: 'settings.palette', help: 'settings.palette.help',
       options: ['default', 'deuteranopia'],
       optionText: (code) => t(`settings.palette.${code}`) },
+    /*
+     * **色分けの続き**（2026-08-26 利用者の指示）。上の項目と隣に置く。
+     *
+     * **上と一つにまとめない。** 上は「判定の3色をどう選ぶか」で、こちらは
+     * 「別の軸の色帯を出すか」——一つの選択肢にすると、**色覚特性向けの配色を
+     * 選んだ人が色帯を出せなくなる**（あるいはその逆）。軸が違うものを
+     * 1つの並びへ潰すと、片方を選ぶともう片方を諦めることになる。
+     */
+    { key: 'extra_bands', kind: 'boolean', label: 'settings.extraBands', help: 'settings.extraBands.help' },
     { key: 'theme', kind: 'select', label: 'settings.theme', help: 'settings.theme.help',
       options: ['host', 'amber', 'ember', 'moss', 'paper'],
       optionText: (code) => t(`settings.theme.${code}`) },
@@ -91,6 +100,10 @@ const DISPLAY_FIELDS = [
     // 送り先は `panel/donateView.js` の表が持つ（フォークはそこを書き換える）。
     // **「二度と表示しない」を戻せる場所。** 確認の中だけで切れる作りにすると、
     // 切った瞬間に戻す口が消える。
+    // **消えたモデルの受け皿**（2026-08-26 利用者の指示・**既定は OFF**）。
+    // 開けると第三者（civarchive.com）へ問い合わせが飛び、落とす相手も増える。
+    // 切ってある理由は `unbake/settings.py` に書いてある。
+    { key: 'use_civarchive', kind: 'boolean', label: 'settings.useCivarchive', help: 'settings.useCivarchive.help' },
     { key: 'confirm_before_delete', kind: 'boolean', label: 'settings.confirmBeforeDelete', help: 'settings.confirmBeforeDelete.help' },
     // **宿主全体に効く設定なので、切れる場所を必ず置く**（2026-08-24）。
     // Dark Reader は半透明の重ねを不透明へ潰すので、重ねた面が「背景が単色」になる。
@@ -133,6 +146,14 @@ export function createSettingsView({
     read,
     write,
     rescan = null,
+    /**
+     * **出典から読み直す**（2026-08-26 利用者の指示）。
+     *
+     * 古い記録は `checkpoint` が名前だけで版IDを持たず、**版IDが無いと
+     * 落とせない**（実機で 44件が「落とせません」で止まっていた）。
+     * 一覧を綺麗なままにしたいという指示なので、口は設定に置く。
+     */
+    refreshFromSource = null,
     onClose = null,
     onLanguageChange = null,
     onSaved = null,
@@ -433,13 +454,36 @@ export function createSettingsView({
     const rescanButton = element('button', { class: 'unbake-settings-rescan', type: 'button', text: t('settings.rescan') });
     rescanButton.addEventListener('click', () => doRescan());
 
+    // **押している間ずっと何も出ないのが一番こわい。** 件数を数えながら出す。
+    const refreshButton = refreshFromSource
+        ? element('button', {
+            class: 'unbake-settings-rescan', type: 'button',
+            text: t('settings.refreshFromSource'),
+            title: t('settings.refreshFromSource.help'),
+        })
+        : null;
+    // **止める口を必ず置く。** 何百件も外へ問い合わせるので、
+    // 始めたら終わるまで待つしかない作りにはしない。
+    const refreshStop = refreshFromSource
+        ? element('button', {
+            class: 'unbake-settings-rescan', type: 'button',
+            text: t('settings.refreshFromSource.stop'),
+        })
+        : null;
+    if (refreshStop) refreshStop.disabled = true;
+    let refreshing = false;
+    let stopRequested = false;
+    if (refreshButton) refreshButton.addEventListener('click', () => doRefresh());
+    if (refreshStop) refreshStop.addEventListener('click', () => { stopRequested = true; });
+
     body.append(
         // **鍵 → 取り込み → 表示。** 並びは今まで通り（使う順）で、
         // **境目に見出しを置いただけ**——並べ替えると、覚えた場所が動く。
         group('settings.group.keys', secretFields),
         group('settings.group.library', [collectionField, sourceDirsField]),
         group('settings.group.display', fields),
-        element('div', { class: 'unbake-settings-actions' }, [rescanButton]),
+        element('div', { class: 'unbake-settings-actions' },
+            [rescanButton, refreshButton, refreshStop].filter(Boolean)),
         status,
         storedAt,
     );
@@ -561,6 +605,43 @@ export function createSettingsView({
             saving = false;
         }
         return null;
+    }
+
+    async function doRefresh() {
+        if (!refreshFromSource || refreshing) return null;
+        refreshing = true;
+        stopRequested = false;
+        refreshButton.disabled = true;
+        if (refreshStop) refreshStop.disabled = false;
+        status.textContent = t('settings.refreshFromSource.working', { at: 0, total: 0 });
+        try {
+            const result = await refreshFromSource({
+                onProgress: (state) => {
+                    status.textContent = t('settings.refreshFromSource.working', {
+                        at: state.at ?? 0, total: state.total ?? 0,
+                    });
+                },
+                shouldStop: () => stopRequested,
+            });
+            // **何も起きなかったことも言う。** 黙ると、押せていないのか
+            // 直すものが無かったのか判らない。
+            status.textContent = t('settings.refreshFromSource.done', {
+                refreshed: result?.refreshed ?? 0,
+                skipped: result?.skipped ?? 0,
+                // **出典が空だった件数も出す。** 黙って飛ばすと、
+                // 「読み直したのに何も変わらない」としか読めない。
+                empty: result?.empty ?? 0,
+                failed: result?.failed ?? 0,
+            });
+            return result;
+        } catch (error) {
+            status.textContent = t('settings.saveFailed', { detail: error?.message || String(error) });
+            return null;
+        } finally {
+            refreshing = false;
+            refreshButton.disabled = false;
+            if (refreshStop) refreshStop.disabled = true;
+        }
     }
 
     async function doRescan() {

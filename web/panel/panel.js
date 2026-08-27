@@ -43,6 +43,7 @@
  */
 
 import { DROP_ROUTES, UNSUPPORTED_CODES, routeDrop } from './dropRouting.js';
+import { nameOnlyModels } from '../core/modelEvidence.js';
 
 /**
  * 扱えなかった種類ごとの文言。**表で持つ**——鍵を組み立てると、
@@ -70,7 +71,7 @@ import { createSettingsView } from './settingsView.js';
 import { createVariantsView, outputViewUrl } from './variantsView.js';
 import { createRaindropView, imageIdOfRecord } from './raindropView.js';
 import { createConfirmView, sizeText } from './confirmView.js';
-import { createModelsView } from './modelsView.js';
+import { createModelsView, modelsOf } from './modelsView.js';
 import { createModelPicker } from './modelPicker.js';
 import { createDonateView } from './donateView.js';
 import {
@@ -80,6 +81,8 @@ import { createDetailView } from './detailView.js';
 import { applySkin, normalizeSkin } from './skin.js';
 import { createBatchRunner } from '../core/batchRunner.js';
 import { QUEUE_NOT_EMPTY, sweepableRecord } from '../core/sweepRunner.js';
+import { modelFilesIn, modelTooBigForVram, gigabytes } from '../core/vramFit.js';
+import { buildMissingUsageIndex, rankMissingByUnlock } from '../core/recipeModelUsage.js';
 import { getDirection, t } from '../i18n/index.js';
 import { readStored, writeStored } from '../core/storage.js';
 import { createRecipeWorkflowName } from '../core/recipeWorkflowName.js';
@@ -120,6 +123,11 @@ const WHY_KEYS = {
 const FAIL_CODES = {
     gone: 'download.fail.gone',
     forbidden: 'download.fail.forbidden',
+    // **鍵の話と分ける。** 早期公開は買うまで落とせないので、
+    // 鍵を入れ直させる案内は時間を捨てさせる。
+    early_access: 'download.fail.earlyAccess',
+    // **いま引いている最中**（置き場に在るのとは別）。
+    downloading: 'download.fail.downloading',
     network: 'download.fail.network',
     corrupt: 'download.fail.corrupt',
     space: 'download.fail.space',
@@ -128,7 +136,7 @@ const FAIL_CODES = {
 };
 
 /** 種類の並び。**打つ手のある側を先に出す。** */
-const FAIL_ORDER = ['forbidden', 'network', 'space', 'corrupt', 'setup', 'gone', 'unknown'];
+const FAIL_ORDER = ['forbidden', 'early_access', 'network', 'space', 'corrupt', 'setup', 'gone', 'unknown'];
 
 /**
  * 絞り込みに出す判定（2026-08-23 利用者の指示で `pending` を外した）。
@@ -235,6 +243,17 @@ export const COMPACT_WIDTH = 520;
  * **測れた瞬間に上書きされる**——食い違っても最初の1回の描画だけの話に留まる。
  */
 const LAST_WIDTH_KEY = 'unbake.panel.last_width';
+/**
+ * **順番待ちの控え**（2026-08-27 実機の報告「次以降の生成が中断される」）。
+ *
+ * 行列は面の中の変数にしか無い。**画面を読み込み直すと、待っていた分は
+ * 一言も無く消える**——しかも JS を差し替えるたび Ctrl+F5 を頼んでいるので、
+ * **こちらが更新を配るたびに利用者の待ち行列を落としていた**ことになる。
+ *
+ * ここへ id だけを控える。**読み直しても勝手には走らせない**
+ * （勝手に走ると、押していない生成が始まる）。戻す口だけを1行出す。
+ */
+const REPLAY_QUEUE_KEY = 'unbake.panel.replay_queue';
 
 /**
  * 並び替えに使える軸。**設定から来た未知の値は既定へ落とす**
@@ -415,6 +434,31 @@ export function createUnbakePanel(el, {
      */
     deleteOutputIo = null,
     /**
+     * 出た絵の索引を、**その記録のぶんだけ**書き換える口（2026-08-26）。
+     *
+     * 索引は開いたときに1度組んだきり更新していなかったので、新しく出した絵は
+     * 「出た絵」に出ず、消した絵も消えなかった——**どちらも再読み込みでしか
+     * 直らなかった。** 全部組み直すと実測 24往復・1,334ms 待たせるので、
+     * 触った1枚だけを足し引きする。
+     */
+    variantsIo = null,
+    /**
+     * その記録の出力を、**サーバへ引き直す**口（2026-08-26 実機）。
+     * 手元の索引は開いたときの姿なので、直前に出た絵が入っていない。
+     */
+    loadFreshOutputs = null,
+    /**
+     * VRAM とモデルの大きさを実測する口（2026-08-26 実機）。
+     * 無ければ**黙る**——測れないことを「入らない」と読まない。
+     */
+    measureVramFit = null,
+    /**
+     * 消した絵を、走者の索引（`localStorage`）からも落とす口（2026-08-26）。
+     * **ディスクの走査では直らない**——消えたものは出てこないので、
+     * 索引の側から落とすしかない。
+     */
+    forgetRunnerOutput = null,
+    /**
      * 宿主のキューの混み具合を読む口。`() => Promise<{running, pending}>`。
      * **無ければ待たない**（今まで通り、実行器が断ったところで終わる）。
      */
@@ -441,9 +485,14 @@ export function createUnbakePanel(el, {
     loadVariants = null,
     batchIo = null,
     downloadIo = null,
+    companionIo = null,
     openInComfy = null,
     favoritesIo = null,
     raindropIo = null,
+    // **取り込んだ分だけ判定を掛け直す口**（2026-08-26 の読みで見つけた）。
+    // `unbake.js` が渡していたのに、ここが受け取っていなかった——**渡した側は
+    // 直したつもりで、一度も呼ばれていなかった。**
+    verdictFor = null,
     recordsIo = null,
     modelsIo = null,
     /**
@@ -513,6 +562,14 @@ export function createUnbakePanel(el, {
     let confirmBeforeDelete = display?.confirmBeforeDelete !== false;
     /** 判定の配色。**色だけに頼らないうえで、色そのものも選べるようにする。** */
     let verdictPalette = display?.verdictPalette === 'deuteranopia' ? 'deuteranopia' : 'default';
+    /*
+     * **色帯は既定で切る**（2026-08-26 利用者の指示）。
+     *
+     * 判定の3色（緑・橙・赤）に、お気に入りの黄と「落とせば試せる」の青が
+     * 加わると一覧が賑やかになる。**要る人だけが点ける**——切っていても
+     * 印（★ / ⤓）と件数は出るので、読めなくなるものは無い。
+     */
+    let extraBands = display?.extraBands === true || display?.extra_bands === true;
     /**
      * 見た目を厚くするか（2026-08-24 利用者の指示）。
      *
@@ -711,58 +768,57 @@ export function createUnbakePanel(el, {
      * **同じ記録を二重に並べない。** 押し直しは順番を早めないので、
      * 並べると同じ絵を2回出すだけになる。
      */
-    function enqueueReplay(record) {
+    function enqueueReplay(record, { toggle = true } = {}) {
         const key = `${record?.id ?? ''}`;
         // **待っている間にもう一度押したら、並びから外す**（2026-08-24 利用者の指示）。
         // 並べたのは自分なので、**気が変わったら取り消せる**べき。
         // 走り始めた後は外さない——**投げた後に消しても絵は出る**ので、
         // 「取り消した」と言いながら出てくるほうが分かりにくい。
-        if (heldRecords.has(key)) { cancelReplay(key); return; }
+        //
+        /*
+         * **取り消しになるのは ▶ を押した時だけ**（2026-08-27 実機
+         * 「複数選択からの右クリックの再現が機能しない」）。
+         *
+         * ここは ▶ と品書きの両方から呼ばれる。▶ は同じ的を押し直すので
+         * 「もう一度押す＝やめる」で読めるが、**品書きの「選んだ N 件を再現」は
+         * 別の的で、しかも N 件をまとめて相手にする**。並んでいる分が混じっていると、
+         * **その分だけが黙って取り消される**——押した人からは
+         * 「再現しろと言ったのに、何件かが消える」「押しても始まらない」に見える。
+         *
+         * 実際に起きる形: 3件選んで再現 → 1件目が走っている間にもう一度再現
+         *                → 待っていた2件が取り消され、1件目が終わっても何も続かない。
+         */
+        if (toggle && heldRecords.has(key)) { cancelReplay(key); return; }
+        // **既に並んでいるものは、二重に並べない**（取り消しもしない）。
+        if (heldRecords.has(key)) return;
         if (busyRecords.has(key)) return;
 
-        // **並ばせる前に、開けるかどうかを試す**（2026-08-25 実機の指摘）。
-        //
-        // 行列は1件ずつしか流さないので、走っている生成が終わるまで
-        // **既に絵が在る記録まで待たされていた**——その回はキューへ1件も
-        // 投げないので、待つ理由が無い。実行器は**投げる分が在るときだけ**
-        // キューを確かめるので、**先に試しても混ざらない**
-        // （投げる必要が在れば、投げる前に断ってくれる）。
-        if (replayPumping) {
-            openIfAlreadyMade(record, key);
-            return;
-        }
+        /*
+         * **近道を畳んだ**（2026-08-27 実機「1件目が終わっても次が始まらない」）。
+         *
+         * ここには「走っている裏で押された1件は、既に絵が在るなら待たせない」
+         * という近道が在った（2026-08-25）。狙いは正しかったが、
+         * **その道は `reproduceOne()` を行列の外で、同時に、もう1本走らせる**。
+         *
+         * 再現は投げる前に人へ聞くことがある（VRAM に入らない／分割復号で
+         * 止まり得る）。**確認の面は1枚しか持てない**ので、2本走ると
+         * 後から出た方が前の面を差し替え、**前の1本の返事が永久に返らない**
+         * ——`pumpReplayQueue` はそこで止まり、以降に押した分は全部 ⏸ のまま
+         * 動かなくなる。「最初の1件が終わると次が始まらない」の正体はこれ。
+         *
+         * 差し替えで約束を返すようにもしたが（`openConfirm`）、それは
+         * **止まらないための保険**で、正しい形は**同時に2本走らせないこと**。
+         * 「1件ずつしか流さない」はこの面の唯一の約束なので、例外を作らない。
+         *
+         * **代償は残る。** 既に絵が在るだけの記録も、走っている1件の後ろで待つ。
+         * ただし行列は先に宿主のキューを待たないので、順番が来れば**投げずに
+         * すぐ開く**——待つのは前の1件が終わるまでで、宿主の混み具合ではない。
+         */
         replayQueue.push({ record, key });
         heldRecords.add(key);
         applyReplayState(key);
+        rememberQueue();
         pumpReplayQueue();
-    }
-
-    /**
-     * 既に出ている絵だけで開けるなら開く。**投げる必要が在れば並ばせる。**
-     *
-     * 走っている生成の裏で押されたときの道。**混ざらないのは実行器のおかげ**で、
-     * ここが判断しているわけではない——実行器は投げる分が在るときだけ
-     * キューを確かめ、混んでいれば投げる前に断る。
-     */
-    async function openIfAlreadyMade(record, key) {
-        busyRecords.add(key);
-        applyReplayState(key);
-        let outcome = null;
-        try {
-            outcome = await reproduceOne(record);
-        } catch {
-            outcome = null;
-        } finally {
-            busyRecords.delete(key);
-            applyReplayState(key);
-        }
-        // 断られた＝投げる必要が在った。**そのときだけ並ばせる。**
-        if (outcome?.held) {
-            replayQueue.push({ record, key });
-            heldRecords.add(key);
-            applyReplayState(key);
-            pumpReplayQueue();
-        }
     }
 
     /**
@@ -782,7 +838,21 @@ export function createUnbakePanel(el, {
         if (at >= 0) replayQueue.splice(at, 1);
         heldRecords.delete(key);
         applyReplayState(key);
+        rememberQueue();
         appendLog(t('replay.cancelled'));
+    }
+
+    /**
+     * 待っている顔ぶれを控える。**id だけ**（記録の本体は書庫から取り直せる）。
+     *
+     * 走っている1件は控えない——投げた後なので、読み直しても ComfyUI 側では
+     * そのまま出る。**控えて戻すと二重に投げる。**
+     */
+    function rememberQueue() {
+        try {
+            const ids = replayQueue.map(item => String(item.key)).filter(Boolean);
+            writeStored(REPLAY_QUEUE_KEY, ids);
+        } catch { /* 控えられなくても行列そのものは動く */ }
     }
 
     /** 宿主のキューを見に行く間隔（ミリ秒）。 */
@@ -884,6 +954,21 @@ export function createUnbakePanel(el, {
                         if (await waitForHostQueue(key)) {
                             replayQueue.push({ record, key, retries: retries + 1 });
                         }
+                    } else if (outcome?.held) {
+                        /*
+                         * **諦めたことは必ず言う**（2026-08-27）。
+                         *
+                         * 上限に当たった分は、これまで**一言も無く行列から消えていた**
+                         * ——押した人からは「順番待ちだったのに、いつのまにか止まった」
+                         * にしか見えない。**待てば通る断り**は姿だけでよいが、
+                         * **もう待たないと決めた**のは姿では言えない。
+                         */
+                        appendLog(t('replay.gaveUp', {
+                            title: displayName(record), n: REPLAY_RETRY_LIMIT,
+                        }));
+                        showToast(t('replay.gaveUp', {
+                            title: displayName(record), n: REPLAY_RETRY_LIMIT,
+                        }));
                     }
                 } catch (error) {
                     appendLog(t('replay.failed', { detail: error?.message || String(error) }));
@@ -894,6 +979,7 @@ export function createUnbakePanel(el, {
                     // 行列に居るのに ▶ に見え、押すと二重に並ぶ。
                     if (!replayQueue.some(item => item.key === key)) heldRecords.delete(key);
                     try { applyReplayState(key); } catch { /* 姿を当て損ねても行列は進める */ }
+                    rememberQueue();
                 }
             }
         } finally {
@@ -973,6 +1059,14 @@ export function createUnbakePanel(el, {
     let modelsView = null;
     /** 開いている確認の面。**取り消せない操作の直前にだけ出る。** */
     let confirmView = null;
+    /**
+     * その確認を閉じたときに呼ぶ約束（2026-08-27）。
+     *
+     * **待っている側が居る。** 再現は返事を `await` しているので、
+     * 面だけ外して約束を放置すると**行列がそこで永久に止まる**。
+     * 面と約束を対で持ち、どの道を通っても1回だけ返す。
+     */
+    let confirmReturn = null;
     /** 開いている詳細のポップアップ。**絵を押したらまずこれ。** */
     let detailView = null;
 
@@ -984,6 +1078,8 @@ export function createUnbakePanel(el, {
         // これ1つで帯も余白も反転する。
         dir: getDirection(),
         'data-palette': verdictPalette,
+        // **色帯を出すかは属性で持つ**（CSS が読む）。既定は切。
+        'data-bands': extraBands ? 'on' : 'off',
         'data-theme': theme,
         'data-rich': richUi ? 'on' : 'off',
         'data-skin': uiSkin,
@@ -1111,6 +1207,62 @@ export function createUnbakePanel(el, {
         render();
     });
     chips.append(favoritesChip);
+
+    /*
+     * **落とせば試せるものだけを見る**（2026-08-26 利用者の指示）。
+     *
+     * 「再現不可」の中には**手元に無いだけ**のものと、**手掛かりが無くて
+     * どうにもならない**ものが混ざっている。前者は落とせば動くので、
+     * 打つ手が全く違う——混ざったままだと、落とせるものを探すのに
+     * 一件ずつ開くことになる。
+     *
+     * **お気に入りと同じ形。** 入れたときだけ絞り、切れば何も起きない。
+     */
+    let downloadableOnly = display?.downloadableOnly === true
+        || display?.downloadable_only === true;
+    const downloadableChip = element('button', {
+        class: 'unbake-chip unbake-chip-downloadable', type: 'button',
+        'data-on': 'false', title: t('filter.downloadable'),
+    });
+    downloadableChip.addEventListener('click', () => {
+        downloadableOnly = !downloadableOnly;
+        persistFilters();
+        render();
+    });
+    chips.append(downloadableChip);
+
+    /**
+     * 落とせば試せるか。**版IDが1つでも在れば落とせる。**
+     *
+     * 判定そのものは使わない——`approximate` でも足りない素材は在りうるし、
+     * `blocked` でも手掛かりが無ければ落とせない。**落とせるかどうかは
+     * 不足の中身にしか無い。**
+     */
+    function isDownloadable(record) {
+        const missing = record?.missing;
+        if (!missing) return false;
+        const classified = classifyMissing(missing, null);
+        /*
+         * **「1件でも落とせる」では足りない**（2026-08-26 実機で判明）。
+         *
+         * 元は落とせるものが1件でも在れば「落とせば試せる」に出していた。
+         * 実機の `Civitai_Recipe_72877227` は**落とせる 1 件・落とせない 3 件**で、
+         * 落とし切っても再現できない——それを「落とせば試せる」と呼んでいた。
+         *
+         * `recipeMissingModels` の `isDownloadResolvable` が同じことを既に
+         * 言っている（「1件でも自動DLできる」ではなく「打つ手の無い遮断が
+         * 1件も無い」で判定する）。**ただしあれはそのままでは使えない**——
+         * 実測すると該当が 0 件になる。`unexplainedReasons` が `reasons` を
+         * 遮断理由とみなすのに、今の `reasons` には
+         * 「A1111互換パーサで解釈します」のような**組み立ての注記**が入る
+         * ようになっており、注記を遮断として数えてしまうため。
+         *
+         * ここでは**数えられる方**だけを採る。実測（記録 200件）で、
+         * この行だけで落ちるのは上の1件、残る候補は3件だった。
+         */
+        if ((classified.blockedCount || 0) > 0) return false;
+        return (classified.civitai || []).some(item => item?.versionId);
+    }
     // --- 見せ方（表 ⇄ タイル）と列数 --------------------------------
     //
     // **モードを足しているのではない。** 記録も絞り込みも並びも1つのままで、
@@ -1139,6 +1291,7 @@ export function createUnbakePanel(el, {
         settingsIo?.write?.({
             hidden_verdicts: [...hidden],
             favorites_only: favoritesOnly,
+            downloadable_only: downloadableOnly,
         })?.catch?.(() => appendLog(t('list.view.notSaved')));
     }
 
@@ -1236,9 +1389,29 @@ export function createUnbakePanel(el, {
      */
     // **帯には置かない。** 文が伸びるとボタンの並びが崩れる（上の `toast` へ出す）。
 
+    /*
+     * **落としている間だけ出る欄**（2026-08-26 利用者の指示）。
+     *
+     * 「止める」は落としている間しか要らないのに、ずっと並んでいて邪魔だった。
+     * 進み具合と一緒にここへ移す——**押せる時にだけ見える**ようにすれば、
+     * 押していいのかを考えずに済む。
+     *
+     * 何バイト落ちたかも出す。元は最後の1本ぶんしか見えず（並列にしたため）、
+     * 「何バイト落ちたのか判らない」と言われた。
+     */
+    const downloadBar = element('div', { class: 'unbake-download-bar' });
+    const downloadFill = element('div', { class: 'unbake-download-fill' });
+    downloadBar.append(downloadFill);
+    const downloadText = element('span', { class: 'unbake-download-text' });
+    const downloadPanel = element('div', { class: 'unbake-download-panel' }, [
+        downloadBar, downloadText, downloadStopButton,
+    ]);
+    // **走っていない間は出さない。** 出しておくと、空の欄が場所を取る。
+    downloadPanel.style.display = 'none';
+
     const selectionBar = element('div', { class: 'unbake-selection' }, [
         selectionCount, selectAllButton, clearSelectionButton,
-        ...(downloadIo ? [downloadButton, downloadStopButton] : []),
+        ...(downloadIo ? [downloadButton] : []),
         ...(batchButton ? [batchButton] : []),
         ...(batchStopButton ? [batchStopButton] : []),
     ]);
@@ -1286,7 +1459,7 @@ export function createUnbakePanel(el, {
     const empty = element('div', { class: 'unbake-empty' });
     const log = element('div', { class: 'unbake-log' });
     const body = element('div', { class: 'unbake-body' }, [
-        dropzone, controls, selectionBar, empty, table, tiles, log,
+        dropzone, controls, selectionBar, downloadPanel, empty, table, tiles, log,
     ]);
     /**
      * 浮かせて出す1行（2026-08-23 利用者の指示）。
@@ -1386,9 +1559,37 @@ export function createUnbakePanel(el, {
      * @param {object} record 元の記録（左に置く基準）
      * @param {Array<{url: string, label?: string}>} others 見比べる相手
      */
+    /**
+     * **同じ URL で古い絵が出るのを防ぐ合図**（2026-08-27 実機で確定）。
+     *
+     * ComfyUI の `/api/view` は `Cache-Control` を返さない（`ETag` と
+     * `Last-Modified` だけ）。ブラウザは推測でキャッシュを効かせるので、
+     * **同じ URL なら問い合わせずに前の中身を出す**。
+     *
+     * そして **ComfyUI は消して空いた番号を再利用する**。`_00006_` を消して
+     * 再現すると、出来上がる絵も `_00006_` になり **URL が完全に同じ**になる
+     * ——結果、**消したはずの絵と見比べることになる**（利用者の報告）。
+     *
+     * 実測（同じ URL のままディスクの中身を差し替えて確認）:
+     *
+     *     差し替え前  f596cb46:1327543
+     *     既定で取得  f596cb46:1327543  ← **古いまま**
+     *     強制再取得  e82d662e:1328607  ← 実体はこちら
+     *
+     * 見比べる面は**出したばかりの絵**を出すところなので、ここだけは必ず取り直す。
+     * 一覧のように何十枚も並べる面ではやらない（毎回取り直すと重くなる）。
+     */
+    function freshImageUrl(url) {
+        const text = String(url || '');
+        if (!text) return text;
+        return `${text}${text.includes('?') ? '&' : '?'}_ub=${Date.now().toString(36)}`;
+    }
+
     function openCompare(record, others = [], { single = false } = {}) {
         closeLightbox();
-        const list = (others || []).filter(item => item?.url);
+        const list = (others || [])
+            .filter(item => item?.url)
+            .map(item => ({ ...item, url: freshImageUrl(item.url) }));
         let index = 0;
 
         const baseImage = record?.previewUrl
@@ -1920,6 +2121,32 @@ export function createUnbakePanel(el, {
         image.setAttribute('title', t('image.detail'));
         image.addEventListener('click', (event) => {
             event?.stopPropagation?.();
+            /*
+             * **選んでいる最中は、選ぶほうを採る**（2026-08-27 利用者の指示）。
+             *
+             * 複数選びたいとき、的は左上の小さな四角1つだけだった。**絵は
+             * タイルのほとんどを占めているのに、押すと詳細が開いて選ぶ流れが切れる**
+             * ——選び直すには面を閉じて、また小さな四角を狙うことになる。
+             *
+             * **1件も選んでいない時は今までどおり詳細。** ここを常に選択にすると、
+             * 一番よく使う「絵を押して中身を見る」が押せなくなる。
+             * つまり**選択が0件かどうかが、そのまま作法の切り替えになる**。
+             */
+            /*
+             * **Shift は「これは選ぶ操作だ」という合図**（2026-08-27 利用者の指示）。
+             *
+             * 実測すると、**1件も選んでいない状態からの Shift+クリックは詳細が開いて
+             * いた**——範囲で選ぶには、先に左上の小さな四角を1つ押して「選択中」に
+             * してからでないと始められない。**一番自然な「A を押して、B を Shift+
+             * クリック」が、その入口で塞がっていた。**
+             *
+             * Shift が押されているなら、選択が0件でも選ぶ側を採る（起点も同時に決まる）。
+             */
+            if (selected.size > 0 || event?.shiftKey) {
+                event?.preventDefault?.();
+                toggleSelectionAt(record?.id, event);
+                return;
+            }
             // **まず詳細を出す**（2026-08-22 利用者の指示）。拡大だけでは
             // どのモデルで・どのプロンプトで出したのかが見えず、次の一手が決まらない。
             // 拡大はそこから進む先で、詳細の絵を押すと窓いっぱいで開く。
@@ -1932,6 +2159,7 @@ export function createUnbakePanel(el, {
     function matches(record) {
         if (hidden.has(record?.verdict)) return false;
         if (favoritesOnly && !isFavorite(record)) return false;
+        if (downloadableOnly && !isDownloadable(record)) return false;
         if (!query) return true;
         const hay = [
             // **両方の名前で引ける。** 出す絵の名前（`civitai_<id>`）でも、
@@ -1990,6 +2218,22 @@ export function createUnbakePanel(el, {
         else for (const record of shown) setSelected(record?.id, true);
         render();
         return selected.size;
+    }
+
+    /**
+     * 1件の選択を裏返す。**選ぶ口と、記録そのものを押した時の両方から呼ぶ**
+     *（2026-08-27 利用者の指示「複数選択中はタイルクリックで選択に足したい」）。
+     *
+     * **口を2つ持っても、決め方は1つにする。** 別々に書くと、
+     * Shift の範囲選びが片方だけ効くような食い違いが必ず出る。
+     */
+    function toggleSelectionAt(id, event) {
+        const key = String(id ?? '');
+        if (!key) return;
+        if (event?.shiftKey && anchorId && anchorId !== key) { selectRange(key); return; }
+        setSelected(key, !selected.has(key));
+        anchorId = key;
+        render();
     }
 
     /** Shift+クリックの範囲。**見えている並び順で切る**（内部の順ではない）。 */
@@ -2219,7 +2463,24 @@ export function createUnbakePanel(el, {
             box.setAttribute('data-checked', 'true');
         }
         box.addEventListener('click', (event) => {
-            const on = box.checked === true || box.getAttribute?.('data-checked') === 'true';
+            // **上へ伝えない**（2026-08-27）。記録そのものを押しても選べるように
+            // したので、伝わると**入れた直後に裏返って何も選べない**。
+            event?.stopPropagation?.();
+            /*
+             * **属性を先に更新してから読む**（2026-08-26 利用者の報告）。
+             *
+             * 選んだ後に描き直すと、新しい口には `data-checked="true"` が付く。
+             * 元は `box.checked === true || 属性 === 'true'` で見ていたので、
+             * 外そうとして押しても**属性が真のまま残り、常に「選んだ」と読む**
+             * ——**一度入れたチェックが外せなかった。**
+             *
+             * 本物の DOM では `checked` が真実。属性は偽 DOM のための写しなので、
+             * 押された時点で写しを合わせてから読む。
+             */
+            const on = typeof box.checked === 'boolean'
+                ? box.checked
+                : box.getAttribute?.('data-checked') === 'true';
+            box.setAttribute?.('data-checked', on ? 'true' : 'false');
             if (event?.shiftKey && anchorId && anchorId !== id) {
                 selectRange(id);
                 return;
@@ -2260,6 +2521,10 @@ export function createUnbakePanel(el, {
         if (next.rich_ui !== undefined || next.richUi !== undefined) {
             richUi = (next.rich_ui ?? next.richUi) !== false;
             root.setAttribute('data-rich', richUi ? 'on' : 'off');
+        }
+        if (next.extra_bands !== undefined || next.extraBands !== undefined) {
+            extraBands = (next.extra_bands ?? next.extraBands) === true;
+            root.setAttribute('data-bands', extraBands ? 'on' : 'off');
         }
         if (next.verdict_palette !== undefined || next.verdictPalette !== undefined) {
             const wanted = String(next.verdict_palette ?? next.verdictPalette);
@@ -2314,9 +2579,43 @@ export function createUnbakePanel(el, {
      * `ReferenceError` になり、`try`/`catch` に飲まれて**静かに何も起きない**
      *（2026-08-22 に取り込み後の読み直しで踏んだ）。
      */
+    /** 読み直しで失った行列を、1回だけ拾い直す。**2回言わない。** */
+    let offeredLeftoverQueue = false;
+
+    /**
+     * **前回の待ち行列を拾い直す口を出す**（2026-08-27 実機の報告）。
+     *
+     * 行列は面の中の変数にしか無いので、**画面を読み直すと待っていた分は
+     * 一言も無く消える**。JS を差し替えるたび Ctrl+F5 を頼んでいる以上、
+     * **更新を配るたびに利用者の待ち行列を落としていた**ことになる。
+     *
+     * **勝手には走らせない。** 押していない生成が始まるほうが困るので、
+     * 出すのは「戻す」口だけにする。押さなければ何も起きず、控えは消える。
+     */
+    function offerLeftoverQueue() {
+        if (offeredLeftoverQueue) return;
+        let ids = [];
+        try { ids = readStored(REPLAY_QUEUE_KEY, []) || []; } catch { ids = []; }
+        if (!Array.isArray(ids) || ids.length === 0) return;
+        offeredLeftoverQueue = true;
+        // **今の一覧に居るものだけ。** 消された記録を戻しても押せない。
+        const byId = new Map(records.map(record => [String(record?.id ?? ''), record]));
+        const found = ids.map(id => byId.get(String(id))).filter(Boolean);
+        try { writeStored(REPLAY_QUEUE_KEY, []); } catch { /* 消せなくても二度は出さない */ }
+        if (found.length === 0) return;
+        appendLog(t('replay.leftover', { n: found.length }), {
+            action: {
+                label: t('replay.leftover.resume'),
+                run: () => { for (const record of found) enqueueReplay(record, { toggle: false }); },
+            },
+        });
+    }
+
     function replaceRecords(next) {
         records = [...(next || [])];
         render();
+        // **一覧が来てから。** 起動直後は空なので、突き合わせても0件になる。
+        if (records.length > 0) offerLeftoverQueue();
     }
 
     /** 幅を測って密度へ反映する。据えるまでは何もしない（下で定義する）。 */
@@ -2403,6 +2702,54 @@ export function createUnbakePanel(el, {
             .some(node => String(node?.class_type || '') === 'VAEDecodeTiled'));
     }
 
+    /**
+     * **VRAM に収まらないモデルを、投げる前に言う**（2026-08-26 実機の報告）。
+     *
+     * 「動作が極端に遅くなり生成が始まりませんでした」。実測すると
+     * グラフは正しく（`object_info` と突き合わせて候補外の入力は0件）、
+     * 詰まっていたのは大きさだった——13.1 GB のモデルを 12.0 GB の GPU で。
+     *
+     * **止めない。** 待てばいつかは出るので、選ぶのは人の側。
+     * こちらは「何が起きているのか」を言うだけにする。
+     */
+    async function askBeforeTooBigForVram(plan) {
+        if (typeof measureVramFit !== 'function') return true;
+        const prompts = (plan?.cells || []).map(cell => cell?.workflow?.prompt).filter(Boolean);
+        if (!prompts.length) return true;
+        const folders = prompts.flatMap(prompt => modelFilesIn(prompt).map(file => file.folder));
+        if (!folders.length) return true;
+        let measured = null;
+        try { measured = await measureVramFit([...new Set(folders)]); } catch { return true; }
+        if (!measured) return true;
+        let worst = null;
+        for (const prompt of prompts) {
+            const found = modelTooBigForVram(prompt, measured);
+            // **一番大きい1本だけを言う。** 段の数だけ並べても打つ手は同じ。
+            if (found && (!worst || found.bytes > worst.bytes)) worst = found;
+        }
+        if (!worst) return true;
+        const said = t('replay.tooBig.body', {
+            name: worst.name,
+            size: gigabytes(worst.bytes).toFixed(1),
+            vram: gigabytes(worst.vramTotal).toFixed(1),
+        });
+        appendLog(said);
+        if (typeof createConfirmView !== 'function') return true;
+        return new Promise((resolve) => {
+            let answered = false;
+            const done = (value) => { if (!answered) { answered = true; resolve(value); } };
+            openConfirm({
+                title: t('replay.tooBig.title'),
+                // **何も消さない。** 消す面の言い回しを借りない。
+                destructive: false,
+                confirmLabel: t('replay.runAnyway'),
+                warnings: [said],
+                onConfirm: async () => { done(true); return { ok: true }; },
+                onReturn: () => done(false),
+            });
+        });
+    }
+
     async function askBeforeHeavyReplay() {
         if (typeof createConfirmView !== 'function') return true;
         return new Promise((resolve) => {
@@ -2410,6 +2757,9 @@ export function createUnbakePanel(el, {
             const done = (value) => { if (!answered) { answered = true; resolve(value); } };
             openConfirm({
                 title: t('replay.heavy.title'),
+                // **何も消さない。** 消す面の言い回しを借りない。
+                destructive: false,
+                confirmLabel: t('replay.runAnyway'),
                 warnings: [t('replay.heavy.body')],
                 onConfirm: async () => { done(true); return { ok: true }; },
                 onReturn: () => done(false),
@@ -2417,8 +2767,47 @@ export function createUnbakePanel(el, {
         });
     }
 
+    /**
+     * 足りないノードが在るなら、**ComfyUI で開く導線**を出す
+     *（2026-08-26 利用者の指示）。
+     *
+     * 入れ方を Unbake が真似る必要は無い。**元のグラフを ComfyUI へ落とせば、
+     * Workflow Overview が足りないノードを並べ、入れる導線まで出してくれる。**
+     * こちらがするのは「そこへ連れて行く」ことだけ。
+     *
+     * **注意書きから拾う。** 判定はもう「不足ノード: X」と言っているので、
+     * それを見て導線を足す——判断を2箇所に置かない。
+     */
+    function offerOpenInComfy(record, warnings) {
+        if (!openInComfy) return;
+        const hasMissingNode = (warnings || []).some(
+            text => String(text).includes(t('core.recipeWorkflowBuilder.46', { p1: '' }).slice(0, 6)));
+        if (!hasMissingNode) return;
+        appendLog(t('openInComfy.forErrors'), {
+            action: {
+                label: t('openInComfy'),
+                run: () => openRecordInComfy(record),
+            },
+        });
+    }
+
     async function reproduceOne(record) {
         if (!makeSweepRunner) { appendLog(t('sweep.noRunner')); return null; }
+        /*
+         * **消すと言った絵は、投げる前に本当に消す**（2026-08-27 実機の報告
+         * 「出た絵を削除後に再現すると、削除した絵との比較が出る／消えなくなる」）。
+         *
+         * 消す口は押した瞬間には消さず、**12秒の猶予**を置いて戻せるようにしてある。
+         * その間、絵は**ディスクにも索引にも生きている**——実行器は
+         * 「この条件はもう出ている」と読み、**投げずに、消したはずの絵を開く**。
+         * 猶予の中で押すか外で押すかで結果が変わるので、**同じ操作が日によって
+         * 違う結果を返す**ように見えていた。
+         *
+         * **再現を押した時点で、猶予は本人が終わらせたものとして扱う。**
+         * 「これを作り直したい」と言われた絵を、消さずに残す理由が無い。
+         * 戻したい人は、猶予の間に「元に戻す」を押す道が別に在る。
+         */
+        await flushPendingDeletes();
         let target = record;
         if (!target?.recipe && target?.libraryId && loadRecord) {
             try {
@@ -2457,6 +2846,19 @@ export function createUnbakePanel(el, {
             // ——**黙って縮めると、次に比べたときの差が説明できない。**
             const plan = planReplay(runner, recipe, template);
             for (const warning of replayWarnings(plan)) appendLog(warning);
+            /*
+             * **入らない大きさなら、投げる前に聞く**（2026-08-26 実機）。
+             *
+             * 元は「遅くなります」と言うだけにしていたが、**実測では
+             * ComfyUI がプロセスごと落ちた**——テキストエンコーダ 8.46 GB を
+             * 読み終えた次の行でログが途切れ、応答も無くなった。
+             * 落ちると**並んでいた他の生成もまとめて消える**ので、
+             * 分割復号のときと同じく本人に決めてもらう。
+             */
+            if (!(await askBeforeTooBigForVram(plan))) {
+                appendLog(t('replay.cancelled'));
+                return null;
+            }
 
             // **止まり得る形は、投げる前に聞く**（2026-08-25 利用者の指示）。
             //
@@ -2479,22 +2881,152 @@ export function createUnbakePanel(el, {
                 template,
                 reuseExisting: true,
             });
-            const made = (job?.cells || []).filter(cell => cell?.output?.url);
-            appendLog(t('replay.done', { n: made.length }));
+            /*
+             * **注意書きを持っているのは計画の側**（2026-08-26 実機で確かめた）。
+             *
+             * ここは2回外した。`job.warnings` も `job.cells[].workflow` も
+             * **存在しない**——走者は返す前に `workflow` と `recipe` を
+             * 明示的に落としている（`serializableJob`: 1セル数十KBで入れ物が
+             * 溢れるため）。だから誘導は**一度も出ていなかった。**
+             *
+             * 実測（`SweepRunner.preflight` を実物の記録で回した結果）:
+             *   計画のセルの鍵 = id / labels / selections / seed / baseline /
+             *                    signature / status / recipe / **workflow**
+             *   走り終わったセルの鍵 = そこから recipe と workflow を抜いたもの
+             *
+             * 同じ `replayWarnings(plan)` を上のログでも使っている——
+             * **出どころを2つ持たない。**
+             */
+            offerOpenInComfy(record, replayWarnings(plan));
+            /*
+             * **投げ直したことは言う**（2026-08-27）。
+             *
+             * ComfyUI は直前と同じグラフを実行キャッシュに当てて、`success` のまま
+             * 画像0枚を返す。実行器はそれを1度だけ投げ直すが、**黙ってやると
+             * 「同じ操作なのに時々2回投げている」**ように見える。
+             */
+            if ((job?.cells || []).some(cell => cell?.resubmitted)) {
+                appendLog(t('replay.resubmitted'));
+            }
+            /*
+             * **「作られなかった」は、必ずここで言う**（2026-08-27 実機で確定）。
+             *
+             * ComfyUI が同じ条件を実行済みとして扱うと、**履歴は前回の画像名を返すのに
+             * ファイルは1つも書かれない**。実行器はそれを `not-written` として失敗に
+             * 落とすが、ここで黙ると下の経路が**記録の古い絵を開いてしまい**、
+             * 押した人には「同じ絵が出た」ようにしか見えない。記録の絵が全部消えて
+             * いれば「絵は出ませんでした…見つかりません」まで進むが、**それは
+             * 原因を1つも説明していない**——利用者の報告はこの形だった。
+             */
+            const notWritten = (job?.cells || []).filter(cell => cell?.reason === 'not-written');
+            if (notWritten.length) {
+                // 出す物が無いので、前の見比べを残さない（上と同じ理由）。
+                closeLightbox();
+                appendLog(notWritten[0].error || t('core.sweep.cell.notWritten'));
+                showToast(t('core.sweep.cell.notWritten'));
+            }
+            const withOutput = (job?.cells || []).filter(cell => cell?.output?.url);
+            /*
+             * **再利用を「再現しました」と言わない**（2026-08-26 利用者の報告）。
+             *
+             * 既に在る絵を開いただけの回でも「再現しました（1 枚）」と出ていた。
+             * **作っていないのに作ったと言う**のは、前に直した「0枚を成功と
+             * 報せる」と同じ形の嘘。`status: 'reused'` で見分けられる。
+             */
+            const made = withOutput.filter(cell => cell?.status !== 'reused');
+            const reused = withOutput.filter(cell => cell?.status === 'reused');
+            if (!made.length && reused.length) {
+                /*
+                 * **断りは出さない**（2026-08-26 利用者の指示）。
+                 * 前に出た絵がその場で開くので、**開いたこと自体が答え**——
+                 * 「作り直しませんでした」は読む手間だけを足していた。
+                 */
+                openCompare(record, reused.slice(0, 4).map(cell => ({
+                    url: cell.output.url, label: t('replay.result'),
+                })));
+                return job;
+            }
             if (made.length) {
+                // **出したその場で索引へ足す。** 全部組み直さない。
+                variantsIo?.note?.(record?.libraryId ?? record?.id,
+                    made.map(cell => cell.output).filter(Boolean));
+                appendLog(t('replay.done', { n: made.length }));
+                showToast(t('replay.done', { n: made.length }));
                 // **出たら、元の1枚の隣に並べる。** 「再現できたか」は人が見て決める。
                 openCompare(record, made.map(cell => ({
                     url: cell.output.url,
                     label: t('replay.result'),
                 })));
+                return job;
             }
+
+            /*
+             * **0枚を「再現しました」と言わない**（2026-08-26 実機で判明）。
+             *
+             * ComfyUI は**同じグラフを2回目に投げても実行しない**（キャッシュ）。
+             * そのとき `outputs` は空で返るので、こちらからは「投げたのに
+             * 何も出なかった」に見える。実測（同じ記録の2回の投入）:
+             *
+             *     1回目 → 画像 1 枚、outputs の鍵 ['7']
+             *     2回目 → 画像 0 枚、outputs の鍵 []
+             *
+             * **絵が無いのではなく、既に在る。** 前に出た分を開くのが正しい
+             * ——「再現しました（0 枚）」は、押した人に何も伝えていなかった。
+             */
+            let existing = [];
+            /*
+             * **サーバへ引き直す**（2026-08-26 実機）。
+             *
+             * 手元の索引は開いたときに1度組んだもので、**その後に出た絵は
+             * 入っていない**。実機ではまさに、直前の再現で出た1枚が索引に
+             * 無く、「絵は出ませんでした」と言っていた——**絵は在ったのに。**
+             */
+            if (typeof loadFreshOutputs === 'function') {
+                try { existing = await loadFreshOutputs(record); } catch { existing = []; }
+            }
+            if (!existing.length && typeof loadVariants === 'function') {
+                try {
+                    const found = await loadVariants(record);
+                    existing = (found?.outputs || []).filter(item => item?.url);
+                } catch { existing = []; }
+            }
+            if (existing.length) {
+                // **断りは出さない**（上と同じ理由）。絵が開くことが答え。
+                openCompare(record, existing.slice(0, 4).map(item => ({
+                    url: item.url, label: t('replay.result'),
+                })));
+                return job;
+            }
+            /*
+             * **出す物が無いなら、前の見比べを畳む**（2026-08-27・2度直した所）。
+             *
+             * 見比べる面は開いたまま残るので、**出た絵が1枚も無い記録でも
+             * 前の記録の見比べが出たまま**になる（実測: `civitai_128383826` を
+             * 押しているのに `civitai_66655100` の絵が出ていた）。
+             *
+             * **畳むのは「始めるとき」ではなく「出す物が無いと判ったとき」。**
+             * 始めるときに畳むと、**行列で次が動き出した瞬間に、たった今出た絵が
+             * 消える**——待っていた結果を見る間が無くなる（最初そう直して戻した）。
+             * 出る物が在るときは `openCompare` が差し替えるので、ここは触らなくてよい。
+             */
+            closeLightbox();
+            // **絵も無いなら、そう言う。** 黙ると「押しても何も起きない」になる。
+            appendLog(t('replay.none'));
+            showToast(t('replay.none'));
             return job;
         } catch (error) {
-            appendLog(t('replay.failed', { detail: error?.message || String(error) }));
-            // **待てば通る断りは、失敗と別に見せる**（2026-08-24 利用者の指示）。
-            // 他の生成が走っているだけなので、**押した人は何も間違えていない**。
-            // 呼び手（ボタン）が止まった姿にできるよう、種類をそのまま返す。
+            /*
+             * **待てば通る断りは、文で言わない**（2026-08-26 利用者の指示）。
+             *
+             * 他の生成が走っているだけで、**押した人は何も間違えていない**。
+             * ボタンは待ちの姿（⏸）に変わり、空けば自分で並び直すので、
+             * **姿だけで足りる**——文を出すと「失敗した」と読めてしまう。
+             */
             if (error?.code === QUEUE_NOT_EMPTY) return { held: true, reason: error.message };
+            appendLog(t('replay.failed', { detail: error?.message || String(error) }));
+            // **押した人に見える所へも出す**（2026-08-26 実機の報告）。
+            // ログにしか出していなかったので、**押しても何も起きないように見えた**。
+            showToast(t('replay.failed', { detail: error?.message || String(error) }));
             return null;
         }
     }
@@ -2572,6 +3104,9 @@ export function createUnbakePanel(el, {
             read: settingsIo.read,
             write: settingsIo.write,
             rescan: settingsIo.rescan || null,
+            // **一覧は綺麗なままにする**（2026-08-26 利用者の指示）ので、
+            // 出典から読み直す口は設定の面に置く。
+            refreshFromSource: settingsIo.refreshFromSource || null,
             onClose: () => { closeOverlays(); render(); },
             onLanguageChange: settingsIo.onLanguageChange || null,
             // 保存した値を、開いたままの面へ当て直す。
@@ -2651,9 +3186,23 @@ export function createUnbakePanel(el, {
      * ——面を置き換える作りだと、そこが消えて選び間違いに気づけない。
      */
     function openConfirm(options) {
-        // 確認だけは重ねてよい（2枚目の確認は出さない）。
+        /*
+         * **差し替える前に、待っている約束を返す**（2026-08-27）。
+         *
+         * `destroy()` は節点を外すだけで `onClose` を呼ばない。再現は
+         * `askBeforeTooBigForVram()` / `askBeforeHeavyReplay()` の返事を
+         * `await` しているので、答えないまま別の確認へ差し替えると
+         * **その約束は永久に返らない**——`pumpReplayQueue` がそこで止まり、
+         * 以降に押した分は全部 ⏸ のまま動かなくなる。
+         *
+         * **返す値は「戻る」**。差し替えは答えではないので、投げない側にする。
+         */
+        const previous = confirmReturn;
+        confirmReturn = null;
         confirmView?.destroy();
         confirmView = null;
+        previous?.();
+        confirmReturn = typeof options.onReturn === 'function' ? options.onReturn : null;
         confirmView = createConfirmView({
             documentRef: doc,
             ...options,
@@ -2669,6 +3218,8 @@ export function createUnbakePanel(el, {
             onClose: () => {
                 confirmView?.destroy();
                 confirmView = null;
+                // **二度返さない。** 上の差し替えと合わせて、約束は必ず1回だけ返る。
+                confirmReturn = null;
                 options.onReturn?.();
             },
         });
@@ -2698,6 +3249,177 @@ export function createUnbakePanel(el, {
             })
             .catch((error) => appendLog(t('confirm.failed', { detail: error?.message || String(error) })));
         return null;
+    }
+
+    /**
+     * **選んだぶんをまとめて消す**（2026-08-26 利用者の指示）。
+     *
+     * 1件ずつの `confirmDeleteRecord` を件数ぶん呼ぶのではない——確認が
+     * 件数ぶん出ると、**押し続けるうちに何を消しているか判らなくなる**。
+     * 確認は1回、そこに**件数と、上流の持ち物が混ざっているか**を書く。
+     *
+     * **1件の失敗で残りを止めない。** 途中で止めると「何件消えたのか」が
+     * 判らない状態で終わる。全部試して、消えた数と失敗した名前を出す。
+     */
+    function confirmDeleteSelected() {
+        if (!recordsIo?.remove) { appendLog(t('record.delete.unavailable')); return null; }
+        const targets = records.filter(item => selected.has(String(item?.id ?? '')));
+        if (targets.length === 0) return null;
+
+        const warnings = [];
+        // **上流の持ち物が混ざっていることは、まとめる前に言う。**
+        if (targets.some(item => (item?.owner || (item?.libraryId ? 'lora-manager' : 'unbake')) !== 'unbake')) {
+            warnings.push(t('record.delete.upstream'));
+        }
+        if (targets.some(item => !item?.libraryId)) warnings.push(t('record.delete.notSaved'));
+
+        return askThen({
+            title: t('record.deleteMany.title', { count: targets.length }),
+            files: [{ name: t('record.delete.what'), bytes: null }],
+            warnings,
+            onConfirm: async () => {
+                const removed = [];
+                const failed = [];
+                for (const item of targets) {
+                    try {
+                        const one = await recordsIo.remove(item.savedId || item.id);
+                        if (one?.ok) {
+                            removed.push(displayName(item));
+                            records = records.filter(other => other.id !== item.id);
+                            selected.delete(String(item.id));
+                        } else {
+                            failed.push(displayName(item));
+                        }
+                    } catch {
+                        failed.push(displayName(item));
+                    }
+                }
+                // **`ok` は「全部消えた」ときだけ。** 一部でも残ったなら、
+                // 成功として報せると残りに気づけない。
+                return { ok: failed.length === 0, removed, failed };
+            },
+            onReturn: () => render(),
+        });
+    }
+
+    /**
+     * **選択したうえでの右クリック**（2026-08-26 利用者の指示）。
+     *
+     * 一覧の操作は上の帯にしか無く、**選んでから目を上へ戻す**必要があった。
+     * 右クリックはその場に出るので、選んだ流れのまま続けられる。
+     *
+     * **選んでいないものを右クリックしたら、それだけを選び直す。** どの一覧でも
+     * そうなっているし、そうしないと「見ている物と操作する物が違う」という
+     * 一番まずい形になる（選択が画面外に在ると、何が消えるのか見えない）。
+     */
+    let contextMenuNode = null;
+
+    function closeContextMenu() {
+        contextMenuNode?.remove?.();
+        contextMenuNode = null;
+    }
+
+    function openContextMenu(record, event) {
+        const id = String(record?.id ?? '');
+        if (id && !selected.has(id)) {
+            selected.clear();
+            selected.add(id);
+            anchorId = id;
+            render();
+        }
+        closeContextMenu();
+
+        const count = selected.size;
+        /*
+         * **献立を絞る**（2026-08-26 利用者の指示）。
+         *
+         * 外したのは3つ——「不足モデルを落とす」は選択の帯に同じ口が在り、
+         * 「お気に入り」は各行に☆が在り、「選択を解除」は帯の「解除」が在る。
+         * **同じ場所への入口を2つ持たない。**
+         *
+         * 足したのは2つ。どちらも**ここが唯一の入口**になる:
+         *   使用モデルの削除 … `openModels` は書いてあったが、画面から
+         *                      呼ぶ道が1本も無かった（到達性の棚卸しで判明）
+         *   選んだ N 件を再現 … 帯の「まとめて出す」と同じ道
+         */
+        const items = [
+            { key: 'delete', label: t('menu.deleteSelected', { count }), run: () => confirmDeleteSelected() },
+            // **こちらは右クリックした1件が相手。** 選んでいる件数とは関係が無いので、
+            // それを説明に書く（書かないと「選んだ分を消す」と読まれる）。
+            { key: 'models', label: t('menu.modelsOfRecord'), title: t('menu.modelsOfRecord.help'),
+              run: () => openModels(record), off: !modelsIo?.plan },
+            /*
+             * **選んだ分だけが使っているモデルを消す**（2026-08-27 利用者の指示）。
+             *
+             * 上の口は**右クリックした1件**のモデルを並べる。こちらは
+             * **選んだ N 件をまとめて**見て、**その外に使い手が居ないものだけ**を出す
+             * ——「もう要らない記録」を選んだあとの後始末が、1件ずつ開かずに済む。
+             *
+             * **件数を label に出す。** 何件を相手にしているかが見えないと、
+             * どれだけ消えるのか押す前に判らない。
+             */
+            { key: 'models-sweep', label: t('menu.modelsOnlySelected', { count }),
+              title: t('menu.modelsOnlySelected.help'),
+              run: () => deleteModelsOnlySelectedRecordsUse(),
+              off: !modelsIo?.plan || !modelsIo?.usage },
+            /*
+             * **「再現」は ▶ と同じ意味にする**（2026-08-26 実機で気づいた）。
+             *
+             * 最初は帯の「まとめて出す」へ繋いだが、あちらは**種を振る**道で、
+             * 実測すると1件あたり3枚出た。この面の「再現」は ▶ と同じ語なので、
+             * **1件につき1枚**でなければ語と動きが食い違う。
+             *
+             * 行列は1件ずつしか流さないので、選んだ順に並べれば混ざらない。
+             */
+            { key: 'replay', label: t('menu.replaySelected', { count }), title: t('menu.replaySelected.help'),
+              run: () => {
+                  for (const item of records) {
+                      // **必ず行列へ。** 同じ拍で何件も投げると競走になる。
+                      // **取り消しにしない**（2026-08-27）。まとめての「再現」で
+                      // 並んでいる分を外すと、押した人からは「効かない」に見える。
+                      if (selected.has(String(item?.id ?? ''))) {
+                          enqueueReplay(item, { toggle: false });
+                      }
+                  }
+              },
+              // **▶ と同じ条件で出す。** 書庫から取り直せないと再現できないので、
+              // 出しても押せない口になる。
+              off: typeof loadRecord !== 'function' },
+        ].filter(item => !item.off);
+
+        const menu = element('div', {
+            class: 'unbake-context', role: 'menu',
+            // **読み上げにも件数を渡す。** 見えている数字だけだと、
+            // 目で確かめられない人には何件消えるのか判らない。
+            'aria-label': t('menu.deleteSelected', { count }),
+        }, items.map(item => {
+            const button = element('button', {
+                class: 'unbake-context-item', type: 'button', role: 'menuitem', text: item.label,
+                ...(item.title ? { title: item.title } : {}),
+            });
+            button.addEventListener('click', () => { closeContextMenu(); item.run(); });
+            return button;
+        }));
+
+        // 押した所に出す。`fixed` なので、一覧を巻いても位置がずれない。
+        const x = Number(event?.clientX) || 0;
+        const y = Number(event?.clientY) || 0;
+        menu.style.position = 'fixed';
+        menu.style.left = `${x}px`;
+        menu.style.top = `${y}px`;
+        contextMenuNode = menu;
+        root.append(menu);
+        return menu;
+    }
+
+    /** 一覧の1件に右クリックを付ける。表でもタイルでも同じものを使う。 */
+    function armContextMenu(node, record) {
+        node.addEventListener?.('contextmenu', (event) => {
+            // **既定の menu を出さない。** 出ると2枚重なる。
+            event?.preventDefault?.();
+            openContextMenu(record, event);
+        });
+        return node;
     }
 
     /**
@@ -2746,6 +3468,144 @@ export function createUnbakePanel(el, {
             warnings,
             onConfirm: () => modelsIo.remove(entry.kind, entry.name),
             onReturn: () => { refresh?.(); },
+        });
+    }
+
+    /**
+     * **選んだ記録だけが使っているモデルを、まとめて消す**（2026-08-27 利用者の指示）。
+     *
+     * 「もう要らない記録」を選んだあと、その記録のために落としたモデルが置き場に残る。
+     * 1件ずつ開いて件数を確かめるのは、記録が10件も在れば現実的でない。
+     *
+     * ---
+     *
+     * **消してよいのは「選んだ分の外に使い手が居ない」モデルだけ。**
+     * 実測でひとつの checkpoint を **39件**が共有しているので、
+     * 「選んだ記録が使っている」だけで消すと**選んでいない記録が壊れる**。
+     *
+     * **判らないものは消さない。** 次の3つはどれも「安全」ではなく「判らない」なので、
+     * 候補から外して**外した理由を数える**（黙って落とすと、消えなかった理由が誰にも判らない）:
+     *
+     *   1. **使い手が数え切れていない**（`usage` は先頭50件しか返さず、残りは件数だけ）。
+     *      **`truncated` が在るのに「全部選択の中だ」とは言えない。**
+     *   2. **名前が2つ以上に当たる**（実データに1件在る）。片方を選ぶと、
+     *      **1件だけ静かに違うファイルが消える。**
+     *   3. **使い手が0件**——選んだ記録から名前を拾ったのに0なのは、
+     *      名前が書庫の書き方と食い違っている印。**辻褄が合わないものは消さない。**
+     *
+     * **数えた範囲は書庫の記録だけ**（`scope: library-records-only`）。手で組んだ
+     * ワークフローも他の UI も見ていないので、**0件は「安全」ではない**。
+     * その一文は消す前の確認に必ず出す（1件ずつ消す口と同じ文言を使う）。
+     */
+    async function deleteModelsOnlySelectedRecordsUse() {
+        if (!modelsIo?.plan || !modelsIo?.usage || !modelsIo?.remove) {
+            appendLog(t('models.unavailable'));
+            return null;
+        }
+        const chosenIds = new Set([...selected].map(id => String(id)));
+        if (chosenIds.size === 0) { appendLog(t('models.sweep.noSelection')); return null; }
+        const targets = records.filter(record => chosenIds.has(String(record?.id ?? '')));
+
+        // **候補は要約から拾う。** 書庫の `usage` も要約（`checkpoint` と `loras`）で
+        // 数えているので、**同じ材料で揃える**——本体を読みに行くと、数える側と
+        // 判断する側が別の物を見ることになり、件数と可否が食い違う。
+        const wanted = new Map();
+        for (const record of targets) {
+            for (const entry of modelsOf(record)) {
+                if (!wanted.has(entry.name)) wanted.set(entry.name, entry);
+            }
+        }
+        if (wanted.size === 0) { appendLog(t('models.sweep.none')); return null; }
+
+        appendLog(t('models.sweep.checking', { models: wanted.size, records: targets.length }));
+
+        const keep = [];       // 選んだ分の外にも使い手が居る
+        const unclear = [];    // 判らないので触らない
+        const doomed = [];     // 消してよい
+        for (const entry of wanted.values()) {
+            let usage = null;
+            try { usage = await modelsIo.usage(entry.name); } catch { usage = null; }
+            if (!usage || usage.ok === false) { unclear.push({ entry, why: 'usage' }); continue; }
+            if (Number(usage.truncated || 0) > 0) { unclear.push({ entry, why: 'truncated' }); continue; }
+            const users = (usage.records || []).map(row => String(row?.id ?? ''));
+            if (users.length === 0) { unclear.push({ entry, why: 'unused' }); continue; }
+            const outside = users.filter(id => !chosenIds.has(id));
+            if (outside.length > 0) { keep.push({ entry, outside: outside.length }); continue; }
+
+            // **置き場は引いてみるまで判らない**（UNet 単体は `diffusion_models`）。
+            // 1件ずつ消す口と同じ引き直しをここでもやる——片方だけ賢いと、
+            // 「一覧では消せるのにまとめてでは出ない」が起きる。
+            let plan = null;
+            let kind = entry.kind;
+            try { plan = await modelsIo.plan(kind, entry.name); } catch { plan = null; }
+            for (const alt of entry.altKinds || []) {
+                if (plan?.ok) break;
+                let retry = null;
+                try { retry = await modelsIo.plan(alt, entry.name); } catch { retry = null; }
+                if (retry?.ok) { plan = retry; kind = alt; }
+            }
+            if (plan?.state === 'many') { unclear.push({ entry, why: 'ambiguous' }); continue; }
+            if (!plan?.ok) { unclear.push({ entry, why: 'missing' }); continue; }
+            doomed.push({ entry: { ...entry, kind }, plan, users: users.length });
+        }
+
+        // **落としたものを黙らせない。** 何件が残り、何件が判らなかったのかで打つ手が違う。
+        appendLog(t('models.sweep.tally', {
+            doomed: doomed.length, keep: keep.length, unclear: unclear.length,
+        }));
+        // **鍵を組み立てない。** `t('models.sweep.skip.' + why)` の形で書くと
+        // 鍵の走査に1つも映らず、訳の足し忘れが**画面に鍵がそのまま出る**まで気づけない。
+        const skipText = (why, name) => {
+            if (why === 'truncated') return t('models.sweep.skip.truncated', { name });
+            if (why === 'ambiguous') return t('models.sweep.skip.ambiguous', { name });
+            if (why === 'unused') return t('models.sweep.skip.unused', { name });
+            if (why === 'missing') return t('models.sweep.skip.missing', { name });
+            return t('models.sweep.skip.usage', { name });
+        };
+        for (const item of unclear) appendLog(skipText(item.why, item.entry.name));
+        if (doomed.length === 0) { showToast(t('models.sweep.nothing')); return null; }
+
+        /*
+         * **1件ずつ選び直せる形で出す。** まとめて消す口ほど、
+         * 「1つだけは残したい」が普通に起きる（作るのに時間がかかったモデルが混ざる）。
+         * 落とす側の選び直しと同じ器を使う。
+         */
+        const files = doomed.map(item => ({
+            name: item.entry.name,
+            note: t('models.sweep.onlyHere', { count: item.users }),
+            bytes: item.plan.bytes || 0,
+            item,
+        }));
+        const total = files.reduce((sum, file) => sum + (file.bytes || 0), 0);
+        return openConfirm({
+            title: t('models.sweep.title', { count: doomed.length, size: sizeText(total) }),
+            destructive: true,
+            selectable: true,
+            files,
+            // **同じ文言を使う。** 1件ずつ消す口と違う言い方をすると、
+            // 「まとめてのほうは全部見ている」と読まれる。
+            warnings: [t('models.delete.scope'), t('models.sweep.warning')],
+            confirmLabel: t('models.sweep.go'),
+            onConfirm: async (picked) => {
+                confirmReturn = null;
+                confirmView?.destroy();
+                confirmView = null;
+                let gone = 0;
+                let failed = 0;
+                for (const file of picked) {
+                    let result = null;
+                    try { result = await modelsIo.remove(file.item.entry.kind, file.item.entry.name); }
+                    catch (error) { result = { ok: false, error: error?.message || String(error) }; }
+                    if (result?.ok === false) {
+                        failed += 1;
+                        appendLog(t('models.sweep.failed', { name: file.name, detail: String(result?.error || '') }));
+                    } else { gone += 1; }
+                }
+                appendLog(t('models.sweep.done', { count: gone, failed }));
+                showToast(t('models.sweep.done', { count: gone, failed }));
+                return { ok: true, deleted: gone, failed };
+            },
+            onReturn: () => appendLog(t('models.sweep.cancelled')),
         });
     }
 
@@ -2838,6 +3698,16 @@ export function createUnbakePanel(el, {
             pendingDeletes.delete(key);
             try {
                 const result = await deleteOutputIo({ filename, subfolder });
+                // **消えたら索引からも落とす。** 落とさないと、消したのに
+                // 「出た絵」へ出続ける（再読み込みでしか消えなかった）。
+                if (result?.ok !== false) {
+                    variantsIo?.forget?.({ filename, subfolder });
+                    // **走者の索引からも落とす**（2026-08-26 実機）。
+                    // `localStorage` の控えは消えないので、残すと次の再現で
+                    // 「もう出ている」と判断され、**死んだ URL を指したまま
+                    // 1枚も作らない**（＝「再現できませんでした」に見える）。
+                    forgetRunnerOutput?.({ filename, subfolder });
+                }
                 appendLog(result?.ok === false
                     ? t('detail.deleteFailed', { detail: String(result?.error || '') })
                     : t('detail.deleted', { name: filename }));
@@ -2872,12 +3742,22 @@ export function createUnbakePanel(el, {
         return { ok: true, undo, seconds: Math.round(DELETE_GRACE_MS / 1000) };
     }
 
-    /** 約束を全部流し切る。**閉じても消すと言ったものは消す。** */
+    /**
+     * 約束を全部流し切る。**閉じても消すと言ったものは消す。**
+     *
+     * **待てる形で返す**（2026-08-27）。呼び手が「消え終わったか」を待てないと、
+     * 消したつもりの絵がまだディスクに在るうちに次の再現が走る
+     * ——実行器はそれを「もう出ている」と読むので、**消した絵をそのまま
+     * 比較に出し、1枚も作らない**（下の `reproduceOne` を参照）。
+     */
     function flushPendingDeletes() {
+        const jobs = [];
         for (const [, held] of pendingDeletes) {
             if (held.timer) clearTimeout(held.timer);
-            held.run();
+            // `run()` は自分の鍵を先に外すので、回している最中に消しても安全。
+            jobs.push(Promise.resolve(held.run()));
         }
+        return Promise.all(jobs);
     }
 
     /**
@@ -2891,6 +3771,10 @@ export function createUnbakePanel(el, {
     async function runBatch() {
         if (!batchIo) return null;
         if (batchRunner) { appendLog(t('batch.busy')); return null; }
+        // **消すと言った絵を先に消す**（`reproduceOne` と同じ理由・2026-08-27）。
+        // 束は「まだ出していない条件」だけを並べるので、消し損ねた絵が残っていると
+        // **その分がまるごと「もう出ている」として落とされる。**
+        await flushPendingDeletes();
         batchRunner = createBatchRunner(batchIo);
         if (batchStopButton) batchStopButton.disabled = false;
         if (batchButton) batchButton.disabled = true;
@@ -3005,19 +3889,130 @@ export function createUnbakePanel(el, {
         downloadButton.removeAttribute('data-scanning');
         // **語は呼び手が決める。** arm した後はそちらが上書きする。
         if (!armedDownload) downloadButton.textContent = downloadButtonText();
+        // **構えている間も「止める」で降りられる**（2026-08-26 利用者の指示）。
+        // 「本当に落とす」に変わったあと、やめる手が**画面のどこにも無かった**
+        // ——押すか、別のものを選び直して構えを崩すしかない。隣に在るボタンが
+        // 使えないのは、そこに手が伸びるからこそ厄介である。
+        if (armedDownload && !downloading) downloadStopButton.disabled = false;
     }
 
     function disarmDownload() {
         if (!armedDownload) return;
         armedDownload = null;
+        // **構えを解いたら「止める」も戻す。**
+        if (!downloading) downloadStopButton.disabled = true;
         downloadButton.textContent = downloadButtonText();
         downloadButton.removeAttribute('data-armed');
+    }
+
+    /**
+     * **落とす前に、内訳を並べて選ばせる**（2026-08-26 利用者の指示）。
+     *
+     * 「本当に落とす（6 件・299 MB）」だけでは、**何が 299 MB なのかが判らない**。
+     * 一本ずつ名前と大きさを並べ、要らないものを外せるようにする。
+     *
+     * **押す回数は増やさない。** 調べた回にこの面が出て、ここで落とす
+     * ——構えて押し直す形と同じ2回のまま。
+     */
+    function askWhichToDownload(wanted, blocked, companions) {
+        /*
+         * **待っている件数の多い順に並べる**（2026-08-26 利用者の指示）。
+         *
+         * 大きさだけでは選べない——実機の内訳は「31.9 GB が1件のためだけ」と
+         * 「244 MB が8件を止めている」が同じ顔で並んでいた。どちらを先に
+         * 落とすかは件数で決まる。
+         *
+         * 数えるのは**判定が既に持っている `missing`** から。組み直す方
+         * （`buildModelUsageIndex`）は記録 352件で約7秒かかり、押すたびには
+         * 払えない——こちらは既にある値を数え直すだけで済む。
+         *
+         * **母集団は選択の外も含む全記録。** 「ほかにも待っている」ことが
+         * 判らないと、1件のために大きいものを先に落とすことになる。
+         */
+        const usage = buildMissingUsageIndex(records);
+        /** 数えるのは**不足のときの名前**。表示は解決後の名前でよい。 */
+        const keyOf = (item) => item.missingName || item.name || String(item.versionId || '');
+        const ranked = rankMissingByUnlock(wanted.map(keyOf), usage);
+        const waitingOf = new Map(ranked.map(row => [row.name, row.unlocks]));
+        const order = new Map(ranked.map((row, index) => [row.name, index]));
+        const files = wanted.map(item => {
+            const label = item.name || String(item.versionId || '');
+            const waiting = waitingOf.get(keyOf(item)) || 0;
+            return {
+                name: label,
+                bytes: Number.isFinite(Number(item.bytes)) ? Number(item.bytes) : null,
+                // **0 件のときは何も言わない。** 「0 件が待つ」は読む手間だけを足す。
+                note: waiting > 0 ? t('download.pick.waiting', { n: waiting }) : '',
+                waiting,
+                item,
+            };
+        }).sort((a, b) => (order.get(keyOf(a.item)) ?? 0) - (order.get(keyOf(b.item)) ?? 0));
+        /** えらんだ本体の系統に、まだ足りていない伴走。 */
+        const companionsFor = (picked) => {
+            const bases = new Set(picked.map(file => file.item?.baseModel).filter(Boolean));
+            return companions.filter(status => bases.has(status.baseModel));
+        };
+        const labelFor = (picked) => {
+            const known = picked.map(file => Number(file.bytes)).filter(Number.isFinite);
+            /*
+             * **伴走の分も足す**（2026-08-26 実機で気づいた）。
+             *
+             * 拡散モデルは本体だけでは動かないので、テキストエンコーダと VAE も
+             * 一緒に落ちる。実機では釦が「8 件・32.2 GB」なのに、履歴の総量は
+             * 42.1 GB だった——**押した人が知らないまま 10 GB 増える。**
+             * 落とし終わってから足りないと判るのを避けるための仕組みなのに、
+             * その数字を釦から落としていた。
+             */
+            const extra = companionsFor(picked)
+                .reduce((sum, status) => sum + (Number(status.missingBytes) || 0), 0);
+            return t('download.confirm', {
+                n: picked.length,
+                size: formatBytes(known.reduce((sum, value) => sum + value, 0) + extra),
+            });
+        };
+        const warnings = [t('download.pick.help')];
+        // **数え方を書く。** 合計が記録数と合わないので、書かないと誤読される。
+        if (files.some(file => file.waiting > 0)) warnings.push(t('download.pick.waitingHelp'));
+        for (const status of companions) {
+            warnings.push(t('download.companions', {
+                base: status.baseModel, count: status.missingCount,
+                size: formatBytes(status.missingBytes),
+            }));
+        }
+        openConfirm({
+            title: t('download.pick.title'),
+            // **何も消さない。** 消す面の言い回しを借りない。
+            destructive: false,
+            selectable: true,
+            confirmLabelFor: labelFor,
+            confirmLabel: labelFor(files),
+            files,
+            warnings,
+            onConfirm: async (picked) => {
+                const chosenItems = picked.map(file => file.item);
+                // **外した本体の伴走まで落とさない。** 要るのは、残った本体の系統だけ。
+                const needed = companionsFor(picked);
+                // **先に面を閉じる。** 進み具合は下の帯が出すので、
+                // 重ねたままだと二重に報せることになる。
+                // **答えた後なので「戻る」は呼ばない。** ただし控えは外す
+                // ——残すと、次に開く確認が**この面の「取り消した」を呼ぶ**。
+                confirmReturn = null;
+                confirmView?.destroy();
+                confirmView = null;
+                // **終わりまで返す。** 呼び手（と検査）が結果を待てる。
+                // `ok` を足すのは面の作法（付けないと失敗として扱われる）。
+                return { ok: true, ...(await runDownload(chosenItems, blocked, needed)) };
+            },
+            onReturn: () => appendLog(t('download.pick.cancelled')),
+        });
     }
 
     function downloadTargets(list) {
         /** 版ID → 落とすもの。**同じ版を2回落とさない。** */
         const wanted = new Map();
         const blocked = [];
+        /** 名前しか無いもの。**押されたときに引き直す。** */
+        const nameOnly = new Map();
         for (const record of list) {
             // 台帳は渡さない（`/api/lm/*` を新しく呼ばない）。**版IDで落とせるものだけ**を採る。
             const classified = classifyMissing(record?.missing, null);
@@ -3026,9 +4021,79 @@ export function createUnbakePanel(el, {
                 if (!versionId) continue;
                 if (!wanted.has(versionId)) wanted.set(versionId, { ...item, versionId });
             }
+            // **名前しか無いものを、捨てずに取っておく**（2026-08-26）。
+            // 押されたときにファイル名で引き直せば、実測で6本中4本が当たった。
+            for (const item of [...classified.blocked, ...classified.manual]) {
+                const name = String(item?.name || '').trim();
+                if (name && !item?.versionId && !item?.modelId && !nameOnly.has(name)) {
+                    nameOnly.set(name, item);
+                }
+            }
             blocked.push(...classified.blocked, ...classified.manual);
         }
-        return { wanted: [...wanted.values()], blocked };
+        return { wanted: [...wanted.values()], blocked, nameOnly: [...nameOnly.values()] };
+    }
+
+    /**
+     * 名前しか無い不足を、**ファイル名で引き直す**（2026-08-26 実機）。
+     *
+     * グラフの中だけに名前が在る素材は版IDを持たないので、「不足」とは出るのに
+     * **落とす候補に出てこなかった**。実測（`civitai_139981506` の6本）:
+     * **4本はファイル名だけで版を特定できた**。
+     *
+     * **押されたときにだけ引く。** 一覧を開くたびに何十回も外へ問い合わせない。
+     * **上限を置く**——名前しか無い不足は実機で40件を超えることがあり、
+     * 全部引くと待ち時間だけが伸びる。
+     */
+    const NAME_LOOKUP_LIMIT = 24;
+
+    async function resolveByName(items) {
+        if (!downloadIo?.lookupByName || !items.length) return [];
+        const targets = items.slice(0, NAME_LOOKUP_LIMIT);
+        if (items.length > targets.length) {
+            // **切ったことを黙らない。** 黙ると「全部見た」と読まれる。
+            appendLog(t('download.lookupCapped', {
+                shown: targets.length, total: items.length,
+            }));
+        }
+        appendLog(t('download.lookingUp', { count: targets.length }));
+        const found = [];
+        /*
+         * **「今は聞けなかった」を「見つからない」と混ぜない**（2026-08-26 実機）。
+         *
+         * Civitai は問い合わせが続くと 503 を返す。それを「入手先が判っていません」
+         * と言うと、**待てば通るものを永久に諦めさせる**ことになる。実機で
+         * 6件すべてがこれだった（Python から叩いても同じ 503 だったので、
+         * 相手側の一時的な制限だと確かめてある）。
+         */
+        let transient = 0;
+        for (const item of targets) {
+            const name = String(item?.name || '').trim();
+            if (!name) continue;
+            let got = null;
+            try { got = await downloadIo.lookupByName(name); } catch { got = null; }
+            // 古い形（版そのものを返す）も受ける。
+            const match = got?.match ?? (got?.versionId ? got : null);
+            const reason = String(got?.reason || (match ? 'unique' : 'none'));
+            if (!match?.versionId) {
+                if (/^network:|^http-(429|5\d\d)$/.test(reason)) transient += 1;
+                continue;
+            }
+            found.push({
+                ...item,
+                versionId: match.versionId,
+                modelId: match.modelId ?? null,
+                name: match.fileName || name,
+                via: 'civitai',
+                foundByName: true,
+            });
+        }
+        appendLog(t('download.lookedUp', { found: found.length, total: targets.length }));
+        if (transient > 0) {
+            // **待てば通る。** 諦めさせない。
+            appendLog(t('download.lookupBusy', { count: transient }));
+        }
+        return found;
     }
 
     async function downloadMissing() {
@@ -3040,7 +4105,7 @@ export function createUnbakePanel(el, {
         if (armedDownload) {
             const armed = armedDownload;
             disarmDownload();
-            return runDownload(armed.wanted, armed.blocked);
+            return runDownload(armed.wanted, armed.blocked, armed.companions || []);
         }
         // **探している間を無音にしない**（2026-08-25 利用者の指示）。
         // 記録が多いと数え上げと大きさの問い合わせに間が空く——押した人からは
@@ -3048,8 +4113,25 @@ export function createUnbakePanel(el, {
         setDownloadScanning(true);
         let wanted;
         let blocked;
+        let nameOnly;
         try {
-            ({ wanted, blocked } = downloadTargets(chosen.list));
+            ({ wanted, blocked, nameOnly } = downloadTargets(chosen.list));
+            // **名前しか無いものを引き直す。** ここで版IDが付けば落とせる。
+            const recovered = await resolveByName(nameOnly || []);
+            const seen = new Set(wanted.map(item => String(item.versionId)));
+            for (const item of recovered) {
+                const versionId = String(item.versionId);
+                if (seen.has(versionId)) continue;
+                seen.add(versionId);
+                wanted.push(item);
+            }
+        // **見ていない分を必ず言う**（2026-08-26 利用者の報告）。
+        //
+        // 選んでいなければ対象は「今の絞り込みで見えているもの」だけ。実機で
+        // 落とせる候補は 16件あったのに画面には 6件しか出ず、**なぜ少ないのか
+        // 読み取る手掛かりが無かった**——隠れている件数を出せば判る。
+        const outside = records.length - chosen.list.length;
+        if (outside > 0) appendLog(t('download.scopeHidden', { hidden: outside }));
         appendLog(t('download.scope', {
             count: chosen.list.length, models: wanted.length, blocked: blocked.length,
         }));
@@ -3098,17 +4180,68 @@ export function createUnbakePanel(el, {
                     const byId = new Map((plan.items || []).map(item => [String(item.versionId), item]));
                     for (const item of wanted) {
                         const found = byId.get(String(item.versionId));
+                        /*
+                         * **不足のときの名前を控えてから上書きする**（2026-08-26 実機）。
+                         *
+                         * 計画は解決後のファイル名を返すので、そのまま被せると
+                         * 記録の `missing` に載っている名前と食い違う。実機では
+                         * `redcraft22INT8INT4_…` が `redcraftREDMIXHybridA2A_…` に
+                         * 変わり、**待っている件数が黙って 0 になった**。
+                         */
+                        if (found?.filename && found.filename !== item.name) {
+                            item.missingName = item.name;
+                        }
                         if (found?.filename) item.name = found.filename;
+                        if (found?.baseModel) item.baseModel = found.baseModel;
+                        // **1本ずつの大きさを捨てない**（2026-08-26 利用者の指示）。
+                        // 内訳を並べるとき、行ごとの大きさが無いと「何が
+                        // 299 MB なのか」は結局判らないままになる。
+                        if (Number.isFinite(Number(found?.bytes))) item.bytes = Number(found.bytes);
                     }
                 }
             } catch { /* 調べられなくても落とせる */ }
+        }
+
+        /*
+         * **拡散モデルは、本体だけでは動かない。**
+         *
+         * Civitai は Flux / Qwen-Image / HiDream / Chroma / Z-Image / Krea 2 /
+         * Anima について拡散モデルしか配らない。テキストエンコーダと VAE は
+         * 別に要るのに、**落とし終わってから初めて足りないと判る**——実測で
+         * Krea 2 は 12GB と表示され、実際には +8.3GB 必要だった。
+         *
+         * 目録も取得も以前から在ったが、**画面から届く口が無かった**
+         *（2026-08-26 の到達性の棚卸しで判明）。ここで総量へ足す。
+         */
+        const companionBases = companionIo?.status ? [...new Set(
+            wanted.map(item => item.baseModel)
+                .filter(value => typeof value === 'string' && value.trim()),
+        )] : [];
+        let companions = [];
+        for (const base of companionBases) {
+            const status = await companionIo.status(base);
+            if (!status || status.missingCount <= 0) continue;
+            companions.push({ baseModel: base, ...status });
+            bytes += status.missingBytes;
+            // **大きさの判らない伴走を「0」と混ぜない。**
+            unknown += status.missingUnknown || 0;
+            appendLog(t('download.companions', {
+                base, count: status.missingCount, size: formatBytes(status.missingBytes),
+            }));
         }
         appendLog(unknown > 0
             ? t('download.sizePartial', { size: formatBytes(bytes), unknown })
             : t('download.size', { size: formatBytes(bytes) }));
 
+        // **内訳を並べて選ばせる**（2026-08-26 利用者の指示）。
+        // 面が使えない環境（最小構成）では、今までどおり構えて押し直させる。
+        if (typeof createConfirmView === 'function') {
+            askWhichToDownload(wanted, blocked, companions);
+            return { picking: true, models: wanted.length, bytes };
+        }
+
         // **ここで一度止める。** 総量を見せてから、もう一度押させる。
-        armedDownload = { wanted, blocked };
+        armedDownload = { wanted, blocked, companions };
         downloadButton.textContent = t('download.confirm', { n: wanted.length, size: formatBytes(bytes) });
         downloadButton.setAttribute('data-armed', 'true');
         appendLog(t('download.armed', { n: wanted.length, size: formatBytes(bytes) }));
@@ -3128,6 +4261,27 @@ export function createUnbakePanel(el, {
         const code = String(response?.code || '');
         const key = FAIL_CODES[code] || FAIL_CODES.unknown;
         return code && FAIL_CODES[code] ? t(key) : t(key, { detail: response?.error || '' });
+    }
+
+    /**
+     * 落ちる速さ。**直前の見本との差から出す。**
+     *
+     * 累計を経過時間で割ると、**止まっていた時間まで均して**実際より遅く出る。
+     * 見本が1つしか無い間は `null`——**知らないことを 0 と言わない。**
+     */
+    let lastSample = null;
+    function measureSpeed(doneBytes) {
+        const now = typeof performance !== 'undefined' && performance.now
+            ? performance.now() : Date.now();
+        const previous = lastSample;
+        lastSample = { at: now, bytes: doneBytes };
+        if (!previous) return null;
+        const seconds = (now - previous.at) / 1000;
+        if (seconds <= 0) return null;
+        const gained = doneBytes - previous.bytes;
+        // **戻ったら測らない。** 1本終わって次が始まると累計は減る。
+        if (gained < 0) return null;
+        return Math.round(gained / seconds);
     }
 
     /** いま何本目か（進み具合の欄に添える）。 */
@@ -3161,6 +4315,31 @@ export function createUnbakePanel(el, {
                     })
                     : t('download.bytesUnknown', { done: sizeText(done) }))
                 : '';
+            /*
+             * **バーと数字で出す**（2026-08-26 利用者の指示）。
+             *
+             * 何バイト落ちたのか判らない、という報告への答え。総量が判らない
+             * 相手が居るので、**判らないときはバーを動かさず「判らない」と言う**
+             * ——動かすと、進んでいない時に進んで見える。
+             */
+            const running = Array.isArray(state?.running) ? state.running : [];
+            const doneAll = Number(state?.doneBytes) || 0;
+            const totalAll = Number(state?.totalBytes) || 0;
+            const speed = measureSpeed(doneAll);
+            if (running.length) {
+                downloadPanel.style.display = '';
+                const percent = totalAll ? Math.min(100, Math.floor((doneAll / totalAll) * 100)) : null;
+                downloadFill.style.width = percent === null ? '0%' : `${percent}%`;
+                downloadBar.setAttribute('data-unknown', percent === null ? 'true' : 'false');
+                downloadText.textContent = t(percent === null
+                    ? 'download.rateUnknown' : 'download.rate', {
+                    index: downloadAt.index, total: downloadAt.total,
+                    running: running.length,
+                    done: sizeText(doneAll), all: sizeText(totalAll),
+                    percent: percent ?? 0,
+                    speed: speed === null ? '—' : `${sizeText(speed)}/s`,
+                });
+            }
             showToast(downloadAt.total
                 ? t('download.at', {
                     index: downloadAt.index, total: downloadAt.total,
@@ -3173,12 +4352,15 @@ export function createUnbakePanel(el, {
         return () => {
             stopped = true;
             clearInterval(timer);
+            lastSample = null;
+            // **走り終わったら畳む。** 空の欄を残さない。
+            downloadPanel.style.display = 'none';
             // **結果は少し残してから消える。** 消えないと邪魔、すぐ消えると読めない。
             showToast(downloadSummary);
         };
     }
 
-    async function runDownload(wanted, blocked) {
+    async function runDownload(wanted, blocked, companions = []) {
         downloading = true;
         downloadCanceled = false;
         downloadButton.disabled = true;
@@ -3202,8 +4384,23 @@ export function createUnbakePanel(el, {
             reasons.set(key, (reasons.get(key) || 0) + 1);
         };
         try {
-            for (const [index, item] of wanted.entries()) {
-                if (downloadCanceled) break;
+            /**
+             * **並列で引く。** 上限はサーバ側と同じ 3 本。
+             *
+             * 4GB前後のチェックポイントを何本も1本ずつ待つと実用にならない
+             * （実測で1件 3.9GB）。Civitai は接続ごとに絞ることがあるので、
+             * 本数を増やすと合計は素直に速くなる。
+             *
+             * **数え方は1本ずつのときと変えない。** `downloaded` / `already` /
+             * `failed` / `canceled` の意味が変わると、次に開いたときの数が嘘になる。
+             *
+             * **`break` は使えない。** 並列だと「自分より後ろ」が既に走っている。
+             * 中断は `downloadCanceled` を見て**新しく始めない**ことで表す
+             * ——走っているものはサーバ側の中断が畳む。
+             */
+            let taken = 0;
+            const runOne = async (item, index) => {
+                if (downloadCanceled) return;
                 downloadAt = {
                     index: index + 1, total: wanted.length, name: item.name || item.versionId,
                 };
@@ -3212,7 +4409,12 @@ export function createUnbakePanel(el, {
                 }));
                 let response = null;
                 try {
-                    response = await downloadIo.start(item.versionId);
+                    // **モデルIDも渡す**（2026-08-26）。受け皿（civarchive）の
+                    // 入口はモデルIDが要る。設定が切ってあればサーバが使わない。
+                    // **識別子だけ**——URL も置き場も渡さない。
+                    response = await downloadIo.start(item.versionId, {
+                        modelId: item.modelId ?? null,
+                    });
                 } catch (error) {
                     result.failed += 1;
                     // 口そのものへ届かなかった＝繋がらなかった。
@@ -3220,7 +4422,7 @@ export function createUnbakePanel(el, {
                     appendLog(t('download.itemFailed', {
                         name: item.name || item.versionId, detail: error?.message || String(error),
                     }));
-                    continue;
+                    return;
                 }
                 if (response?.ok) {
                     result.downloaded += 1;
@@ -3230,19 +4432,25 @@ export function createUnbakePanel(el, {
                         // ファイルを「落とせました」と同じ顔で並べない。
                         verified: response.verified === true ? t('download.verified') : t('download.unverified'),
                     }));
-                } else if (String(response?.error || '').startsWith('already there')) {
+                } else if (String(response?.code || '') === 'already') {
+                    // **英語の文言で見分けない**（2026-08-26 の読みで直した）。
+                    // 元は `error` が `"already there"` で始まるかを見ていた
+                    // ——文言を1文字変えるか訳した瞬間、**この件数が黙って
+                    // 「失敗」へ移る**。種類は同じことを壊れない形で言っている。
                     // **既に在ることは失敗ではない。** 同じ数に混ぜると、
                     // 「落ちなかった」のか「要らなかった」のか判らなくなる。
                     result.already += 1;
                     note('already', item.name || item.versionId);
                     appendLog(t('download.itemAlready', { name: item.name || item.versionId }));
-                } else if (String(response?.error || '') === 'canceled' || downloadCanceled) {
+                } else if (String(response?.code || '') === 'canceled' || downloadCanceled) {
                     // **止めたことは失敗ではない**（2026-08-23 利用者の指示）。
                     // 失敗に数えると、次に開いたときの「失敗 N 件」が嘘になる
                     // ——押した本人は止めたことを知っているので、余計に混乱する。
                     result.canceled += 1;
                     appendLog(t('download.itemCanceled', { name: item.name || item.versionId }));
-                    break;
+                    // **ここで打ち切らない。** 並列なので、後ろは既に走っている。
+                    // 新しく始めないことは `downloadCanceled` が受け持つ。
+                    return;
                 } else {
                     result.failed += 1;
                     // **種類で束ねる。** 生の文言で束ねると、同じ意味の失敗が
@@ -3252,7 +4460,59 @@ export function createUnbakePanel(el, {
                         name: item.name || item.versionId, detail: response?.error || 'unknown',
                     }));
                 }
+            };
+
+            // **上限つきの取り出し。** 走者が3本、待ち行列から順に取る。
+            const worker = async () => {
+                while (!downloadCanceled) {
+                    const index = taken;
+                    if (index >= wanted.length) return;
+                    taken += 1;
+                    await runOne(wanted[index], index);
+                }
+            };
+            await Promise.all(
+                Array.from({ length: Math.min(3, wanted.length) }, () => worker()),
+            );
+            /*
+             * **本体のあとに伴走を落とす。** 順番が逆だと、本体が失敗したときに
+             * 使い道の無いテキストエンコーダだけが何GBも残る。
+             *
+             * **止められていたら始めない。** 「止める」を押した人から見て、
+             * 本体が止まったのに別のものが引かれ始めるのは、止まっていない。
+             */
+            if (!downloadCanceled && companions.length && companionIo?.download) {
+                for (const item of companions) {
+                    if (downloadCanceled) break;
+                    appendLog(t('download.companionsStart', {
+                        base: item.baseModel, count: item.missingCount,
+                    }));
+                    let got = null;
+                    try {
+                        got = await companionIo.download(item.baseModel);
+                    } catch (error) {
+                        appendLog(t('download.companionsFailed', {
+                            base: item.baseModel, detail: error?.message || String(error),
+                        }));
+                        continue;
+                    }
+                    const rows = Array.isArray(got) ? got : [];
+                    const bad = rows.filter(row => !row?.ok);
+                    // **落ちなかったものを黙って飲まない。** 飲むと「全部入った」
+                    // ように見えて、動かない理由が判らなくなる。
+                    if (bad.length) {
+                        appendLog(t('download.companionsFailed', {
+                            base: item.baseModel,
+                            detail: bad.map(row => `${row.filename}: ${row.error || '?'}`).join(' / '),
+                        }));
+                    } else {
+                        appendLog(t('download.companionsDone', {
+                            base: item.baseModel, count: rows.length,
+                        }));
+                    }
+                }
             }
+
             appendLog(t('download.done', result));
             if (downloadCanceled) appendLog(t('download.stopped'));
 
@@ -3289,6 +4549,26 @@ export function createUnbakePanel(el, {
             }
             // **結果を欄に残す。** 空に戻すと「何も起きなかった」ように見える。
             downloadSummary = lines.join(String.fromCharCode(10));
+
+            /*
+             * **落としたら判定を掛け直す**（2026-08-26 実機で判明）。
+             *
+             * 落とし終わっても**何も掛け直していなかった**ので、判定は
+             * 「再現不可」のまま、`/object_info` の控えも落とす前のまま
+             * ——利用者から見ると「落としたのに何も変わらない」。
+             *
+             * **全件を掛け直す。** 落とした1本が、選んでいなかった記録の
+             * 不足も埋めることがある（同じモデルを何件も使う）。実測で 351件
+             * に約6秒なので、数GBを引いた後としては十分に安い。
+             */
+            if (result.downloaded > 0 && typeof verdictFor === 'function') {
+                appendLog(t('download.recheck'));
+                try {
+                    await verdictFor(records, { fresh: true });
+                } catch (error) {
+                    appendLog(t('record.rescanFailed', { detail: error?.message || String(error) }));
+                }
+            }
             return result;
         } finally {
             stopWatching();
@@ -3299,6 +4579,14 @@ export function createUnbakePanel(el, {
     }
 
     async function cancelDownload() {
+        // **構えているだけなら、それを解くのが「止める」の意味。**
+        // まだ1バイトも引いていないので、サーバへ頼むことは何も無い。
+        if (armedDownload && !downloading) {
+            disarmDownload();
+            downloadButton.textContent = downloadButtonText();
+            appendLog(t('download.disarmed'));
+            return true;
+        }
         // **旗を立てるだけでは止まらない。** 今引いている1本はサーバ側で切る。
         downloadCanceled = true;
         if (downloadIo?.cancel) {
@@ -3326,6 +4614,8 @@ export function createUnbakePanel(el, {
     /** 一覧の上に出ている面をすべて閉じる。**2枚同時に出さない。** */
     function closeOverlays() {
         closeLightbox();
+        // **右クリックの品書きも畳む。** 残すと面の上に浮いたままになる。
+        closeContextMenu();
         // **浮かせた器を先に片付ける。** 中の面だけ `destroy()` すると
         // **空の覆いが残って一覧が押せなくなる**（見た目は何も無いので原因が読めない）。
         for (const layer of openLayers) layer.remove();
@@ -3340,8 +4630,13 @@ export function createUnbakePanel(el, {
         raindropView = null;
         modelsView?.destroy();
         modelsView = null;
+        // **待っている約束を返してから畳む**（2026-08-27）。
+        // 畳むだけだと、返事を `await` している再現がそこで永久に止まる。
+        const pendingReturn = confirmReturn;
+        confirmReturn = null;
         confirmView?.destroy();
         confirmView = null;
+        pendingReturn?.();
         detailView?.destroy();
         detailView = null;
         body.style.display = '';
@@ -3508,6 +4803,25 @@ export function createUnbakePanel(el, {
                 title: downloadable ? t('verdict.downloadable.help') : verdictTitle(verdict),
             }));
         }
+        // **材料が同じだと言えるかは、組めるかとは別の問い。**
+        //
+        // Civitai の ComfyUI 形の meta は `additionalResources` に
+        // 「名前と強度」しか置かない（版IDも hash も無い・実測 2026-08-25）。
+        // 拾わないと再現不可になるので拾うが、**名前でしか照合していない**という
+        // 事実は残る。名前の衝突は理屈ではなく実在する——利用者の環境に
+        // **同名の LoRA が2箇所に在るものが8件**あった。
+        //
+        // **印は「間違っている」ではなく「確かめようがない」と言う。**
+        // 実際に別物かは判らないし、判ったふりをしない。
+        const unverified = nameOnlyModels(record?.recipe || record);
+        if (unverified.names.length > 0) {
+            marks.push(element('span', {
+                class: 'unbake-tile-mark', 'data-mark': 'evidence',
+                'data-evidence': 'name',
+                text: t('evidence.nameOnly.short'),
+                title: t('evidence.nameOnly.help', { names: unverified.names.join(' / ') }),
+            }));
+        }
         // **商用可否はタイルにも出す**（2026-08-22 利用者の指摘）。
         // 表の列にしか無く、タイルで見ている間は**一度も出ていなかった**
         // ——実データ 347件のうち 345件が値を持っているのに、である。
@@ -3540,7 +4854,7 @@ export function createUnbakePanel(el, {
             })
             : null;
 
-        return element('article', {
+        const tile = element('article', {
             class: 'unbake-tile', 'data-verdict': verdict,
             'data-selected': selected.has(String(record?.id ?? '')) ? 'true' : 'false',
             // 吹き出しは上流の画面で見た題（探すときの手掛かり）。
@@ -3597,6 +4911,25 @@ export function createUnbakePanel(el, {
                 'data-busy': busyRecords.has(`${record?.id ?? ''}`) ? 'true' : 'false',
             }, [pickBox(record), ...recordActions(record, { icons: true })]),
         ]);
+
+        /*
+         * **選んでいる最中は、タイルのどこを押しても選択に足す**
+         *（2026-08-27 利用者の指示）。
+         *
+         * 絵の側は `makeZoomable` が持っているが、名前や札を押したときは
+         * どこにも届いていなかった——**同じタイルなのに、押した場所で
+         * 反応が変わる**のは説明できない。
+         *
+         * **選ぶ口と各ボタンは自分の仕事をする。** どちらも押した時点で
+         * `stopPropagation()` するので、ここまで上がってこない
+         * （伝わると、入れた直後に裏返って何も選べなくなる）。
+         */
+        tile.addEventListener?.('click', (event) => {
+            // **Shift は選択が0件でも効く**（絵の側と同じ理由・2026-08-27）。
+            if (selected.size === 0 && !event?.shiftKey) return;
+            toggleSelectionAt(record?.id, event);
+        });
+        return tile;
     }
 
     function render() {
@@ -3616,6 +4949,16 @@ export function createUnbakePanel(el, {
         // お気に入りも同じ形——**件数は絞り込んでいても見え続ける**。
         favoritesChip.textContent = '★ ' + records.filter(isFavorite).length;
         favoritesChip.setAttribute('data-on', favoritesOnly ? 'true' : 'false');
+        /*
+         * **印と件数を入れる**（2026-08-26 利用者の指示）。元は空の四角で、
+         * 何のための口か画面から読めなかった。
+         *
+         * 印は下向きの矢印（＝落とす）に、**手元に無いことを表す空の受け皿**を
+         * 添える。★（在る／気に入っている）と対になる形にして、
+         * 「これは手元に無い」と一目で判るようにする。
+         */
+        downloadableChip.textContent = '⤓ ' + records.filter(isDownloadable).length;
+        downloadableChip.setAttribute('data-on', downloadableOnly ? 'true' : 'false');
         // **範囲が変わったら語も変える。** 未選択なら表示中の全件が対象になる
         // ——同じ語のままだと、範囲が違うことに気づけない。
         if (!armedDownload) downloadButton.textContent = downloadButtonText();
@@ -3675,7 +5018,7 @@ export function createUnbakePanel(el, {
         tiles.replaceChildren();
         if (asTiles) for (const run of runs) {
             if (run.name !== null) tiles.append(groupHead('div', 'unbake-tile-group', run));
-            for (const record of run.records) tiles.append(tileOf(record));
+            for (const record of run.records) tiles.append(armContextMenu(tileOf(record), record));
         }
 
         tableBody.replaceChildren();
@@ -3694,7 +5037,7 @@ export function createUnbakePanel(el, {
             const rowTitle = record?.blockedReason
                 ? `${record?.title ?? ''} — ${record.blockedReason}`
                 : String(record?.title ?? '');   // ← 上流の画面で見た題（探すときの手掛かり）
-            tableBody.append(element('tr', {
+            tableBody.append(armContextMenu(element('tr', {
                 title: rowTitle,
                 'data-selected': selected.has(String(record?.id ?? '')) ? 'true' : 'false',
             }, [
@@ -3718,7 +5061,7 @@ export function createUnbakePanel(el, {
                     element('span', { class: 'unbake-row-actions' }, recordActions(record, { compact: true })),
                 ]),
                 ...(showCommercialOk ? [commercialCell(record)] : []),
-            ]));
+            ]), record));
         }
         }
 
@@ -3809,7 +5152,27 @@ export function createUnbakePanel(el, {
         // **落ちても取り込みは続ける。** 保存できないことと、取り込めないことは別。
         // ただし**黙って落とさない**——1件ずつ理由を出す。
         if (added.length && typeof recordsIo?.save === 'function') {
+            /**
+             * **書庫の id を記録へ持たせる**（2026-08-26 の実機検証で判明）。
+             *
+             * 判定表は `libraryId` を持つ記録しか見ない（`run()` が
+             * `r?.libraryId` で絞り、`loadRecord` も `libraryId` が無ければ
+             * 何も読まない）。取り込み直後の記録は `id` しか持たないので、
+             * **判定が一度も計算されないまま**「再現不可」で止まっていた
+             * ——実機の `civitai_139981506` がまさにこれで、版IDまで
+             * 揃っているのに落とす候補に出てこなかった。
+             *
+             * **既に在るものは変えない。** 書庫から来た記録は正しい id を
+             * 持っている。
+             */
+            const adopt = (record, id) => {
+                if (!record.libraryId && id) record.libraryId = id;
+            };
             let saved = 0;
+            // **既に在って書かなかった数**（2026-08-26 の読みで足した）。
+            let kept = 0;
+            // **既に在ったものを、読み直した内容で置き換えた数。**
+            let replacedCount = 0;
             const failed = [];
             for (const record of added) {
                 let outcome;
@@ -3819,13 +5182,40 @@ export function createUnbakePanel(el, {
                     failed.push(`${record?.title || record?.id}: ${error?.message || error}`);
                     continue;
                 }
-                if (outcome?.ok) { saved += 1; record.savedId = outcome.id; }
+                if (outcome?.ok) { saved += 1; record.savedId = outcome.id; adopt(record, outcome.id); }
                 // **「もう在る」は失敗ではない。** 取り込み直しでは普通に起きる。
-                else if (outcome?.error === 'already saved') record.savedId = outcome.id;
+                else if (outcome?.error === 'already saved') {
+                    /*
+                     * **もう一度、置き換えとして書く**（2026-08-26 利用者の検証で必要になった）。
+                     *
+                     * 上書きしない決まりは手で直した内容を守るためだが、そのせいで
+                     * **取り出しを直しても記録が古いまま**になる。実機の
+                     * `civitai_139981506` は版IDも hash も持たない古い形のままで、
+                     * **版IDが無いので永久に落とせない**——取り込み直しても直らない。
+                     *
+                     * URL をもう一度落とすのは「読み直せ」という意思表示なので、
+                     * 置き換える。**元の記録はサーバが `.bak` へ退ける**ので、
+                     * 手で直した内容も消えはしない。
+                     */
+                    let again = null;
+                    try {
+                        again = await recordsIo.save(record, { replace: true });
+                    } catch { /* 置き換えられなくても、元の記録は残っている */ }
+                    if (again?.ok) { record.savedId = again.id; replacedCount += 1; adopt(record, again.id); }
+                    else { record.savedId = outcome.id; kept += 1; adopt(record, outcome.id); }
+                }
                 else failed.push(`${record?.title || record?.id}: ${outcome?.error || ''}`);
             }
             for (const message of failed) appendLog(t('record.saveFailed', { detail: message }));
             if (saved) appendLog(t('record.saved', { count: saved }));
+            // **黙って古い方を使わない**（2026-08-26 の読みで見つけた）。
+            //
+            // 保存は**上書きしない**（手で直した内容を消さないため）。だから
+            // 取り込み直しでは**ディスクの古い記録がそのまま残る**——画面には
+            // 取り込んだばかりの新しい内容が並ぶので、**次に開くと古い方へ戻る**。
+            // 直したはずの取り出しが効いていないように見えるのはこれ。
+            if (kept) appendLog(t('record.kept', { count: kept }));
+            if (replacedCount) appendLog(t('record.replaced', { count: replacedCount }));
 
             // **保存できたら書庫から読み直す**（2026-08-22 利用者の報告）。
             //
@@ -3848,9 +5238,31 @@ export function createUnbakePanel(el, {
             // 再読み込みで直るので「保存できていない」と読めてしまうが、
             // **ディスクの記録も索引も正しかった**。形を変換する責任は呼び手側に
             // あり、それを持っているのは `recordsIo.reload` の方。
+            /*
+             * **取り込み直しでは読み直しが走らない**（2026-08-26 の読みで判明）。
+             *
+             * 同じ id をもう一度取り込むと保存は `already saved` を返し、`saved`
+             * は 0 のまま——**この下の読み直しが丸ごと飛ぶ**。読み直しが判定の
+             * 控えを捨てているので、飛ぶと**古い判定が残ったまま**になり、
+             * 「不足モデルが無い」と表示され続ける（利用者が最初に報告した形）。
+             *
+             * **読み直しの条件は変えない。** 走らせると、画面の新しい記録が
+             * ディスクの古い記録で置き換わる（保存は上書きしない約束なので、
+             * ディスク側は古いまま）——直すつもりで表示を古くすることになる。
+             * 代わりに**判定だけ掛け直す**。
+             */
+            if (!saved && typeof verdictFor === 'function' && added.length) {
+                try {
+                    await verdictFor(added);
+                } catch (error) {
+                    appendLog(t('record.rescanFailed', { detail: error?.message || String(error) }));
+                }
+            }
             if (saved && typeof recordsIo?.reload === 'function') {
                 try {
-                    const fresh = await recordsIo.reload();
+                    // **変わったのはこの回で取り込んだ分だけ**（2026-08-26）。
+                    // 渡さないと、読み直しのたびに全件の判定を組み直す。
+                    const fresh = await recordsIo.reload(added);
                     if (Array.isArray(fresh) && fresh.length) {
                         replaceRecords(fresh);
                         return { ok: true, records: added, errors: result?.errors || [] };
@@ -3971,6 +5383,14 @@ export function createUnbakePanel(el, {
             selectAllShown();
             return;
         }
+        // **Escape は品書きを先に畳む。** 選択の解除より先にしないと、
+        // 品書きが出たまま選択だけ消えて「何に効く品書きなのか」が消える。
+        if (key === 'escape' && contextMenuNode) {
+            event.preventDefault?.();
+            event.stopPropagation?.();
+            closeContextMenu();
+            return;
+        }
         if (key === 'escape' && selected.size > 0) {
             event.preventDefault?.();
             event.stopPropagation?.();
@@ -3978,6 +5398,28 @@ export function createUnbakePanel(el, {
         }
     };
     root.addEventListener('keydown', onKeyDown);
+    /*
+     * **鍵盤が届くようにする**（2026-08-27 利用者の指示「解除をいつでも」）。
+     *
+     * Escape の受け口はこの面の根に張ってある（`document` へ張ると ComfyUI 全体の
+     * Ctrl+A を奪うので、そこは変えない）。だが**根が焦点を持っていなければ
+     * keydown は届かない**——タイルの `<article>` は焦点を取れない要素なので、
+     * **絵を押して選んだ直後は焦点が面の外に残ったまま**になり、
+     * Escape を叩いても何も起きなかった。
+     *
+     * **面の中を押したのに焦点が外に在るときだけ**、根へ引き寄せる。
+     * 既に中の入力欄へ入っているときは触らない（字の入力を奪う）。
+     */
+    root.addEventListener('click', () => {
+        const active = doc?.activeElement ?? null;
+        if (active && typeof root.contains === 'function' && root.contains(active)) return;
+        try { root.focus?.({ preventScroll: true }); } catch { root.focus?.(); }
+    });
+    // **外を押したら畳む。** 品書きの中を押したときは、その項目の処理が
+    // 自分で畳むので、ここで二重に畳んでも害は無い（`remove()` は冪等）。
+    root.addEventListener('click', () => closeContextMenu());
+    // 別の所で右クリックし直したら、古いほうを畳む（2枚出さない）。
+    root.addEventListener('contextmenu', () => closeContextMenu(), true);
 
     el.append(root);
 
@@ -4038,6 +5480,15 @@ export function createUnbakePanel(el, {
         // **検査から取り込みの本筋を触れるように。** ドロップの器を通さずに
         // 同じ道を呼べないと、保存の後始末（書庫の読み直し）を固定できない。
         ingestRouted,
+        // **消しの本筋も同じ理由で出す**（2026-08-26）。猶予つきなので、
+        // 押してから12秒待たないと確かめられない——`flushPendingDeletes` で
+        // 流し切れば、**面を閉じたときと同じ道**をそのまま踏める。
+        deleteOutputLater,
+        flushPendingDeletes,
+        // **確認の面も同じ理由で出す**（2026-08-27）。この面は
+        // 「答えるまで先へ進まない」唯一の面で、**答えないまま差し替えたり
+        // 畳んだりしたときに待っている側へ返るか**は、外から開けないと測れない。
+        openConfirm,
         log: appendLog,
         get density() { return density; },
         get selected() { return [...selected]; },

@@ -226,17 +226,39 @@ export function applyA1111ToSummary(summary, raw) {
     return out;
 }
 
-/** `Civitai resources` を平たい形へ。**読めない `air` は null のまま残す。** */
+/**
+ * `Civitai resources` を平たい形へ。**読めない `air` は null のまま残す。**
+ *
+ * ---
+ *
+ * **`air` が無い形が実データの多数派だった**（2026-08-27 実測）。
+ *
+ * ここは `urn:air:…` からしか種別と版IDを取っていなかったので、Civitai の
+ * 生成画面が書く**素の形**——`{"type":"lora","modelVersionId":1056404,"weight":0.45}`
+ * ——を渡すと **`kind` も `modelVersionId` も全部 `null` に潰れていた。**
+ *
+ * 潰れると `kind === 'lora'` で絞る側は**常に0件**になり、版IDでの突き合わせも
+ * できない。`Civitai_Recipe_77742180` では、A1111 側が LoRA 4本を版ID付きで
+ * 宣言しているのに**1本も読めず**、プロンプトのタグ1本だけが残って
+ * **4本中3本が黙って落ちた絵**が出ていた。
+ *
+ * **`air` を優先し、無ければ素の欄を読む。** どちらも「Civitai が書いた出所」で、
+ * 形が違うだけである。`versionName` も同じ理由で `modelVersionName` を見る。
+ */
 export function normalizeResources(list) {
     return (Array.isArray(list) ? list : []).map(item => {
         const air = parseAirUrn(item?.air);
+        const plainKind = String(item?.type ?? '').trim().toLowerCase() || null;
+        const plainVersionId = Number(item?.modelVersionId);
+        const plainModelId = Number(item?.modelId);
         return {
             modelName: item?.modelName ?? null,
-            versionName: item?.versionName ?? null,
+            versionName: item?.versionName ?? item?.modelVersionName ?? null,
             weight: typeof item?.weight === 'number' ? item.weight : null,
-            kind: air?.kind ?? null,
-            modelId: air?.modelId ?? null,
-            modelVersionId: air?.modelVersionId ?? null,
+            kind: air?.kind ?? plainKind,
+            modelId: air?.modelId ?? (Number.isFinite(plainModelId) ? plainModelId : null),
+            modelVersionId: air?.modelVersionId
+                ?? (Number.isFinite(plainVersionId) ? plainVersionId : null),
         };
     });
 }

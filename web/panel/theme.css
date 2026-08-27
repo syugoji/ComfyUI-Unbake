@@ -89,6 +89,9 @@
     /* お気に入りの黄。**警告の橙とは別に持つ**——同じ色にすると
        「気に入っている」と「気をつけろ」が同じ顔になる。 */
     --unbake-favorite: #f0c630;
+    /* **落とせば試せる**の青（2026-08-26）。判定の3色とは別の軸なので
+       緑・橙・赤のどれとも重ねない。 */
+    --unbake-info: #58a6ff;
 
     /* --- 情報設計: 行と表（カード格子を作らない） --- */
 /* --- 余白（2026-08-22 利用者の指摘「LoRA Manager と比べて余裕が無い」）---
@@ -235,6 +238,7 @@
     --unbake-bad: #be222a;
     /* 明るい紙の上では、暗い画面と同じ黄は白く飛んで読めない。 */
     --unbake-favorite: #af7c00;
+    --unbake-info: #1f6feb;
 }
 
 /* --- 色の見分けが難しい人向けの配色 -------------------------------------
@@ -453,6 +457,15 @@
 .unbake-chip[data-verdict="reproducible"] { --unbake-chip-band: var(--unbake-ok); }
 .unbake-chip[data-verdict="approximate"]  { --unbake-chip-band: var(--unbake-warn); }
 .unbake-chip[data-verdict="blocked"]      { --unbake-chip-band: var(--unbake-bad); }
+
+/* **お気に入りは黄、落とせば試せるものは青**（2026-08-26 利用者の指示）。
+   判定の3色（緑・橙・赤）と混ぜない——**判定は「今どうか」、この2つは
+   「どう扱うか」**で、別の軸なので色も分ける。 */
+/* **既定は切**（2026-08-26 利用者の指示）。判定の3色に黄と青が加わると
+   一覧が賑やかになるので、要る人だけが点ける。切っていても印（★ / ⤓）と
+   件数は出るので、読めなくなるものは無い。 */
+.unbake-root[data-bands="on"] .unbake-chip-favorite     { --unbake-chip-band: var(--unbake-favorite); }
+.unbake-root[data-bands="on"] .unbake-chip-downloadable { --unbake-chip-band: var(--unbake-info); }
 .unbake-chip[data-verdict="pending"]      { border-left-color: var(--unbake-muted); border-inline-start-color: var(--unbake-muted); }
 
 .unbake-chip[data-on="false"] {
@@ -581,6 +594,26 @@
 /* --- 一括で選ぶ -------------------------------------------------------
    **絞り込みとは別物。** 絞り込みは「何が見えるか」で、選択は「これに何かする」。
    混ぜると、絞り込みを変えた瞬間に**操作の対象が黙って入れ替わる**。 */
+/* **巻いても居なくならない**（2026-08-27 利用者の指示「解除をいつでも」）。
+
+   この帯は一覧の**上**に1回だけ置かれる。記録が315件あると、少し巻いた時点で
+   画面から出ていき、**選んだものを外す口がどこにも無くなる**——戻すには
+   一番上まで巻き戻すしかなかった。巻いても残るようにする。
+
+   巻く器は `.unbake-body`（`overflow: auto`）で、この帯はその直下に居るので
+   `sticky` がそのまま効く。
+
+   **`top` は器の内余白ぶんの負値**（2026-08-27 利用者の指示「設定の帯へぴったり」）。
+   `top: 0` だと**器の内余白 14px ぶん下に貼り付き**、上の見出し帯との間に
+   隙間が空いたまま浮いて見える。実測（巻いた状態でヘッダ下端から帯上端まで）:
+
+     top: 0px    → 14px（浮く）
+     top: -8px   →  6px
+     top: -14px  →  **0px（ぴったり）**  高さ 37px のまま＝切れていない
+     top: -22px  → -8px（見出し帯へ食い込む）
+
+   **当初は「負の値にすると切れる」と書いていたが、それは測らずに書いた嘘だった。**
+   巻いていないときの見た目は `0` と `-14px` で同一（どちらも上の操作列から 8px）。 */
 .unbake-selection {
     display: flex;
     flex-wrap: wrap;
@@ -592,12 +625,20 @@
     border-radius: var(--unbake-radius-sm);
     background: var(--unbake-panel);
     font-size: var(--unbake-font-sm);
+    position: sticky;
+    top: calc(var(--unbake-pad) * -1);
+    /* 下を流れる絵より上に。**面（…001以上）よりは下**に置く。 */
+    z-index: 9;
 }
 
 /* 選んでいる間は縁を立てる。**何かを選んだことが目の端に残る。** */
+/* **地は必ず不透明にする。** 貼り付いた帯が半透明だと、下を流れる絵が
+   透けて**字が読めなくなる**。色みは残したいので、透ける色は地ではなく
+   重ねの層で当てる（`background-color` は不透明のまま）。 */
 .unbake-selection[data-active="true"] {
     border-color: var(--unbake-accent);
-    background: var(--unbake-accent-dim);
+    background-color: var(--unbake-panel);
+    background-image: linear-gradient(var(--unbake-accent-dim), var(--unbake-accent-dim));
 }
 
 .unbake-selection-count {
@@ -1071,6 +1112,9 @@
 .unbake-tile-actions .unbake-act {
     inline-size: 28px;
     block-size: 28px;
+    /* **縮まない。** 狭い枠でも 28px を割らせない——余白の吸収は
+       下の ▶（唯一 `flex-shrink` を許した口）に任せる。 */
+    flex: 0 0 auto;
     padding: 0;
     display: inline-flex;
     align-items: center;
@@ -1097,6 +1141,45 @@
     color: var(--unbake-accent);
 }
 
+/* **一番よく押すものを、一番押しやすくする**（2026-08-27 利用者の指摘
+   「再生ボタンが小さくてクリックしにくい」）。
+
+   実測（127.0.0.1:8188・タイル1枚 217px）: この列の口は**全部 28×28px** で
+   横に4つ並ぶ。利用者の画面は**表示 80%** なので、実寸は **22.4px**
+   ——マウスで狙う的の下限とされる 24px を下回っていた。
+
+   **大きくするのは ▶ だけ。** 4つ全部を大きくすると横に入らない
+   （一番狭い枠 155px では、今でも 28×4＋隙間で内側 141px をほぼ使い切っている）。
+   ▶ は**唯一の塗り**＝並びの中で最初に押すものと決めてあるので、
+   **唯一大きいもの**でもある形が、その決めごとと矛盾しない。
+
+   **狭い枠では 28px へ戻す。** `flex-shrink` を ▶ にだけ許してあるので、
+   入らない枠では ▶ が自分で縮み、**他の口を画面外へ押し出さない**。 */
+.unbake-tile-actions .unbake-act.unbake-act-replay {
+    inline-size: 46px;
+    block-size: 30px;
+    /* 入らないときは自分が縮む（下限は他と同じ 28px）。 */
+    flex: 0 1 auto;
+    min-inline-size: 28px;
+}
+
+/* **見た目より広い的にする**（同上）。塗りを大きくしすぎると絵を隠すので、
+   **押せる範囲だけ**を外へ広げる。
+
+   広げるのは**上下だけ**。左は選ぶ口、右は隣の操作で、**どちらの的も奪えない**
+   ——狭い枠では隙間が 4px しか無く、横へ伸ばすと隣を食う。
+   下は絵なので、そこへ 14px 伸ばす（絵は押しても詳細が開くだけで、
+   取り返しのつかない操作は無い）。
+
+   実効: 46×30 → **46×49**（80%表示で 36.8×39.2）。元の 28×28 の約 2.9 倍。 */
+.unbake-tile-actions .unbake-act-replay::after {
+    content: '';
+    position: absolute;
+    inset-inline: 0;
+    inset-block-start: -5px;
+    inset-block-end: -14px;
+}
+
 /* 塗ってあるボタンは、地を明るくするだけ（字は暗いインクのまま）。 */
 .unbake-tile-actions .unbake-act-replay:hover {
     border-color: var(--unbake-accent);
@@ -1115,6 +1198,25 @@
     opacity: 1;
 }
 
+/* **出すのは走っている印だけ**（2026-08-27 実機「チェックボックスがずっと出る」）。
+
+   上の行は列ごと不透明にするので、**選ぶ口も・消す口も・☆も一緒に出ていた**。
+   出したかったのは ▶（⟳／⏸）1つで、残りは hover したときの物のまま。
+   とくに選ぶ口は左上に居るので、走っている間ずっと居座って見えていた。
+
+   **`visibility` で消さない。** tab の順序から外れ、キーボードから
+   届かなくなる（この列の設計はそこを守ってある）。透明にするだけにする。 */
+.unbake-tile-actions[data-busy="true"] > :not(.unbake-act-replay) {
+    opacity: 0;
+    transition: opacity 120ms ease;
+}
+
+/* 触れば（合わせれば）今までどおり全部出る。 */
+.unbake-tile:hover .unbake-tile-actions[data-busy="true"] > *,
+.unbake-tile:focus-within .unbake-tile-actions[data-busy="true"] > * {
+    opacity: 1;
+}
+
 .unbake-tile:hover .unbake-tile-actions,
 .unbake-tile:focus-within .unbake-tile-actions {
     opacity: 1;
@@ -1123,6 +1225,9 @@
 /* 触る画面には hover が無い。**そちらでは最初から出す。** */
 @media (hover: none) {
     .unbake-tile-actions { opacity: 1; }
+    /* **触る画面では隠さない。** hover が無いので、上の「走っている間は
+       ▶ だけ」を当てると**選ぶ口へ二度と届かなくなる**（戻す操作が無い）。 */
+    .unbake-tile-actions[data-busy="true"] > * { opacity: 1; }
 }
 
 /* 動きを減らす設定を尊重する。 */
@@ -1551,6 +1656,8 @@
    その結果で次の行動が決まる（実機での指摘）。**丸い塗り**にしたのは、
    並びの中で唯一の塗りを1つだけ置くと、そこが起点だと判るため。 */
 .unbake-act-replay {
+    /* 広げた的（`::after`）の基準。**ここに無いと擬似要素が器の外を基準にする。** */
+    position: relative;
     border-color: var(--unbake-accent);
     background: var(--unbake-accent);
     /* **塗りの上の字は暗いインクで固定する。** `--unbake-bg` を使うと、
@@ -1560,7 +1667,9 @@
     color: oklch(18% 0.02 260);
     font-weight: 700;
     border-radius: 999px;
-    padding-inline: 7px;
+    /* **表の行でも広げる**（2026-08-27）。印1文字ぶんしか無く、
+       タイルと同じ「小さくて狙いにくい」がそのまま出ていた。 */
+    padding-inline: 13px;
 }
 
 .unbake-act-replay:hover {
@@ -1636,7 +1745,9 @@
    1枚を真ん中に置くだけだと余白のほうが広かった）。 */
 /* **重ね順。** 拡大は詳細の「上」に出る——詳細から押して進む先なので、
    下に潜ると押した先が見えない（2026-08-22 実機で背後に回っていた）。
-   一覧 < 確認(…001) < 詳細(…002) < 拡大(…003)。 */
+   一覧 < 詳細(…002) < 拡大(…003) < **確認(…004)**。
+   **確認だけは全部の上**——答えるまで進まない唯一の面なので、
+   下に潜ると待っている処理ごと止まる（2026-08-27・下の `-confirm-backdrop`）。 */
 .unbake-compare {
     position: fixed;
     inset: 0;
@@ -3044,10 +3155,24 @@
 
    **面ではなく重ねる。** 一覧を置き換えると「どれを消そうとしているのか」が
    画面から消えるので、後ろが見えたまま重ねる（利用者の指示・2026-08-22）。 */
+/* **確認は必ず一番上**（2026-08-27・実機の「再現が始まらない」の真因）。
+
+   ここは長らく `2147483001` ＝**この面で一番下の重ね**だった。理由は
+   「後ろの一覧を隠さない」で、一覧から消すときはそれで正しかった。
+   **だが確認は、答えるまで先へ進まない唯一の面である。**
+
+   再現は投げる前に2つ聞く（VRAM に入らない／分割復号で止まり得る）。
+   その確認が**詳細(…002)・拡大(…003)の下**に出ると、押した人には
+   何も見えないまま `await` が返らず、**行列が永久に止まる**
+   ——1件目の結果が比較(…003)で開いた直後に2件目の確認が出るので、
+   「最初の1件が終わると次が始まらない」という形で現れていた。
+
+   **一覧が見えたままなのは背景が半透明だからで、重ねの低さではない。**
+   上へ出しても後ろは畳まれない。 */
 .unbake-confirm-backdrop {
     position: fixed;
     inset: 0;
-    z-index: 2147483001;
+    z-index: 2147483004;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -3215,6 +3340,24 @@
 .unbake-donate-button[data-rail="patreon"] { background: #f96854; }
 .unbake-donate-button[data-rail="paypal"] { background: #0070ba; }
 .unbake-donate-button[data-rail="afdian"] { background: #946ce6; }
+
+/* 困ったときの口。**払う口と見た目を分ける**——同じ色にすると
+   「押すと払う」と読まれる。枠だけの控えめな形にして、色に意味を持たせない。
+   `oklch()` を使わないのは上と同じ理由（読めない環境で枠が継承色になる）。 */
+.unbake-donate-help-link {
+    padding: 7px 14px;
+    border-radius: var(--unbake-radius-sm);
+    border: 1px solid var(--unbake-line);
+    color: var(--unbake-text);
+    font-size: var(--unbake-font-sm);
+    text-decoration: none;
+    white-space: nowrap;
+}
+
+.unbake-donate-help-link:hover {
+    border-color: var(--unbake-accent);
+    text-decoration: none;
+}
 
 .unbake-donate-note {
     margin: 0;
@@ -3542,9 +3685,18 @@ button.unbake-models-pick:hover {
     white-space: nowrap;
 }
 
+/* 一行に添える覚え書き（買い足しの相談で「何件が待っているか」）。
+   **大きさより手前に置く。** 数字が2つ並ぶので、揃える側を固定する。 */
+.unbake-confirm-file-note {
+    color: var(--unbake-muted);
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+
 .unbake-confirm-file-size {
     color: var(--unbake-muted);
     white-space: nowrap;
+    font-variant-numeric: tabular-nums;
 }
 
 .unbake-confirm-actions {
@@ -4234,6 +4386,88 @@ textarea.unbake-detail-input {
 
 .unbake-detail-actions { display: flex; gap: 8px; align-items: center; }
 
+/* **落としている間だけ出る欄**（2026-08-26 利用者の指示）。
+   「止める」は落としている間しか要らないのに、ずっと並んでいて邪魔だった。 */
+.unbake-download-panel {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    padding: 6px 10px;
+    border: 1px solid var(--unbake-line);
+    border-radius: var(--unbake-radius-sm);
+    background: var(--unbake-panel);
+    font-size: var(--unbake-font-sm);
+}
+
+.unbake-download-bar {
+    flex: 1 1 auto;
+    min-width: 80px;
+    height: 8px;
+    border-radius: 4px;
+    background: var(--unbake-bg);
+    overflow: hidden;
+}
+
+/* **総量が判らないときは動かさない。** 動かすと、進んでいない時に
+   進んで見える（縞で「測れていない」ことを示す）。 */
+.unbake-download-bar[data-unknown="true"] {
+    background: repeating-linear-gradient(
+        90deg, var(--unbake-bg) 0 6px, var(--unbake-line) 6px 12px);
+}
+
+.unbake-download-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--unbake-accent);
+}
+
+.unbake-download-bar[data-unknown="true"] .unbake-download-fill { display: none; }
+
+.unbake-download-text {
+    flex: none;
+    color: var(--unbake-muted);
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+
+/* **元の絵の条件（読むだけ）**（2026-08-26）。直せる欄と混ぜない見た目にする
+   ——押せそうに見えると、直したつもりで直らない欄ができる。 */
+.unbake-detail-reference {
+    margin-block-start: 10px;
+    padding: 8px 10px;
+    border: 1px dashed var(--unbake-line);
+    border-radius: var(--unbake-radius-sm);
+    font-size: var(--unbake-font-sm);
+    color: var(--unbake-muted);
+}
+
+.unbake-detail-reference-head { display: block; margin-block-end: 6px; color: var(--unbake-text); }
+
+.unbake-detail-reference-row { display: flex; gap: 10px; justify-content: space-between; }
+
+.unbake-detail-reference-key { flex: none; }
+
+.unbake-detail-reference-value { text-align: end; overflow-wrap: anywhere; }
+
+/* **URLを開く**（2026-08-26 利用者の指示）。`<a>` のまま押せる口にする
+   ——`window.open` で開くより、**行き先が見えて中クリックも効く**。
+   右端へ寄せるのは、隣の押し間違いで別のタブが開くのを避けるため。 */
+.unbake-detail-source {
+    margin-left: auto;
+    margin-inline-start: auto;
+    padding: 4px 12px;
+    border: 1px solid var(--unbake-line);
+    border-radius: var(--unbake-radius-sm);
+    background: var(--unbake-panel);
+    color: var(--unbake-muted);
+    font: inherit;
+    font-size: var(--unbake-font-sm);
+    text-decoration: none;
+    white-space: nowrap;
+}
+
+.unbake-detail-source:hover { color: var(--unbake-accent); border-color: var(--unbake-accent); }
+
 .unbake-detail-run {
     padding: 4px 14px;
     border: 1px solid var(--unbake-accent);
@@ -4528,6 +4762,7 @@ textarea.unbake-detail-input {
         --unbake-warn: oklch(76% 0.15 60);
         --unbake-bad: oklch(65% 0.18 25);
         --unbake-favorite: oklch(84% 0.16 92);
+        --unbake-info: oklch(72% 0.14 250);
         --unbake-shadow: 0 1px 2px oklch(0% 0 0 / 0.25);
     }
 
@@ -4565,6 +4800,7 @@ textarea.unbake-detail-input {
         --unbake-warn: oklch(60% 0.15 60);
         --unbake-bad: oklch(52% 0.19 25);
         --unbake-favorite: oklch(62% 0.15 85);
+        --unbake-info: oklch(55% 0.16 255);
     }
 
     .unbake-root[data-palette="deuteranopia"] {
@@ -4702,6 +4938,36 @@ textarea.unbake-detail-input {
 /* --- 面の地：単色をやめて、上から光が当たっている形にする --------------
    **変数はここで定義しない。** 変数の宣言は `@supports` より前へ置く決まりで
    （読めない実装で宣言ごと捨てられるため）、厚みの変数は上の基本の塊に在る。 */
+/* **選択してからの右クリック**（2026-08-26 利用者の指示）。
+   一覧の操作は上の帯にしか無く、選ぶたびに目を上へ戻す必要があった。
+   `fixed` で押した所に出す——一覧を巻いても付いて回らない。 */
+.unbake-context {
+    z-index: 60;
+    min-width: 180px;
+    padding: 4px;
+    border: 1px solid var(--unbake-line);
+    border-radius: var(--unbake-radius-sm);
+    background: var(--unbake-panel);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.unbake-context-item {
+    padding: 6px 10px;
+    border: 0;
+    border-radius: var(--unbake-radius-sm);
+    background: transparent;
+    color: var(--unbake-text);
+    font: inherit;
+    font-size: var(--unbake-font-sm);
+    text-align: start;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.unbake-context-item:hover { background: var(--unbake-bg); color: var(--unbake-accent); }
+
 .unbake-root[data-rich="on"] {
     background-image: linear-gradient(
         180deg,
@@ -4915,4 +5181,9 @@ textarea.unbake-detail-input {
     .unbake-root[data-rich="on"] .unbake-download-missing:active:not(:disabled) {
         transform: none;
     }
+}
+
+/* 影は厚みなので旗の下だけ。切れば素の枠線に戻る。 */
+.unbake-root[data-rich="on"] .unbake-context {
+    box-shadow: 0 8px 24px rgb(0 0 0 / 35%);
 }

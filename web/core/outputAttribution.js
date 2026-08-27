@@ -120,6 +120,74 @@ export const MIN_AGREEMENT = 0.7;
  */
 const CHECKPOINT_INDEX = MATCH_KEYS.indexOf('checkpoint');
 
+/**
+ * **絵は自分の持ち主を名乗っている**（2026-08-27 実機の報告・`civitai_77742180`）。
+ *
+ * 出す絵の名前は `filename_prefix` で決まり、その値は**再現した記録の
+ * `civitai_image_id`** から作られる（`civitai_78353204_00002_.png`）。
+ * つまり**書いた側が「どの記録から出したか」を名前に残している。**
+ *
+ * この手掛かりを1つも使っていなかったので、`civitai_78353204_*` の3枚が
+ * **指紋だけで別の記録（`civitai_77742180`）へぶら下がっていた**
+ * ——実測の一致率 0.857（7項目中6項目）で、閾値 0.70 を普通に超える。
+ * 2つの記録は土台も LoRA も似ているので、**指紋には区別できない。**
+ *
+ * ---
+ *
+ * **名乗りは指紋より強い。** 指紋は「条件が似ている」しか言えないが、
+ * 名前は**生成した本人が書いた出所**である。だから順番は
+ * **刻印 > 名乗り > 指紋**にする（刻印より下なのは、名前は人が付け替えられるため）。
+ *
+ * **名乗っているのに持ち主が居ない絵は、誰のものでもない。**
+ * 記録を消した後の絵がこれに当たる。ここで指紋へ落とすと、
+ * **消した記録の絵が、生き残った似た記録へ移る**——直したはずの症状がそのまま戻る。
+ */
+/*
+ * **名乗りの形は2つ。** どちらも記録の id をそのまま前置きにしたもの:
+ *
+ *   `civitai_78353204_00002_.png`                    … 記録の `civitai_image_id`
+ *   `e7e67434-3144-4141-b5d2-9927e2c508a7_current_1_` … 記録の id（UUID）
+ *
+ * **UUID の側も同じに扱う。** 実データで、消した記録の UUID を名乗る3枚が
+ * `civitai_77742180` の「出た絵」に出ていた——名乗りを `civitai_` だけに限ると、
+ * この形が指紋へ落ちて**別の記録の絵として出続ける**。
+ */
+const DECLARED_PREFIX = new RegExp(
+    '^(?:civitai_\\d+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})[_.]',
+    'i',
+);
+
+/** その記録が出す絵の名前になりうる鍵。**長い方から当てる**（`_` 区切りで誤爆しない）。 */
+export function nameKeysOf(record) {
+    const keys = [];
+    const civitai = String(record?.civitaiImageId ?? record?.civitai_image_id ?? '').trim();
+    if (civitai) keys.push(`civitai_${civitai}`);
+    const id = String(record?.libraryId ?? record?.id ?? '').trim();
+    // **id そのものも名前になる**（過去の実験は記録の id を前置きにしている）。
+    if (id && id !== civitai) keys.push(id);
+    return keys;
+}
+
+/**
+ * 名前から持ち主を引く。
+ *
+ * @returns {{recordId: string|null, declared: boolean}}
+ *   `declared` は「`civitai_<id>` と名乗っていた」——持ち主が見つからなくても、
+ *   **指紋へ落としてはいけない**ことを呼び手へ伝える。
+ */
+export function namedRecordId(filename, byName) {
+    const text = String(filename || '');
+    if (!text) return { recordId: null, declared: false };
+    let found = null;
+    for (const [key, recordId] of byName) {
+        if (text !== key && !text.startsWith(`${key}_`) && !text.startsWith(`${key}.`)) continue;
+        // **2つの記録が同じ名前を名乗ったら決めない。** 片方を選ぶ理由が無い。
+        if (found !== null && found !== recordId) return { recordId: null, declared: true };
+        found = recordId;
+    }
+    return { recordId: found, declared: found !== null || DECLARED_PREFIX.test(text) };
+}
+
 /** 焼かれた印から記録の id を取る。**どの印かで鍵の名前が違う。** */
 export function stampedRecordId(raw) {
     for (const [key, idKeys] of [
@@ -159,22 +227,43 @@ const rowOf = (conditions) => MATCH_KEYS.map(key => cell(conditions?.[key]));
  */
 export function indexRecords(records) {
     const out = [];
+    /*
+     * **名前の索引を、条件の有無より前に作る**（2026-08-27）。
+     *
+     * 下の `continue` より前に置いてあるのは順番の都合ではなく意図で、
+     * **名乗りは条件を1つも読めない記録でも効く**べきだからである。
+     * 後ろに置くと「条件が薄い記録の絵」だけが名乗りを無視され、
+     * **薄い記録ほど他人の絵を掴む**という一番まずい形になりうる。
+     *
+     * **今その `continue` はほぼ通らない**——`conditionsFromRecord()` は
+     * object を渡す限り空欄だらけの条件を返し、`null` は返さない（実測）。
+     * つまり現状ここは効いていない。**それでも順番は保つ**: 抽出器が
+     * 「読めないものは `null`」へ変わった日に、名乗りが黙って死ぬのを避けるため。
+     *
+     * **配列に持たせる。** 返す形を変えると呼び手を全部直すことになり、直し漏れは
+     * 「名乗りが黙って効かない」という気づけない壊れ方をする。配列としての使い方
+     * （`for...of`）はそのままで、名前の索引だけを添える。
+     */
+    const byName = new Map();
     for (const record of records || []) {
+        const id = String(record?.libraryId ?? record?.id ?? '');
+        for (const key of nameKeysOf(record)) {
+            if (!key) continue;
+            // 同じ名前を2つの記録が名乗ったら、**どちらでもない**印として空を入れる。
+            byName.set(key, byName.has(key) && byName.get(key) !== id ? '' : id);
+        }
         const conditions = conditionsFromRecord(record?.recipe || record);
         if (!conditions) continue;
-        out.push({
-            id: String(record?.libraryId ?? record?.id ?? ''),
-            row: rowOf(conditions),
-            conditions,
-        });
+        out.push({ id, row: rowOf(conditions), conditions });
     }
+    out.byName = byName;
     return out;
 }
 
 /**
  * 画像1枚を記録へ帰属させる。
  *
- * @returns {{recordId: string|null, evidence: 'stamped'|'inferred'|'none',
+ * @returns {{recordId: string|null, evidence: 'stamped'|'named'|'inferred'|'none',
  *            agreement: number, compared: number, tied: number}}
  */
 export function attributeOutput(output, indexed, {
@@ -183,6 +272,23 @@ export function attributeOutput(output, indexed, {
     const stamped = stampedRecordId(output?.raw);
     if (stamped) {
         return { recordId: stamped, evidence: 'stamped', agreement: 1, compared: 0, tied: 0 };
+    }
+    /*
+     * **名乗りは指紋より先に見る**（2026-08-27・順番が意味を持つ）。
+     *
+     * 出す絵の名前は再現した記録の id から作られるので、**書いた本人の申告**である。
+     * 指紋は「条件が似ている」しか言えず、**似た記録どうしは区別できない**
+     * ——実データで `civitai_78353204_*` が 0.857 の一致率で `civitai_77742180` に
+     * ぶら下がっていた（名前は最初から正解を書いていた）。
+     */
+    const named = namedRecordId(output?.filename, indexed?.byName || new Map());
+    if (named.recordId) {
+        return { recordId: named.recordId, evidence: 'named', agreement: 1, compared: 0, tied: 0 };
+    }
+    if (named.declared) {
+        // **名乗っているのに持ち主が居ない。** 記録を消した後の絵がこれ。
+        // ここで指紋へ落とすと、**消した記録の絵が似た記録へ移る**。
+        return { recordId: null, evidence: 'none', agreement: 0, compared: 0, tied: 0 };
     }
     const conditions = conditionsFromPrompt(output?.raw?.prompt);
     if (!conditions) {
@@ -243,7 +349,9 @@ export function attributeOutput(output, indexed, {
 export function attributeOutputs(outputs, records, options = {}) {
     const indexed = indexRecords(records);
     const byRecord = new Map();
-    const tally = { total: 0, stamped: 0, inferred: 0, none: 0, unreadable: 0 };
+    // **`named` を数に足す**（2026-08-27）。足さないと `tally[evidence] += 1` が
+    // `undefined + 1` になり、**内訳が NaN になって画面から消える**。
+    const tally = { total: 0, stamped: 0, named: 0, inferred: 0, none: 0, unreadable: 0 };
     for (const output of outputs || []) {
         tally.total += 1;
         const result = attributeOutput(output, indexed, options);

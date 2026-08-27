@@ -58,6 +58,23 @@ function installedHas(installed, name) {
 export function resolveOne(resource, kindIndex, installed = []) {
     if (!resource || typeof resource !== 'object') return { resolved: false, name: null, by: null };
     const declared = resource.file_name || resource.filename || resource.localPath || '';
+
+    // 0. **Civitai から引いてきた SHA256 が在れば、名前より先に見る。**
+    //
+    //    `civitaiModelLookup` はファイル名の完全一致で版を1つに決め、その版の
+    //    SHA256 を `lookupSha256` として持ち帰る。手元の索引にその hash が在れば、
+    //    **そのファイルがバイト同一だと確かめられる**——名前が同じかどうかは関係ない。
+    //
+    //    **名前一致より前に置くのが要。** 下の 1. は「名前で引けるなら索引を当てない」
+    //    という近道で、そこへ落ちると**同名の別ファイルを掴んだまま `hash` を名乗れない**。
+    //    利用者の環境には同名の LoRA が2箇所に在るものが8件あるので、机上の話ではない。
+    //
+    //    **`lookupSha256` を持たない資源の扱いは1文字も変えない。**
+    const looked = shortHash(resource.lookupSha256);
+    if (looked && kindIndex?.bySha10?.[looked]) {
+        return { resolved: true, name: kindIndex.bySha10[looked], by: 'hash' };
+    }
+
     // 1. 名前でそのまま引けるなら、索引を当てない。
     if (declared && installedHas(installed, declared)) {
         return { resolved: false, name: null, by: null };
@@ -115,6 +132,25 @@ export function resolveRecipeModels(recipe, index, installed = {}) {
             if (hit.resolved) { found = hit; kind = candidate; break; }
         }
         if (!found.resolved) return resource;
+        /*
+         * **`modelId` では差し替えない**（2026-08-26 実機で踏んだ）。
+         *
+         * `modelId` はモデル**ページ**の id で、そこには何本も版がぶら下がる。
+         * 実機で `anima_aestheticV11`（要る版）を、同じページの
+         * `anima_baseV10`（手元に在る別の版）へ差し替えていた——**別の重みなので
+         * 別の絵が出る。**
+         *
+         * しかも害は二重だった。差し替えた記録は「手元に在る」ことになるので、
+         * **正しい版を落とす候補から外れる**——利用者から見ると
+         * 「再現不可なのに、落とすものが出てこない」。実際に 16件あった候補が
+         * 6件しか出ず、チェックポイントが1件も出なかった。
+         *
+         * **手掛かりも足さない。** 「同じページの別の版が手元に在る」は
+         * 役に立つ情報だが、**出す所を作らないまま値だけ増やす**のは、
+         * このセッションで何度も踏んだ形（取り出したのに画面に出ない）。
+         * 出すと決めたときに、出す所と一緒に足す。
+         */
+        if (found.by === 'modelId') return resource;
         resolved.push({
             kind,
             // **空だったことを日本語で埋めない。** ここは中核で、文言は画面が持つ
