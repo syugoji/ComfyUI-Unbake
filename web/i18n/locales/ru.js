@@ -787,7 +787,7 @@ export const messages = {
     "settings.refreshFromSource.help": "Снова запрашивает URL каждой записи и пересобирает старые, у которых нет id версии или хеша. Записи, где они уже есть, пропускаются.Если источник ничего не вернул, запись не выполняется: перезапись пустым результатом стёрла бы данные.",
     "settings.refreshFromSource.stop": "Остановить",
     "settings.refreshFromSource.working": "Перечитывание ({at} / {total})…",
-    "settings.refreshFromSource.done": "Обновлено {refreshed}, пропущено {skipped}, без данных в источнике {empty}, с ошибкой {failed}.",
+    "settings.refreshFromSource.done": "Обновлено {refreshed}, пропущено {skipped}, без данных в источнике {empty}, с ошибкой {failed}, исчезло {gone}.",
     "settings.useCivarchive": "Искать удалённые модели в архиве (по умолчанию выключено)",
     "settings.useCivarchive.help": "Ищет исчезнувшие с Civitai версии на civarchive.com и, если находит, скачивает их с зеркал вроде Hugging Face. Запросы уходят третьей стороне и включают модели, снятые авторами намеренно.",
     "settings.confirmBeforeDelete": "Спрашивать перед удалением",

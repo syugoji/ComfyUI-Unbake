@@ -203,7 +203,14 @@ export async function readModelIndex({ refresh = false } = {}) {
 export async function readLibraryRecord(recordId) {
     const doRequest = ensureInstalled();
     const response = await doRequest(`/unbake/record?id=${encodeURIComponent(recordId)}`);
-    if (!response?.ok) throw new Error(`/unbake/record (${response?.status})`);
+    if (!response?.ok) {
+        // **「無い」と「読めなかった」を混ぜない**（2026-08-28）。
+        // 呼び手が見分けられないと、消えた記録を「読めなかっただけ」と見なして
+        // **書き戻す**——消したものが戻ってくる。番号をそのまま渡す。
+        const error = new Error(`/unbake/record (${response?.status})`);
+        error.status = response?.status ?? 0;
+        throw error;
+    }
     return response.json();
 }
 

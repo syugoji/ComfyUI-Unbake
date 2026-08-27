@@ -675,6 +675,9 @@ export function createSettingsView({
                 // **出典が空だった件数も出す。** 黙って飛ばすと、
                 // 「読み直したのに何も変わらない」としか読めない。
                 empty: result?.empty ?? 0,
+                // **回している最中に消された件数も出す。** 黙って飛ばすと、
+                // 「消したのに読み直しが触ったのでは」を確かめる術が無い。
+                gone: result?.gone ?? 0,
                 failed: result?.failed ?? 0,
             });
             return result;

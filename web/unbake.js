@@ -862,13 +862,28 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
                     if (!extractCivitaiImageId(String(url))) continue;
                     targets.push({ id: row.libraryId ?? row.id, url: String(url) });
                 }
-                const result = { total: targets.length, refreshed: 0, skipped: 0, failed: 0, empty: 0 };
+                const result = { total: targets.length, refreshed: 0, skipped: 0, failed: 0, empty: 0, gone: 0 };
                 for (const [index, target] of targets.entries()) {
                     if (shouldStop?.()) break;
                     onProgress?.({ ...result, at: index + 1 });
                     // **既に版IDが在るなら触らない。** 読み直す意味が無い。
                     let current = null;
-                    try { current = await readLibraryRecord(target.id); } catch { current = null; }
+                    let gone = false;
+                    try {
+                        current = await readLibraryRecord(target.id);
+                    } catch (error) {
+                        // **消えた記録を書き戻さない**（2026-08-28 利用者の報告
+                        // 「レコードを削除したあと unbake を開き直すと復活します」）。
+                        //
+                        // 対象の一覧は**始めに1度作る**ので、回している最中に消された
+                        // 記録もそのまま残る。読めなかった理由を見ずに次へ進み、
+                        // 取り込み直した内容を `replace: true` で書いていたので、
+                        // **消したはずのファイルがここで作り直されていた**
+                        // ——画面からは消えているので、次に開くまで判らない。
+                        gone = error?.status === 404;
+                        current = null;
+                    }
+                    if (gone) { result.gone += 1; continue; }
                     if (hasVersionEvidence(current)) { result.skipped += 1; continue; }
                     try {
                         // **落とし込みの器を通さない。** 経路はもう判っている

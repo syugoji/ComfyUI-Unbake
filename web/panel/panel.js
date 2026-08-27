@@ -1561,7 +1561,17 @@ export function createUnbakePanel(el, {
      * **塗りは1つだけ。** 塗った四角が3つ並ぶのが重さの正体だった
      *（この面の「並びの中で唯一の塗りを1つ置くと、そこが起点だと判る」と揃う）。
      */
-    downloadButton.addEventListener('click', (event) => openDownloadMenu(event));
+    downloadButton.addEventListener('click', (event) => {
+        /*
+         * **この押しを外側へ渡さない**（2026-08-28 実機の報告
+         * 「全ての不足モデルをダウンロードしかUIに出ていません」）。
+         *
+         * 面の一番外側に「どこかを押したら品書きを閉じる」が付いている。
+         * 渡すと**開いた直後に同じ押しで閉じる**ので、押しても何も出ない。
+         */
+        event?.stopPropagation?.();
+        openDownloadMenu(event);
+    });
 
     const selectionBar = element('div', { class: 'unbake-selection' }, [
         selectionCount, selectAllButton, clearSelectionButton,
@@ -3672,6 +3682,9 @@ export function createUnbakePanel(el, {
      * 既にここに在るので、増やすと**同じ作法を2つ持つ**ことになる。
      */
     function showMenu(items, { x = 0, y = 0, ariaLabel = '' } = {}) {
+        // **開く前に、開いている物を畳む。** 二度押しで重なると、
+        // 下の行が上の行に隠れて**押した覚えの無い方**が選ばれる。
+        closeContextMenu();
         const menu = element('div', {
             class: 'unbake-context', role: 'menu',
             ...(ariaLabel ? { 'aria-label': ariaLabel } : {}),
@@ -4162,8 +4175,19 @@ export function createUnbakePanel(el, {
      * 何も選んでいないときは表示中の全件が対象になる——楽なので残すが、
      * **語が同じだと範囲が違うことに気づけない。**
      */
+    /**
+     * 親の口の語。**書く所を1つにする**（2026-08-28 実機の報告
+     * 「全ての不足モデルをダウンロードしか出ていません」）。
+     *
+     * 品書きへ畳んだとき、語を `render()` の中だけで書き換えた——ところが
+     * **この関数を呼んで書き戻す所が他に4つ**在り（数え上げの終わり・構えの解除・
+     * 選択の変化・描き直しの末尾）、そちらが後から上書きしていた。
+     * **親の語はここだけが決める。**
+     */
     function downloadButtonText() {
-        return selected.size === 0 ? t('download.missing.all') : t('download.missing');
+        const shown = shownRecords();
+        const waiting = shown.filter(isDownloadable).length + shown.filter(needsNode).length;
+        return `${t('download.menu')}（${waiting}）`;
     }
 
     /**
@@ -5301,10 +5325,6 @@ export function createUnbakePanel(el, {
         // **足りない物が無ければ、口ごと出さない**（2026-08-28）。
         // 圧迫感への答えは「小さくする」ではなく「出さない」。
         downloadButton.style.display = (canModel || canNode) ? '' : 'none';
-        // **件数を親に出す。** 開く前に、開く価値があるかが判る。
-        if (!downloadButton.getAttribute('data-scanning')) {
-            downloadButton.textContent = `${t('download.menu')}（${canModel + canNode}）`;
-        }
 
         downloadableChip.textContent = '⤓ ' + records.filter(isDownloadable).length;
         downloadableChip.setAttribute('data-on', downloadableOnly ? 'true' : 'false');

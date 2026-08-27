@@ -787,7 +787,7 @@ export const messages = {
     "settings.refreshFromSource.help": "Busca de novo a URL ligada a cada registro e refaz os antigos sem id de versão nem hash. Os que já têm são pulados.Nada é gravado quando a origem não retorna dados — sobrescrever com um resultado vazio apagaria o registro.",
     "settings.refreshFromSource.stop": "Parar",
     "settings.refreshFromSource.working": "Relendo ({at} / {total})…",
-    "settings.refreshFromSource.done": "{refreshed} atualizados, {skipped} ignorados, {empty} sem dados na origem, {failed} com falha.",
+    "settings.refreshFromSource.done": "{refreshed} atualizados, {skipped} ignorados, {empty} sem dados na origem, {failed} com falha, {gone} sumiram.",
     "settings.useCivarchive": "Procurar modelos apagados em um arquivo (desligado por padrão)",
     "settings.useCivarchive.help": "Procura no civarchive.com as versões que sumiram do Civitai e, se achar, baixa de espelhos como o Hugging Face. Isso envia suas buscas a terceiros e inclui modelos que os autores tiraram de propósito.",
     "settings.confirmBeforeDelete": "Perguntar antes de excluir",

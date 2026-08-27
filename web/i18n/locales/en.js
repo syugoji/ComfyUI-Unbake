@@ -785,7 +785,7 @@ export const messages = {
     "settings.refreshFromSource.help": "Fetch each record's linked URL again and rebuild the old ones that carry no version id or hash. Records that already have one are skipped.Nothing is written when the source returns no data — overwriting with an empty result would erase the record.",
     "settings.refreshFromSource.stop": "Stop",
     "settings.refreshFromSource.working": "Re-reading ({at} / {total})…",
-    "settings.refreshFromSource.done": "{refreshed} refreshed, {skipped} skipped, {empty} had nothing at the source, {failed} failed.",
+    "settings.refreshFromSource.done": "{refreshed} refreshed, {skipped} skipped, {empty} had nothing at the source, {failed} failed, {gone} gone.",
     "settings.useCivarchive": "Look for deleted models in an archive (off by default)",
     "settings.useCivarchive.help": "Look up versions that vanished from Civitai on civarchive.com and, if found, download them from mirrors such as Hugging Face. This sends your lookups to a third party, and includes models their authors deliberately removed.",
     "settings.confirmBeforeDelete": "Ask before deleting",

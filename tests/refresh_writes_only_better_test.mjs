@@ -36,7 +36,7 @@ function fakeApp() {
  * 実測（2026-08-26）: `civitai.com/images/53290457` はこの形で、
  * 345件中 9件が同じだった。
  */
-function stubHost({ meta = null, current = null } = {}) {
+function stubHost({ meta = null, current = null, missing = false } = {}) {
     const calls = [];
     const previous = globalThis.fetch;
     const row = {
@@ -56,6 +56,8 @@ function stubHost({ meta = null, current = null } = {}) {
             return json({ records: [row], total: 1, offset: 0, errors: [], sourceDirs: ['/fixture'], outputDir: '' });
         }
         if (url.startsWith('/unbake/record?')) {
+            // **回している最中に消された記録**（`missing`）。書庫は 404 を返す。
+            if (missing) return { ok: false, status: 404, json: async () => ({ error: 'not found' }) };
             // 既定では**名前しか持っていない**（＝読み直しの対象）。
             return json(current || { id: 'rec-1', title: 'civitai_53290457',
                           checkpoint: { file_name: 'flux.safetensors' }, loras: [],
@@ -141,5 +143,29 @@ test('もう版IDを持つ記録は「飛ばし」であって「空」ではな
         // **出典を叩いていない。** 読み直す必要が無いのだから、往復もしない。
         assert.equal(calls.filter(c => c.url.includes('civitai.com')).length, 0,
             '要らない問い合わせをしている');
+    } finally { calls.restore(); }
+});
+
+test('回している最中に消された記録を、書き戻さない', async () => {
+    /*
+     * **実機の報告**（2026-08-28）
+     * 「レコードを削除したあと unbake を開き直すとレコードが復活します」。
+     *
+     * 読み直しは**対象の一覧を始めに1度だけ**作る。回している最中に消された
+     * 記録もそこに残るので、書庫へ引きに行くと 404 が返る。元は読めなかった
+     * 理由を見ずに `current = null` として先へ進み、取り込み直した内容を
+     * `replace: true` で書いていた——**消したファイルがここで作り直される。**
+     * 画面からは消えているので、**次に開くまで判らない。**
+     */
+    const calls = stubHost({ missing: true, meta: { seed: 1 } });
+    try {
+        const panel = await mountAndRefresh(calls);
+        assert.deepEqual(calls.saves(), [],
+            `消えた記録を書き戻している（削除が元に戻る）: ${JSON.stringify(calls.saves())}`);
+        assert.match(panel.root.text, /消えていた 1 件/,
+            `消えていたことを言っていない: ${panel.root.text.slice(-260)}`);
+        // **出典も叩かない。** 書き戻さないと決めたのだから、往復する理由が無い。
+        assert.equal(calls.filter(c => c.url.includes('civitai.com')).length, 0,
+            '書かないと決めた相手を読みに行っている');
     } finally { calls.restore(); }
 });

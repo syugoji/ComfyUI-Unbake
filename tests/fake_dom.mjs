@@ -136,7 +136,33 @@ export class FakeNode {
         const pointerish = type === 'click' || type === 'dblclick' || type.startsWith('pointer')
             || type.startsWith('mouse');
         if (pointerish && this.disabled) return Promise.resolve([]);
-        return Promise.all((this.listeners.get(type) || []).map(handler => handler(event)));
+        if (!pointerish) {
+            return Promise.all((this.listeners.get(type) || []).map(handler => handler(event)));
+        }
+        /*
+         * **押した先から親へ上っていく**（2026-08-28 実機で判明）。
+         *
+         * 元はその要素の聞き手だけを呼んでいた。ところが面の一番外側には
+         * 「どこかを押したら品書きを閉じる」が付いており、**本物では品書きを
+         * 開く押しがそのまま外側まで届いて、開いた直後に閉じていた**
+         * ——利用者からは「押しても何も出ない」に見える。
+         * 偽物が上へ配らないので、検査はそれを緑のまま通した。
+         *
+         * **ダブルがブラウザより寛容だと、その差の分だけ検査が嘘になる**
+         *（この面が上の `<select>` で既に払った授業料と同じ）。
+         */
+        let stopped = false;
+        const before = typeof event.stopPropagation === 'function'
+            ? event.stopPropagation.bind(event) : null;
+        event.stopPropagation = () => { stopped = true; before?.(); };
+        const running = [];
+        for (let node = this; node; node = node.parentNode) {
+            // 聞き手の中で付け外しされても崩れないように写しで回す。
+            for (const handler of [...(node.listeners.get(type) || [])]) running.push(handler(event));
+            // **止めろと言われたら、そこから上には配らない。**
+            if (stopped) break;
+        }
+        return Promise.all(running);
     }
 
     getBoundingClientRect() { return { width: 900, height: 600 }; }

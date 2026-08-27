@@ -787,7 +787,7 @@ export const messages = {
     "settings.refreshFromSource.help": "각 기록에 연결된 URL을 다시 읽어, 버전 ID나 hash가 없는 오래된 기록을 다시 만듭니다. 이미 있는 것은 건너뜁니다.출처가 아무것도 반환하지 않은 회차는 쓰지 않습니다(빈 값으로 덮으면 원래 기록이 사라지기 때문입니다).",
     "settings.refreshFromSource.stop": "멈추기",
     "settings.refreshFromSource.working": "다시 읽는 중 ({at} / {total})…",
-    "settings.refreshFromSource.done": "다시 읽음 {refreshed}건, 건너뜀 {skipped}건, 출처에 정보가 없음 {empty}건, 실패 {failed}건.",
+    "settings.refreshFromSource.done": "다시 읽음 {refreshed}건, 건너뜀 {skipped}건, 출처에 정보가 없음 {empty}건, 실패 {failed}건, 사라진 {gone} 건.",
     "settings.useCivarchive": "사라진 모델을 보관소에서 찾기 (기본값: 끔)",
     "settings.useCivarchive.help": "Civitai에서 사라진 버전을 civarchive.com에서 찾아, 있으면 Hugging Face 등에서 내려받습니다. 조회가 제3자에게 전송되며, 제작자가 의도적으로 내린 모델도 포함됩니다.",
     "settings.confirmBeforeDelete": "삭제 전에 확인",

@@ -787,7 +787,7 @@ export const messages = {
     "settings.refreshFromSource.help": "再次讀取每筆記錄關聯的 URL，重建缺少版本 ID 或 hash 的舊記錄。已有的會略過。來源沒有回傳資料時不寫入（用空結果覆蓋會抹掉原有紀錄）。",
     "settings.refreshFromSource.stop": "停止",
     "settings.refreshFromSource.working": "正在重新讀取（{at} / {total}）…",
-    "settings.refreshFromSource.done": "重新讀取 {refreshed} 項，略過 {skipped} 項，來源沒有資訊 {empty} 項，失敗 {failed} 項。",
+    "settings.refreshFromSource.done": "重新讀取 {refreshed} 項，略過 {skipped} 項，來源沒有資訊 {empty} 項，失敗 {failed} 項，已消失 {gone} 個。",
     "settings.useCivarchive": "在封存庫中尋找已刪除的模型（預設關閉）",
     "settings.useCivarchive.help": "在 civarchive.com 上尋找從 Civitai 消失的版本，找到後從 Hugging Face 等鏡像下載。查詢會送往第三方，其中也包含作者主動下架的模型。",
     "settings.confirmBeforeDelete": "刪除前詢問",

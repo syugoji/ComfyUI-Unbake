@@ -783,7 +783,7 @@ export const messages = {
     "settings.refreshFromSource.help": "記録に紐づいた URL をもう一度読み、版ID や hash の無い古い記録を作り直します。既に版IDを持つものは飛ばします。出典が何も返さなかった回は書きません（空で塗り潰すと元の記録が消えるため）。",
     "settings.refreshFromSource.stop": "止める",
     "settings.refreshFromSource.working": "読み直しています（{at} / {total} 件）…",
-    "settings.refreshFromSource.done": "読み直し {refreshed} 件、飛ばし {skipped} 件、出典に情報が無かった {empty} 件、失敗 {failed} 件。",
+    "settings.refreshFromSource.done": "読み直し {refreshed} 件、飛ばし {skipped} 件、出典に情報が無かった {empty} 件、失敗 {failed} 件、消えていた {gone} 件。",
     "settings.useCivarchive": "消えたモデルを受け皿から探す（既定：切）",
     "settings.useCivarchive.help": "Civitai から消えた版を civarchive.com で探し、見つかれば Hugging Face などから落とします。第三者へ問い合わせが飛びます。作者が意図的に消したものも含まれます。",
     "settings.confirmBeforeDelete": "消す前に確認する",

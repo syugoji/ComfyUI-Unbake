@@ -787,7 +787,7 @@ export const messages = {
     "settings.refreshFromSource.help": "يعيد جلب رابط كل سجل ويعيد بناء السجلات القديمة التي لا تحمل معرّف إصدار أو hash. ويتخطّى ما يحمله بالفعل.لا يُكتب شيء عندما لا يعيد المصدر أي بيانات، فالكتابة فوقه بنتيجة فارغة تمحو السجل.",
     "settings.refreshFromSource.stop": "إيقاف",
     "settings.refreshFromSource.working": "إعادة القراءة ({at} / {total})…",
-    "settings.refreshFromSource.done": "أُعيد تحميل {refreshed}، وتُخطّي {skipped}، و{empty} بلا بيانات في المصدر، وفشل {failed}.",
+    "settings.refreshFromSource.done": "أُعيد تحميل {refreshed}، وتُخطّي {skipped}، و{empty} بلا بيانات في المصدر، وفشل {failed}، و{gone} مفقودة.",
     "settings.useCivarchive": "البحث عن النماذج المحذوفة في أرشيف (معطّل افتراضيًا)",
     "settings.useCivarchive.help": "يبحث عن الإصدارات التي اختفت من Civitai في civarchive.com، وإن وجدها ينزّلها من مرايا مثل Hugging Face. يرسل استعلاماتك إلى طرف ثالث، ويشمل نماذج أزالها أصحابها عمدًا.",
     "settings.confirmBeforeDelete": "اسأل قبل الحذف",

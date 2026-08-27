@@ -787,7 +787,7 @@ export const messages = {
     "settings.refreshFromSource.help": "نشانی پیوست‌شده به هر رکورد را دوباره می‌خواند و رکوردهای قدیمی بدون شناسهٔ نسخه یا hash را بازمی‌سازد. آن‌هایی که دارند رد می‌شوند.وقتی مبدأ چیزی برنمی‌گرداند چیزی نوشته نمی‌شود؛ بازنویسی با نتیجهٔ خالی رکورد را پاک می‌کند.",
     "settings.refreshFromSource.stop": "توقف",
     "settings.refreshFromSource.working": "در حال خواندن دوباره ({at} / {total})…",
-    "settings.refreshFromSource.done": "{refreshed} بازخوانی شد، {skipped} رد شد، {empty} در مبدأ داده‌ای نداشت، {failed} ناموفق.",
+    "settings.refreshFromSource.done": "{refreshed} بازخوانی شد، {skipped} رد شد، {empty} در مبدأ داده‌ای نداشت، {failed} ناموفق، {gone} ناپدید.",
     "settings.useCivarchive": "جست‌وجوی مدل‌های حذف‌شده در بایگانی (به‌طور پیش‌فرض خاموش)",
     "settings.useCivarchive.help": "نسخه‌هایی را که از Civitai ناپدید شده‌اند در civarchive.com می‌جوید و در صورت یافتن، از آینه‌هایی مانند Hugging Face می‌گیرد. پرس‌وجوهای شما به طرف سوم می‌رود و شامل مدل‌هایی است که سازندگانشان عمداً برداشته‌اند.",
     "settings.confirmBeforeDelete": "پیش از حذف بپرس",

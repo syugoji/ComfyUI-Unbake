@@ -787,7 +787,7 @@ export const messages = {
     "settings.refreshFromSource.help": "Recharge l'URL liée à chaque enregistrement et refait les anciens sans identifiant de version ni empreinte. Ceux qui en ont déjà un sont ignorés.Rien n'est écrit si la source ne renvoie aucune donnée : écraser avec un résultat vide effacerait l'enregistrement.",
     "settings.refreshFromSource.stop": "Arrêter",
     "settings.refreshFromSource.working": "Relecture ({at} / {total})…",
-    "settings.refreshFromSource.done": "{refreshed} rechargés, {skipped} ignorés, {empty} sans données à la source, {failed} en échec.",
+    "settings.refreshFromSource.done": "{refreshed} rechargés, {skipped} ignorés, {empty} sans données à la source, {failed} en échec, {gone} disparus.",
     "settings.useCivarchive": "Chercher les modèles supprimés dans une archive (désactivé par défaut)",
     "settings.useCivarchive.help": "Cherche sur civarchive.com les versions disparues de Civitai et, si elles existent, les télécharge depuis des miroirs comme Hugging Face. Vos recherches partent vers un tiers, et cela inclut des modèles que leurs auteurs ont retirés volontairement.",
     "settings.confirmBeforeDelete": "Demander avant de supprimer",

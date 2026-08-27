@@ -787,7 +787,7 @@ export const messages = {
     "settings.refreshFromSource.help": "再次读取每条记录关联的 URL，重建缺少版本 ID 或 hash 的旧记录。已有的会跳过。来源没有返回数据时不写入（用空结果覆盖会抹掉原有记录）。",
     "settings.refreshFromSource.stop": "停止",
     "settings.refreshFromSource.working": "正在重新读取（{at} / {total}）…",
-    "settings.refreshFromSource.done": "重新读取 {refreshed} 项，跳过 {skipped} 项，来源没有信息 {empty} 项，失败 {failed} 项。",
+    "settings.refreshFromSource.done": "重新读取 {refreshed} 项，跳过 {skipped} 项，来源没有信息 {empty} 项，失败 {failed} 项，已消失 {gone} 个。",
     "settings.useCivarchive": "在存档中查找已删除的模型（默认关闭）",
     "settings.useCivarchive.help": "在 civarchive.com 上查找从 Civitai 消失的版本，找到后从 Hugging Face 等镜像下载。查询会发送给第三方，其中也包含作者主动下架的模型。",
     "settings.confirmBeforeDelete": "删除前询问",

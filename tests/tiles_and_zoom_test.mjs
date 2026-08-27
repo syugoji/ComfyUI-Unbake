@@ -613,19 +613,39 @@ test('浮かせた1行は操作を止めない', async () => {
 
 // --- 落とす範囲を語で示す（2026-08-23 利用者の指示）-------------------------
 
-test('未選択のときは「全ての不足モデルを落とす」と書く', () => {
+test('未選択のときは「全ての不足モデルをダウンロード」と書く', () => {
+    // **範囲は品書きの側で言う**（2026-08-28 品書きへ畳んだ後の書き直し）。
+    // 親は「ダウンロード（件数）」で範囲を言わない——**押して開いた行が言う。**
+    // 語の場所が動いただけで、**確かめたい性質は元のまま**:
+    // 何も選んでいなければ全件、選べばその分だけ、と**書いてある物で判る**こと。
     setLocale('en');
-    const panel = mount([rec('1'), rec('2')], { listView: 'tiles' }, {
+    // **落とせる記録でないと品書きが開かない**（開く価値が無ければ出さない）。
+    const missing = (id) => rec(id, {
+        verdict: 'blocked',
+        missing: { models: [], resources: [{ type: 'lora', name: `m${id}`, versionId: id }] },
+    });
+    const panel = mount([missing('1'), missing('2')], { listView: 'tiles' }, {
         downloadIo: { start: async () => ({ ok: true }), state: async () => ({}) },
     });
     const button = panel.root.byClass('unbake-download-missing');
-    assert.match(button.textContent, /all/i, '未選択なのに範囲を言っていない');
+
+    const openMenu = () => {
+        button.dispatch('click', {});
+        const menu = panel.root.byClass('unbake-context');
+        assert.ok(menu, '品書きが開かない');
+        return panel.root.allByClass('unbake-context-item').map(node => node.textContent);
+    };
+
+    const all = openMenu();
+    assert.ok(all.some(label => /all/i.test(label)), '未選択なのに範囲を言っていない');
 
     // 選んだら、その分だけが対象——語も戻る。
     panel.root.allByClass('unbake-pick')[0].checked = true;
     panel.root.allByClass('unbake-pick')[0].setAttribute('data-checked', 'true');
     panel.root.allByClass('unbake-pick')[0].dispatch('click', {});
-    assert.doesNotMatch(button.textContent, /all/i, '選んだのに「全て」と言っている');
+    const some = openMenu();
+    assert.ok(some.length, '選んだ後に品書きが空になっている');
+    assert.ok(!some.some(label => /all/i.test(label)), '選んだのに「全て」と言っている');
 });
 
 test('浮かせた1行は面の中に閉じる（宿主の操作盤へ出ない）', async () => {

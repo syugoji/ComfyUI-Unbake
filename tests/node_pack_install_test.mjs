@@ -268,3 +268,25 @@ test('タイルの ⊞ は押せる口にしない（触れると消えるため
     assert.doesNotMatch(around, /addEventListener\('click'/,
         'タイルの印に押し口を戻している（触れると消えるので届かない）');
 });
+
+test('親の口の語は、描き直した後も「ダウンロード（件数）」のまま', async () => {
+    /*
+     * **実機の報告**（2026-08-28）「全ての不足モデルをダウンロードしか出ていません」。
+     *
+     * 品書きへ畳んだとき、語を `render()` の中だけで書き換えた。ところが
+     * **`downloadButtonText()` を呼んで書き戻す所が他に4つ**在り
+     *（数え上げの終わり・構えの解除・選択の変化・描き直しの末尾）、
+     * そちらが後から上書きして**モデルの語に戻っていた**。
+     */
+    const { setLocale: pick, t: tr } = await import('../web/i18n/index.js');
+    pick('ja');
+    const panel = await mountPanel(['smZ CLIPTextEncode']);
+    const parent = panel.root.find(node => String(node.className || '').includes('unbake-download-missing'));
+    assert.ok(parent, '親の口が無い');
+    const text = String(parent.textContent || '');
+    assert.ok(text.startsWith(tr('download.menu')),
+        `親の語が品書きの名前になっていない: ${text}`);
+    assert.notEqual(text, tr('download.missing.all'), 'モデルの語に戻っている');
+    assert.match(text, /1/, '件数が出ていない');
+    pick('en');
+});

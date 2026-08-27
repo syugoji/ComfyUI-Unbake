@@ -787,7 +787,7 @@ export const messages = {
     "settings.refreshFromSource.help": "Her kaydın bağlı URL'sini yeniden okur ve sürüm kimliği ya da hash taşımayan eski kayıtları yeniden kurar. Zaten taşıyanlar atlanır.Kaynak veri döndürmezse hiçbir şey yazılmaz; boş sonuçla üzerine yazmak kaydı silerdi.",
     "settings.refreshFromSource.stop": "Durdur",
     "settings.refreshFromSource.working": "Yeniden okunuyor ({at} / {total})…",
-    "settings.refreshFromSource.done": "{refreshed} yenilendi, {skipped} atlandı, {empty} kaynakta veri yok, {failed} başarısız.",
+    "settings.refreshFromSource.done": "{refreshed} yenilendi, {skipped} atlandı, {empty} kaynakta veri yok, {failed} başarısız, {gone} kayip.",
     "settings.useCivarchive": "Silinmiş modelleri bir arşivde ara (varsayılan: kapalı)",
     "settings.useCivarchive.help": "Civitai'den kaybolan sürümleri civarchive.com üzerinde arar ve bulursa Hugging Face gibi aynalardan indirir. Sorgularınız üçüncü bir tarafa gider ve yazarlarının bilerek kaldırdığı modelleri de içerir.",
     "settings.confirmBeforeDelete": "Silmeden önce sor",
