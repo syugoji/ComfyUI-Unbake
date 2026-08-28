@@ -101,3 +101,41 @@ test('Registry が指しているのは、カード用の方', async () => {
     // Registry は clone しない。**URL でなければ読めない。**
     assert.match(icon, /^https:\/\//, '相対パスでは Registry が読めない');
 });
+
+// --- そもそも読めるか -------------------------------------------------------
+
+/**
+ * **最低限の整形式検査。** 依存を入れずに、実際に踏んだ壊れ方を見る。
+ *
+ * 2026-08-29: コメントの中に `---`（区切り線のつもり）と `--unbake-accent`
+ * を書いた。**XML はコメント内の `--` を禁じている**ので、SVG は読めない物に
+ * なり、**Registry でアイコンが丸ごと消えた**。
+ *
+ * この検査が字面の照合しか持っていなかったのが穴だった——`<rect` が在るか、
+ * 色が何か、は**壊れたファイルでも通る**。読めるかどうかを先に見る。
+ */
+function xmlProblems(svg) {
+    const problems = [];
+    for (const [, body] of svg.matchAll(/<!--([\s\S]*?)-->/g)) {
+        if (body.includes('--')) problems.push('コメントの中に `--` がある（XML は許さない）');
+        if (body.endsWith('-')) problems.push('コメントが `-` で終わっている');
+    }
+    // 開きと閉じの数。**自己終端は数えない。**
+    const opens = [...svg.matchAll(/<([a-zA-Z][\w:-]*)(?=[\s/>])/g)]
+        .filter(m => !svg.slice(m.index).startsWith('</'));
+    const selfClosing = (svg.match(/\/>/g) || []).length;
+    const closes = (svg.match(/<\/[a-zA-Z]/g) || []).length;
+    if (opens.length !== selfClosing + closes) {
+        problems.push(`開きと閉じが合わない（開き ${opens.length} / 自己終端 ${selfClosing} / 閉じ ${closes}）`);
+    }
+    if (!/^\s*<svg[\s>]/.test(svg)) problems.push('根が svg でない');
+    return problems;
+}
+
+test('両方の絵が、そもそも読める形をしている', async () => {
+    for (const name of ['web/icon.svg', 'web/icon-mask.svg']) {
+        const svg = await readFile(join(ROOT, name), 'utf8');
+        assert.deepEqual(xmlProblems(svg), [],
+            `${name} が読めない: ${xmlProblems(svg).join(' / ')}`);
+    }
+});
