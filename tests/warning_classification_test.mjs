@@ -25,19 +25,20 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
-import { classifyWarning, SEVERITY } from '../web/core/recipeWarningSeverity.js';
-import { setLocale, t } from '../web/i18n/index.js';
+import { classifyWarning, KEY_SEVERITY, SEVERITY } from '../web/core/recipeWarningSeverity.js';
+import { LOCALE_META, setLocale, t } from '../web/i18n/index.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 /**
- * 未分類の上限。**実測 2026-08-28**（`ja` 21 / `en` 54・警告は全56種）。
+ * 未分類の上限。**0**。
  *
- * **減らすのは自由、増やすのは赤。** 新しい警告を足したら分類表へも足す、
- * という運用をこの数字が支える（`NODE_TEST_PROJECT_FLOOR` と同じ考え方）。
- * 数字を上げるときは、**なぜ分類できないのかを書いてから**上げること。
+ * 2026-08-28 に鍵で分類する形へ寄せた時点で、全56種・全12言語で 0 になった
+ *（それまでは ja 21 / en 54）。**新しい警告を足したら `KEY_SEVERITY` へも足す**
+ * ——足さないと `unknown` になり、危険と同じ点数で数えられる。
+ * **この数字は上げない。** 上げたくなったら、上げる前に分類する。
  */
-const UNCLASSIFIED_CEILING = { ja: 21, en: 54 };
+const UNCLASSIFIED_CEILING = 0;
 
 /** **本物に近い値で測る。** 差し込み口へ字を入れると、数字を見る規則が当たらない。 */
 const PARAMS = { p1: 1024, p2: 1024, p3: 832, p4: 1216, count: 2, list: 'X', name: 'N', n: 2 };
@@ -59,17 +60,27 @@ const unclassifiedIn = (locale, keys) => {
     return keys.filter(key => classifyWarning(t(key, PARAMS)) === SEVERITY.UNKNOWN);
 };
 
-test('分類できない警告の数が増えていない', async () => {
+test('組み立てが出す警告が、全部分類されている', async () => {
     const keys = await warningKeys();
     assert.ok(keys.length >= 50, `警告の拾い方が壊れている: ${keys.length} 種`);
+
+    /*
+     * **鍵の表に載っていること自体を見る。** 載っていなくても、古い日本語の
+     * 言い回しの表（`RULES`）に当たれば分類はされる——が、それは
+     * **日本語でだけ通る**という元の欠陥そのものなので、ここで塞ぐ。
+     */
+    const notInTable = keys.filter(key => !(key in KEY_SEVERITY));
+    assert.deepEqual(notInTable, [],
+        `鍵の表に無い警告がある（訳文の表に頼ると言語で判定が変わる）: ${notInTable.join(' / ')}`);
+
     try {
-        for (const [locale, ceiling] of Object.entries(UNCLASSIFIED_CEILING)) {
+        for (const locale of Object.keys(LOCALE_META)) {
             const missing = unclassifiedIn(locale, keys);
-            assert.ok(missing.length <= ceiling,
-                `${locale}: 未分類が ${missing.length} 種（上限 ${ceiling}）。`
-                + `新しい警告を足したら recipeWarningSeverity.js の分類表へも足すこと`
-                + `——未分類は危険と同じ点数で数えられ、**足した本人が判定を下げる**。\n  `
-                + missing.join('\n  '));
+            assert.equal(missing.length, UNCLASSIFIED_CEILING,
+                `${locale}: 未分類が ${missing.length} 種。`
+                + '新しい警告を足したら KEY_SEVERITY へも足すこと'
+                + '——未分類は危険と同じ点数で数えられ、足した本人が判定を下げる: '
+                + missing.join(' / '));
         }
     } finally { setLocale('en'); }
 });
@@ -90,18 +101,27 @@ test('埋め込みグラフの寸法を残した件は「改善」に数える',
     } finally { setLocale('en'); }
 });
 
-test('分類が言語で変わることを、数字で残しておく', async () => {
+test('12言語すべてで、同じ警告が同じ分類になる', async () => {
     /*
-     * **これは合格の記録ではなく、欠陥の大きさの記録である。**
-     * 分類表は日本語の言い回しに当てているので、英語で動かすと
-     * ほとんどの警告が `unknown`＝危険として数えられる——
-     * **同じライブラリでも、画面の言語で判定が変わる。**
-     * 直すなら鍵で分類する形（言語に依らない）へ寄せる。
+     * **判定が画面の言語で変わってはいけない。** 表を訳文の言い回しへ当てていた
+     * 間は、英語で動かすとほぼ全部が危険側に数えられていた（実測 54/56）。
+     * ここが赤くなるのは、**また訳文に判断を持たせたとき**である。
      */
     const keys = await warningKeys();
-    const ja = unclassifiedIn('ja', keys).length;
-    const en = unclassifiedIn('en', keys).length;
-    setLocale('en');
-    assert.ok(en > ja,
-        '言語差が消えている。消えたなら上限と、この検査の書き方を測り直すこと');
+    const first = {};
+    const differences = [];
+    try {
+        for (const locale of Object.keys(LOCALE_META)) {
+            setLocale(locale);
+            for (const key of keys) {
+                const severity = classifyWarning(t(key, PARAMS));
+                if (!(key in first)) first[key] = severity;
+                else if (first[key] !== severity) {
+                    differences.push(`${key}: ${first[key]} != ${severity} (${locale})`);
+                }
+            }
+        }
+    } finally { setLocale('en'); }
+    assert.deepEqual(differences, [],
+        `言語で分類が変わっている（訳文に判断を持たせた）: ${differences.join(' / ')}`);
 });

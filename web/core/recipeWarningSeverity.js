@@ -34,6 +34,8 @@
  * （ライブラリの全件が `replay_manifest` を持たず、監査が素通りしていたため）。
  */
 
+import { CATALOGS } from '../i18n/index.js';
+
 export const SEVERITY = Object.freeze({
     IMPROVEMENT: 'improvement',
     NEUTRAL: 'neutral',
@@ -177,9 +179,147 @@ const RULES = [
     [SEVERITY.NEUTRAL, /単一バッチへ最適化/],
 ];
 
+/**
+ * **鍵で決める分類**（2026-08-28・利用者の指示で言語差を塞いだ）。
+ *
+ * 分類表（`RULES`）は日本語の言い回しへ当てていた。実測すると:
+ *
+ *     ja  未分類 21 / 56 種
+ *     en  未分類 54 / 56 種
+ *
+ * 未分類は `riskCount` で危険として数えられるので、**英語で動かすとほぼ全ての
+ * 警告が減点になる**——同じライブラリでも**画面の言語で判定が変わっていた**。
+ * 既定は英語なので、公開版の利用者はこちらを踏む。
+ *
+ * 鍵は翻訳しても変わらないので、**鍵で決めれば言語に依らない**。
+ * `RULES` は残す——鍵の判らない文（古い記録・別経路で作られた文）が来たときの
+ * 受け皿で、そこでも当たらなければ従来どおり `unknown`（＝危険側）になる。
+ *
+ * **迷ったら危険側**（利用者の方針・2026-08-28）。改善に入れるのは
+ * 「落ちた情報を戻した」「元と同じ適用式にした」と根拠が書けるものだけ。
+ */
+export const KEY_SEVERITY = Object.freeze({
+    // --- 改善: 落ちた情報を戻した / 元と同じ適用式にした ---------------------
+    'core.recipeWorkflowBuilder.12': SEVERITY.IMPROVEMENT,   // 縦横逆の記録を直した
+    'core.recipeWorkflowBuilder.13': SEVERITY.IMPROVEMENT,   // 埋め込みを読める形へ
+    'core.recipeWorkflowBuilder.20': SEVERITY.IMPROVEMENT,   // UNet単体系の構成復元
+    'core.recipeWorkflowBuilder.25': SEVERITY.IMPROVEMENT,   // 実測にもとづく倍率
+    'core.recipeWorkflowBuilder.31': SEVERITY.IMPROVEMENT,   // 当てると壊れる CLIP Skip を当てない
+    'core.recipeWorkflowBuilder.39': SEVERITY.IMPROVEMENT,   // 曖昧なVAE指定を内蔵へ
+    'core.recipeWorkflowBuilder.52': SEVERITY.IMPROVEMENT,   // 実測で smZ を使わない方が近い
+    'core.recipeWorkflowBuilder.54': SEVERITY.IMPROVEMENT,   // 実測で平均正規化を外す
+    'core.recipeWorkflowBuilder.56': SEVERITY.IMPROVEMENT,   // 元画像と同じ適用式（smZ）
+    'core.recipeWorkflowBuilder.64': SEVERITY.IMPROVEMENT,   // ADetailer の段を復元
+    'core.recipeWorkflowBuilder.71': SEVERITY.IMPROVEMENT,   // CLIP側強度を復元
+    // **グラフと一覧が食い違ったらグラフ**。実際にその絵を出したのはグラフの側で、
+    // `sizeFromGraph` と同じ形（強い証拠を弱い申告で上書きしない）。
+    'core.recipeWorkflowBuilder.87': SEVERITY.IMPROVEMENT,
+    'core.recipeWorkflowBuilder.sizeFromGraph': SEVERITY.IMPROVEMENT,
+
+    // --- 中立: 絵が変わらない置き換え / 運用上の注意 -------------------------
+    'core.recipeWorkflowBuilder.22': SEVERITY.NEUTRAL,       // 旧式の定数ノードを標準入力へ
+    'core.recipeWorkflowBuilder.36': SEVERITY.NEUTRAL,       // 多段の1段目に最終寸法を当てない
+    'core.recipeWorkflowBuilder.40': SEVERITY.NEUTRAL,       // Preview だけ → SaveImage
+    'core.recipeWorkflowBuilder.69': SEVERITY.NEUTRAL,       // 単一バッチへ最適化（同じ系列）
+    'core.recipeWorkflowBuilder.cappedSize': SEVERITY.NEUTRAL,  // 比率を保って縮めた
+    // **出力の口を足しただけ**で、条件付けも潜在も触っていない（絵は変わらない）。
+    'core.recipeWorkflowBuilder.50': SEVERITY.NEUTRAL,
+    // **形が違うだけの置き換え。** 中身も効き方も同じだと本文が言っている。
+    'core.recipeWorkflowBuilder.joinString': SEVERITY.NEUTRAL,
+    'core.recipeWorkflowBuilder.powerLora': SEVERITY.NEUTRAL,
+    // 入れる物の案内。**落ちている分は肩代わりの側（`.44`）が危険として数える**ので、
+    // ここで二重に減点しない。
+    'core.recipeWorkflowBuilder.packs': SEVERITY.NEUTRAL,
+
+    // --- 危険: 記録が欠けている / 置換した / 推定した ------------------------
+    'core.recipeWorkflowBuilder.3': SEVERITY.RISK,
+    'core.recipeWorkflowBuilder.16': SEVERITY.RISK,
+    'core.recipeWorkflowBuilder.32': SEVERITY.RISK,
+    'core.recipeWorkflowBuilder.37': SEVERITY.RISK,
+    'core.recipeWorkflowBuilder.49': SEVERITY.RISK,
+    'core.recipeWorkflowBuilder.55': SEVERITY.RISK,
+    'core.recipeWorkflowBuilder.63': SEVERITY.RISK,
+    'core.recipeWorkflowBuilder.68': SEVERITY.RISK,
+    'core.recipeWorkflowBuilder.70': SEVERITY.RISK,
+    'core.recipeWorkflowBuilder.72': SEVERITY.RISK,
+    'core.recipeWorkflowBuilder.73': SEVERITY.RISK,
+    'core.recipeWorkflowBuilder.74': SEVERITY.RISK,
+    'core.recipeWorkflowBuilder.75': SEVERITY.RISK,
+    'core.recipeWorkflowBuilder.76': SEVERITY.RISK,
+    'core.recipeWorkflowBuilder.77': SEVERITY.RISK,
+    'core.recipeWorkflowBuilder.78': SEVERITY.RISK,
+    'core.recipeWorkflowBuilder.79': SEVERITY.RISK,
+    'core.recipeWorkflowBuilder.80': SEVERITY.RISK,
+    // ここから下は 2026-08-28 に新しく決めた分（それまで全部 `unknown`）。
+    // **名前で同定できず台帳をそのまま使った**＝推定で当てている。
+    'core.recipeWorkflowBuilder.11': SEVERITY.RISK,
+    // **manifest に無い強度を台帳で補った**＝根拠の弱い値を使っている。
+    'core.recipeWorkflowBuilder.6': SEVERITY.RISK,
+    // 外部VAEが手元に無く内蔵で代用（本文が「彩度や色味が変わる」と言っている）。
+    'core.recipeWorkflowBuilder.17': SEVERITY.RISK,
+    'core.recipeWorkflowBuilder.19': SEVERITY.RISK,
+    // **同名とは限らない別のVAEを当てている。** 当たっていれば改善だが、
+    // 同一である保証がここには無いので危険側へ置く（迷ったら危険側）。
+    'core.recipeWorkflowBuilder.18': SEVERITY.RISK,
+    // 拡大器を特定できず単純拡大（本文が「質感が変わる」と言っている）。
+    'core.recipeWorkflowBuilder.21': SEVERITY.RISK,
+    'core.recipeWorkflowBuilder.upscalerMissing': SEVERITY.RISK,
+    // 倍率・段構成を**推定**して組み替えている。
+    'core.recipeWorkflowBuilder.26': SEVERITY.RISK,
+    'core.recipeWorkflowBuilder.28': SEVERITY.RISK,
+    // **LoRA が1本も効かない構成**になっている。
+    'core.recipeWorkflowBuilder.38': SEVERITY.RISK,
+    // 未導入ノードの役割を核ノードで肩代わり＝**同じ効果の保証が無い**。
+    'core.recipeWorkflowBuilder.44': SEVERITY.RISK,
+    // BREAK を落とした／強調記法が標準解釈になった＝**元の解釈で出ていない**。
+    'core.recipeWorkflowBuilder.51': SEVERITY.RISK,
+    'core.recipeWorkflowBuilder.53': SEVERITY.RISK,
+    // ADetailer の段を丸ごと省略した。
+    'core.recipeWorkflowBuilder.62': SEVERITY.RISK,
+    // 寸法の手がかりが無く既定で描く（本文が「縦横比が変わる」と言っている）。
+    'core.recipeWorkflowBuilder.81': SEVERITY.RISK,
+    // タグに出ない LoRA を外した（本文が「絵は元と変わります」と言っている）。
+    'core.recipeWorkflowBuilder.86': SEVERITY.RISK,
+});
+
+/** `{p1}` のような差し込み口を「何でも」に替えた形。**鍵を引き当てるためだけ**に使う。 */
+function templateToPattern(template) {
+    const escaped = String(template).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`^${escaped.replace(/\\\{[A-Za-z0-9_]+\\\}/g, '[\\s\\S]*?')}$`);
+}
+
+/**
+ * 全言語ぶんの「この文はどの鍵から出たか」。**1度だけ組む。**
+ *
+ * 画面の言語に依らないよう、**12言語すべて**の型を持つ。鍵が判れば
+ * `KEY_SEVERITY` を引くだけなので、訳文の言い回しに judgement を持たせない。
+ */
+let keyPatterns = null;
+
+function keyOf(text) {
+    if (keyPatterns === null) {
+        keyPatterns = [];
+        for (const catalog of Object.values(CATALOGS || {})) {
+            for (const [key, template] of Object.entries(catalog || {})) {
+                if (!(key in KEY_SEVERITY)) continue;
+                if (typeof template !== 'string' || !template) continue;
+                keyPatterns.push([templateToPattern(template), key]);
+            }
+        }
+    }
+    for (const [pattern, key] of keyPatterns) {
+        if (pattern.test(text)) return key;
+    }
+    return null;
+}
+
 export function classifyWarning(message) {
     const text = String(message ?? '');
     if (!text.trim()) return SEVERITY.UNKNOWN;
+    // **まず鍵で決める。** 訳文の言い回しに判断を持たせない。
+    const key = keyOf(text);
+    if (key) return KEY_SEVERITY[key];
+    // 鍵が判らない文（古い記録・別経路で作られた文）は、従来の表で当てる。
     for (const [severity, pattern] of RULES) {
         if (pattern.test(text)) return severity;
     }
