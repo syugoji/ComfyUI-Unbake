@@ -3521,8 +3521,17 @@
     inline-size: 1.25em;
     block-size: 1.25em;
     background-color: currentColor;
-    -webkit-mask-image: url("../icon.svg");
-    mask-image: url("../icon.svg");
+    /*
+     * **マスクは `icon-mask.svg`**（2026-08-29 に役割を入れ替えた）。
+     *
+     * `icon.svg` の方は Registry のカードが指している URL で、
+     * **その指し先は提出時に焼き込まれ、こちらからは動かせない**
+     *（`pyproject.toml` を直しても再提出まで反映されない）。
+     * 動かせないのは指し先の方なので、**その URL が返す中身をカード用にした**。
+     * マスクとして当てる silhouette は名前を変えてこちらへ移した。
+     */
+    -webkit-mask-image: url("../icon-mask.svg");
+    mask-image: url("../icon-mask.svg");
     -webkit-mask-repeat: no-repeat;
     mask-repeat: no-repeat;
     -webkit-mask-position: center;

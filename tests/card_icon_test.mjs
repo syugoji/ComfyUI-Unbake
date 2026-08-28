@@ -50,7 +50,7 @@ const BACKGROUNDS = ['#2b2d31', '#1e1f22', '#ffffff', '#8a8f98'];
 const fillsOf = (svg) => [...svg.matchAll(/fill="(#[0-9a-fA-F]{6})"/g)].map(m => m[1].toLowerCase());
 
 test('カードの絵は、どの地に置いても形が読める', async () => {
-    const svg = await readFile(join(ROOT, 'web/icon-card.svg'), 'utf8');
+    const svg = await readFile(join(ROOT, 'web/icon.svg'), 'utf8');
     const plate = /<rect[^>]*fill="(#[0-9a-fA-F]{6})"/.exec(svg)?.[1];
     assert.ok(plate, '地の板が無い（透過のまま置くと、暗い地で沈む）');
     const egg = fillsOf(svg).find(color => color !== plate.toLowerCase());
@@ -71,8 +71,14 @@ test('カードの絵は、どの地に置いても形が読める', async () =>
 test('サイドバーの絵は、板を持たない（マスクとして当てるため）', async () => {
     // 板を足すと `mask-image` では**四角い塊**になる。カード用の直しを
     // こちらへ持ち込まないための見張り。
-    const svg = await readFile(join(ROOT, 'web/icon.svg'), 'utf8');
+    const svg = await readFile(join(ROOT, 'web/icon-mask.svg'), 'utf8');
     assert.doesNotMatch(svg, /<rect/, 'マスク用の絵に板が入っている（四角い塊になる）');
+
+    // **面が見ているのも同じファイル。** 名前を変えたのに CSS が古い方を
+    // 指していると、印が丸ごと出なくなる（`mask-image` が 404 になる）。
+    const css = await readFile(join(ROOT, 'web/panel/theme.css'), 'utf8');
+    assert.match(css, /mask-image:\s*url\("\.\.\/icon-mask\.svg"\)/,
+        '面が指しているマスクが違う');
 });
 
 test('Registry が指しているのは、カード用の方', async () => {
@@ -84,7 +90,14 @@ test('Registry が指しているのは、カード用の方', async () => {
     const toml = await readFile(join(ROOT, 'pyproject.toml'), 'utf8');
     const icon = /^Icon\s*=\s*"([^"]+)"/m.exec(toml)?.[1];
     assert.ok(icon, 'Icon の宣言が無い');
-    assert.match(icon, /icon-card\.svg$/, `カード用を指していない: ${icon}`);
+    /*
+     * **指し先は動かせない。** Registry は提出時の値を保持していて、
+     * `api.comfy.org/nodes/comfyui-unbake` が返す `icon` は
+     * `.../web/icon.svg` のまま——**この宣言を直しても再提出まで反映されない**
+     *（2026-08-29 に実測。別ファイルへ差し替えたのにカードが変わらなかった）。
+     * だから**その URL が返す中身**をカード用にしてある。ここも同じ URL を指す。
+     */
+    assert.match(icon, /\/web\/icon\.svg$/, `Registry が持っている URL と違う: ${icon}`);
     // Registry は clone しない。**URL でなければ読めない。**
     assert.match(icon, /^https:\/\//, '相対パスでは Registry が読めない');
 });

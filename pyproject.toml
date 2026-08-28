@@ -30,15 +30,22 @@ Repository = "https://github.com/syugoji/ComfyUI-Unbake"
 [tool.comfy]
 PublisherId = "syugoji"
 DisplayName = "Unbake"
-# Registry のカードに出る絵。**サイドバーの `icon.svg` とは別ファイル**
-#（`web/icon-card.svg`）。
+# Registry のカードに出る絵。**この URL は変えられない前提で書くこと。**
 #
-# **同じ物を指してはいけない**（2026-08-29 利用者の報告）。`icon.svg` は
-# `mask-image` として当てるので中の色に意味が無く `#000` になっているが、
-# ここは**普通の画像として描かれる**——暗いカードの上で実測 **1.52:1** で、
-# ほぼ見えなかった。カード用は地の色が判らない場所で浮くよう板を敷いてある。
+# 2026-08-29 に2回踏んだ:
+#   1回目 サイドバーと同じ `icon.svg` を指していた。あちらは `mask-image` として
+#         当てるので中の色に意味が無く `#000`。カードは普通の画像として描くので、
+#         暗いカードの上で実測 **1.52:1**（ほぼ見えない）
+#   2回目 別ファイル（`icon-card.svg`）を作ってここを差し替えたが、**カードは
+#         変わらなかった**。Registry は提出時の値を保持していて、
+#         `api.comfy.org/nodes/comfyui-unbake` が返す `icon` は
+#         **`.../web/icon.svg` のまま**だった——**この行を直しても、
+#         再提出するまで反映されない。**
+#
+# だから**指し先ではなく中身を入れ替えた**。`web/icon.svg` がカード用（板つき）で、
+# `mask-image` として当てる silhouette は `web/icon-mask.svg` へ移した。
+# ここも同じ URL を指しておく（次に提出したときも指し先が動かないように）。
 #
 # **相対パスではなく URL でなければならない**——Registry はリポジトリを clone せず、
 # この URL をそのまま読みに行く。だから `main` が動くと絵も動く。
-# 版で固定したければ `main` をタグ名に変える。
-Icon = "https://raw.githubusercontent.com/syugoji/ComfyUI-Unbake/main/web/icon-card.svg"
+Icon = "https://raw.githubusercontent.com/syugoji/ComfyUI-Unbake/main/web/icon.svg"

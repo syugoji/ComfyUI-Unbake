@@ -311,7 +311,15 @@ test('アイコンは専用の印で、絵はリポジトリに在る', async ()
     assert.doesNotMatch(source, /icon:\s*'pi /, '汎用のアイコンへ戻っている');
     assert.match(source, /icon:\s*'unbake-icon'/, '専用の印を指していない');
 
-    const svg = await readFile(join(ROOT, 'web/icon.svg'), 'utf8');
+    /*
+     * **見るのはマスク用の方**（2026-08-29 に役割を入れ替えた）。
+     *
+     * `icon.svg` は Registry のカードが指している URL で、**指し先は提出時に
+     * 焼き込まれて動かせない**。だからその URL が返す中身をカード用（板つき）に
+     * して、`mask-image` として当てる silhouette は `icon-mask.svg` へ移した。
+     * 下の「自分の色を持たない」はマスクの条件なので、こちらへ当てる。
+     */
+    const svg = await readFile(join(ROOT, 'web/icon-mask.svg'), 'utf8');
     assert.match(svg, /<svg[^>]*viewBox="0 0 24 24"/, '大きさの基準が無い');
 
     // **形は3度変えている**（枠＋帯 → 帯を傾ける → ↺＋行 → 割れる卵）。
