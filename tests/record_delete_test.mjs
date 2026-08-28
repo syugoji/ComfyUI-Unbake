@@ -671,19 +671,32 @@ test('口が無ければ削除ボタンを出さない（押せないボタン�
 test('確認の面を直接作っても、押すまで何も起きない', async () => {
     const doc = fakeDocument();
     let called = 0;
+    let closed = 0;
     const view = createConfirmView({
         documentRef: doc,
         title: 'x',
         files: [{ name: 'a.safetensors', bytes: 10 }],
         warnings: ['warn'],
         onConfirm: async () => { called += 1; return { ok: true, removed: ['a.safetensors'] }; },
+        onClose: () => { closed += 1; },
     });
     assert.equal(called, 0, '開いただけで走っている');
     await view.root.byClass('unbake-confirm-go').dispatch('click');
     await settle();
     assert.equal(called, 1);
-    // 消したあとは押し直せない（二度押しで同じ処理が走らない）。
-    assert.equal(view.root.byClass('unbake-confirm-go').disabled, true);
+
+    /*
+     * **二度押しで同じ処理が走らない。**
+     *
+     * 元は「押せなくする」で守っていたが、2026-08-28 に**押した釦をそのまま
+     * 出口にした**（済んだ後の画面で、押せる口が視線の外の「やめる」だけだと
+     * 出口だと分からない、という実機の報告2回）。守る性質は同じで、
+     * **見るのは `disabled` ではなく「もう一度走らないこと」**。
+     */
+    await view.root.byClass('unbake-confirm-go').dispatch('click');
+    await settle();
+    assert.equal(called, 1, '二度押しで同じ処理が走っている');
+    assert.equal(closed, 1, '済んだ後の押しが閉じていない');
 });
 
 test('大きさが分からない項目を「合計 0 B」に丸めない', async () => {

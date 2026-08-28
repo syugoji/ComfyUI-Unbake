@@ -366,15 +366,15 @@ test('「モデルとノード」は、ノードの面が閉じるまでモデ�
      * だけだと、押すと取り消されるようにしか読めない——実際には閉じるだけで、
      * ここでは**次の段（モデル）の始まり**でもある。
      */
-    const ways = panel.root.findAll(node => node.tagName === 'BUTTON' && !node.disabled)
-        .map(node => node.textContent);
-    assert.ok(ways.includes(tr('confirm.close')),
-        `済んだのに出口が「閉じる」になっていない: ${JSON.stringify(ways)}`);
+    // **押した釦そのもの**が出口になっている（`go` は上で押した要素）。
+    assert.equal(go.textContent, tr('confirm.close'),
+        `押した釦が出口になっていない: ${go.textContent}`);
+    assert.equal(go.disabled, false, '出口が押せない');
+    assert.equal(panel.root.byClass('unbake-confirm-cancel')?.style?.display, 'none',
+        '済んだ後に「やめる」が残っている（出口が2つに見える）');
 
-    // 面を閉じて初めて、続き（モデル）が始まる。
-    const close = panel.root.byClass('unbake-confirm-close');
-    assert.ok(close, '閉じる口が無い');
-    await close.dispatch('click', {});
+    // **押した釦をそのまま押すと閉じ**、続き（モデル）が始まる。
+    await go.dispatch('click', {});
     await settle(30);
     assert.ok(panel.root.text.includes(tr('download.scope', { count: 1, models: 1, blocked: 0 }))
         || calls.plan.length > 0,

@@ -263,9 +263,12 @@ export function createConfirmView({
 
     let busy = false;
     let result = null;
+    /** 済んだか。**済んだ後の押しは「閉じる」**（もう一度走らせない）。 */
+    let finished = false;
 
     cancel.addEventListener('click', () => onClose?.());
     confirm.addEventListener('click', async () => {
+        if (finished) { onClose?.(); return; }
         if (busy) return;
         busy = true;
         confirm.disabled = true;
@@ -291,17 +294,25 @@ export function createConfirmView({
             status.textContent = t(doneKey || 'confirm.done', {
                 list: (result.removed || []).join(' / ') || '—',
             });
-            confirm.disabled = true;
             /*
-             * **終わったら、出口の語を「閉じる」にする**（2026-08-28 利用者の報告
-             * 「ここから先に進めません」・画面写真つき）。
+             * **押した釦が、そのまま出口になる**（2026-08-28 利用者の報告2回）。
              *
-             * 済んだあと、押せる口は「やめる」だけになる——**成功した直後に
-             * 「やめる」しか無い画面**は、押すと取り消される（入れたものが
-             * 戻る）ようにしか読めない。実際には閉じるだけで、しかも
-             * 「モデルとノード」ではその閉じが次の段の始まりでもある。
+             * 1回目「ここから先に進めません」——済んだあと押せるのが「やめる」
+             * だけだったので、押すと取り消される（入れたものが戻る）ように
+             * しか読めなかった。そこで**やめる側の語**を「閉じる」に変えた。
+             *
+             * 2回目「閉じるに変化しますが、わかりにくいです」——**語だけ変えても
+             * 目が行かない**。押した直後に見ているのは**自分が押した釦**で、
+             * そこは「頼む」のまま押せなくなり、視線の外の釦が黙って語を変えていた。
+             *
+             * **同じ場所を出口にする。** 押した釦を「閉じる」にして押せるまま残し、
+             * やめる側は引っ込める（済んだ後に「やめる」は意味を持たない）。
+             * 「モデルとノード」では、この閉じが次の段の始まりでもある。
              */
-            cancel.textContent = t('confirm.close');
+            finished = true;
+            confirm.textContent = t('confirm.close');
+            confirm.disabled = false;
+            cancel.style.display = 'none';
         } else {
             // **失敗の並びは、相手によって形が違う。** 数を渡してくる呼び手も
             // 居るので、並びのときだけ繋ぐ——`.join` を無条件で呼ぶと、
