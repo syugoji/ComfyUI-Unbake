@@ -200,12 +200,12 @@ test('宿主が口を渡しており、輸入も通っている', async () => {
     assert.match(source, /nodePackIo:/, '面へ口を渡していない');
 });
 
-const mountPanel = async (nodes, io = {}) => {
+const mountPanel = async (nodes, io = {}, display = {}) => {
     const { createUnbakePanel } = await import('../web/panel/panel.js');
     const { fakeDocument } = await import('./fake_dom.mjs');
     const doc = fakeDocument();
     const panel = createUnbakePanel(doc.createElement('div'), {
-        documentRef: doc, display: { listView: 'tiles' },
+        documentRef: doc, display: { listView: 'tiles', ...display },
         nodePackIo: {
             detect: async () => null, packsFor: async () => [],
             install: async () => ({ queued: [], failed: [] }), ...io,
@@ -404,4 +404,73 @@ test('品書きの中の押しは、外の聞き手まで届かない', async ()
     doc.addEventListener('click', () => { outside += 1; });
     await menu.dispatch('click', {});
     assert.equal(outside, 0, '品書きの中の押しが外まで上がっている');
+});
+
+/**
+ * **「消す前に確認する」を切ると、入れる問いまで消えていた**（実機の報告・2026-08-29）。
+ *
+ * 切り替えの口は確認の面の中に在り、`confirmView` は `destructive` のときしか出さない
+ * ——つまり**消す問いの中でしか切れない**。それなのに `askThen` は
+ * `confirmBeforeDelete` だけを見て、呼び手が渡した `destructive` を読んでいなかったので、
+ * **利用者が切ったつもりの無い問いが黙って消えていた。**
+ *
+ * 入れる側の面は「どのパックが入るのか」「入れるのは Manager だ」を伝えるためのもので、
+ * 消す確認とは役目が違う。消えると**何が入るか判らないまま外部の道具が動く。**
+ */
+const withPacks = {
+    detect: async () => ({ api: 'v2' }),
+    packsFor: async () => [{ id: 'smz', title: 'smZNodes', nodes: ['smZ CLIPTextEncode'] }],
+};
+
+/** 確認の面が開いているか。**器の実在で見る**（文言では見ない）。 */
+const confirmShown = (panel) =>
+    Boolean(panel.root.find(node => String(node.className || '').includes('unbake-confirm-go')));
+
+const drain = async () => { for (let i = 0; i < 12; i += 1) await new Promise(r => setTimeout(r, 0)); };
+
+async function offerInstall(panel) {
+    panel.root.find(node => String(node.className || '').includes('unbake-download-missing'))
+        .dispatch('click', {});
+    panel.root.allByClass('unbake-context-item')
+        .find(node => String(node.textContent || '').includes('⊞')).dispatch('click', {});
+    await drain();
+}
+
+test('確認を切っていても、ノードを入れる問いは出る', async () => {
+    const installed = [];
+    const panel = await mountPanel(['smZ CLIPTextEncode'],
+        { ...withPacks, install: async (_api, packs) => { installed.push(...packs); return { queued: [], failed: [] }; } },
+        { confirmBeforeDelete: false });
+    await offerInstall(panel);
+    assert.equal(confirmShown(panel), true,
+        '「消す前に確認する」を切ると、入れる問いまで消えている');
+    assert.deepEqual(installed, [], '確認より先に入れ始めている');
+});
+
+test('確認を入れていれば、当然出る（対照）', async () => {
+    // **検出器が生きていることを見る。** 上だけだと、常に true を返す
+    // 検出器でも通ってしまう。
+    const panel = await mountPanel(['smZ CLIPTextEncode'], withPacks, { confirmBeforeDelete: true });
+    await offerInstall(panel);
+    assert.equal(confirmShown(panel), true, '確認が入っているのに出ていない');
+});
+
+test('消す問いは、切ったとおりに消える（切り替えが死んでいないこと）', async () => {
+    // **直しすぎていないことを見る。** `destructive` を無視して常に出すようにすると、
+    // 利用者が切った設定が効かなくなる——それは別の不具合になる。
+    const removed = [];
+    const { createUnbakePanel } = await import('../web/panel/panel.js');
+    const { fakeDocument } = await import('./fake_dom.mjs');
+    const doc = fakeDocument();
+    const panel = createUnbakePanel(doc.createElement('div'), {
+        documentRef: doc,
+        display: { listView: 'tiles', confirmBeforeDelete: false },
+        recordsIo: { remove: async (id) => { removed.push(id); return { ok: true }; } },
+    });
+    panel.setRecords([{ id: '1', libraryId: '1', title: 'T', verdict: 'approximate',
+        missing: { models: [], resources: [], nodes: [] } }]);
+    panel.confirmDeleteRecord?.(panel.getRecords()[0]);
+    await drain();
+    assert.equal(confirmShown(panel), false, '切ってあるのに消す確認が出ている');
+    assert.deepEqual(removed, ['1'], '確認を切ったのに消えていない');
 });

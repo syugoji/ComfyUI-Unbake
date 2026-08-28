@@ -3611,7 +3611,24 @@ export function createUnbakePanel(el, {
      * 「何が起きたか伝えない」ではない。
      */
     function askThen(options) {
-        if (confirmBeforeDelete) return openConfirm(options);
+        /*
+         * **「消す前に確認する」が切っていいのは、消す問いだけ**（2026-08-29 実機の報告
+         * 「node のインストールをしようとすると確認画面が出ませんでした」）。
+         *
+         * ここは `confirmBeforeDelete` だけを見ており、**呼び手が渡した
+         * `destructive` を一度も読んでいなかった。** 結果、ノードパックを
+         * 入れる問い（`destructive: false`）まで一緒に消えていた。
+         *
+         * **利用者はそれを切ったつもりが無い。** 切り替えの口は確認の面の中に在り、
+         * `confirmView` は `destructive` のときしか出さない——つまり
+         * **消す問いの中でしか切れないのに、入れる問いにまで効いていた。**
+         * しかも入れる側の面は「どのパックが入るのか」「入れるのは Manager だ」を
+         * 伝えるためのもので、消す確認とは役目が違う（取り消しの警告すら出さない）。
+         *
+         * 既定は `confirmView` に合わせて**渡されなければ消す扱い**。
+         */
+        const destructive = options?.destructive !== false;
+        if (confirmBeforeDelete || !destructive) return openConfirm(options);
         Promise.resolve()
             .then(() => options.onConfirm())
             .then((result) => {
