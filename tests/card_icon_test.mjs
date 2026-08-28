@@ -51,21 +51,39 @@ const fillsOf = (svg) => [...svg.matchAll(/fill="(#[0-9a-fA-F]{6})"/g)].map(m =>
 
 test('カードの絵は、どの地に置いても形が読める', async () => {
     const svg = await readFile(join(ROOT, 'web/icon.svg'), 'utf8');
-    const plate = /<rect[^>]*fill="(#[0-9a-fA-F]{6})"/.exec(svg)?.[1];
-    assert.ok(plate, '地の板が無い（透過のまま置くと、暗い地で沈む）');
-    const egg = fillsOf(svg).find(color => color !== plate.toLowerCase());
+
+    /*
+     * **板は階調を持つ。** 一色で見ると、明るい端で潰れているのを見逃す
+     *（2026-08-29 実測: 白い卵は素焼きの明るい端で 5.36。一番明るい端が
+     *  効くので、両端とも下限に掛ける）。
+     */
+    const plate = [...svg.matchAll(/stop-color="(#[0-9a-fA-F]{6})"/g)].map(m => m[1].toLowerCase());
+    assert.ok(plate.length >= 2, '階調の定義が無い');
+    /*
+     * **定義だけでなく、塗っていることを見る。** 階調を定義したまま `<rect>` を
+     * 落とすと、色は読めるのに**板は描かれない**——透過のまま置かれ、
+     * 明るい地では白い卵ごと消える。定義と描画を別々に確かめる
+     *（2026-08-29: 変異検査でここが緑のまま通った）。
+     */
+    const painted = /<rect[^>]*width="24"[^>]*height="24"[^>]*fill="url\(#[^)]+\)"/.test(svg);
+    assert.ok(painted, '地の板を塗っていない（透過のまま置くと、明るい地で消える）');
+    const egg = fillsOf(svg).find(color => !plate.includes(color));
     assert.ok(egg, '卵の色が板と同じ（形が出ない）');
 
     // **形が読める＝板と地・卵と地のどちらかが立っていればよい。**
-    // 暗い地では板が、明るい地では卵が立つ、という組み合わせを選んである。
     for (const background of BACKGROUNDS) {
-        const readable = Math.max(contrast(plate, background), contrast(egg, background));
+        const readable = Math.max(
+            ...plate.map(color => contrast(color, background)),
+            contrast(egg, background),
+        );
         assert.ok(readable >= 3,
             `${background} の上で ${readable.toFixed(2)}:1 しかない（3:1 を下回る）`);
     }
-    // 卵と板の対比。**小さいときに形が潰れない**ための下限。
-    assert.ok(contrast(plate, egg) >= 4.5,
-        `卵と板の対比が ${contrast(plate, egg).toFixed(2)}:1（小さいと潰れる）`);
+    // 卵と板の対比。**小さいときに形が潰れない**ための下限。階調の両端で見る。
+    for (const color of plate) {
+        assert.ok(contrast(color, egg) >= 4.5,
+            `卵と板（${color}）の対比が ${contrast(color, egg).toFixed(2)}:1（小さいと潰れる）`);
+    }
 });
 
 test('サイドバーの絵は、板を持たない（マスクとして当てるため）', async () => {
