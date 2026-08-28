@@ -725,6 +725,7 @@ export const messages = {
     "confirm.files": "Файлов: {count}, всего {size}.",
     "confirm.filesPartial": "Файлов: {count}. Измерено {size}, остальное неизвестно.",
     "confirm.cancel": "Оставить",
+    "confirm.close": "Закрыть",
     "confirm.delete": "Удалить",
     "confirm.working": "Удаляем…",
     "confirm.done": "Удалено: {list}",

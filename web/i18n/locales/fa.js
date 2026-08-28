@@ -725,6 +725,7 @@ export const messages = {
     "confirm.files": "{count} فایل، در مجموع {size}.",
     "confirm.filesPartial": "{count} فایل؛ {size} اندازه‌گیری شده و بقیه نامعلوم است.",
     "confirm.cancel": "رهایش کن",
+    "confirm.close": "بستن",
     "confirm.delete": "حذف",
     "confirm.working": "در حال حذف…",
     "confirm.done": "حذف شد: {list}",

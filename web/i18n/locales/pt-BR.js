@@ -725,6 +725,7 @@ export const messages = {
     "confirm.files": "{count} arquivo(s), {size} no total.",
     "confirm.filesPartial": "{count} arquivo(s); {size} foram medidos, o resto é desconhecido.",
     "confirm.cancel": "Deixar como está",
+    "confirm.close": "Fechar",
     "confirm.delete": "Excluir",
     "confirm.working": "Excluindo…",
     "confirm.done": "Excluído: {list}",

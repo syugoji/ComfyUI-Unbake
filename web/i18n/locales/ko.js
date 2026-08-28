@@ -725,6 +725,7 @@ export const messages = {
     "confirm.files": "파일 {count}개, 합계 {size}.",
     "confirm.filesPartial": "파일 {count}개. 크기를 아는 것은 {size}이고 나머지는 알 수 없습니다.",
     "confirm.cancel": "그만두기",
+    "confirm.close": "닫기",
     "confirm.delete": "삭제",
     "confirm.working": "삭제 중…",
     "confirm.done": "삭제했습니다: {list}",

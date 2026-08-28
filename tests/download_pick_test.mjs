@@ -117,7 +117,10 @@ test('やめれば、1本も落とさない', async () => {
     await panel.downloadMissing();
     await panel.root.byClass('unbake-confirm-cancel').dispatch('click', {});
     assert.deepEqual(io.list, [], 'やめたのに落としている');
-    assert.match(panel.root.text, /落とすのをやめました/, '何が起きたか言っていない');
+    // **語そのものを書かない。** 言い回しを揃えるたびにここが割れる
+    //（2026-08-28「落とす／入れる／埋める」をダウンロードへ揃えたときに割れた）。
+    assert.ok(panel.root.text.includes(t('download.pick.cancelled')),
+        `何が起きたか言っていない: ${panel.root.text.slice(-160)}`);
 });
 
 test('押す回数は増えていない', async () => {

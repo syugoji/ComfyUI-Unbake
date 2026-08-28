@@ -725,6 +725,7 @@ export const messages = {
     "confirm.files": "{count} 个文件，共 {size}。",
     "confirm.filesPartial": "{count} 个文件。已知大小的部分为 {size}，其余未知。",
     "confirm.cancel": "取消",
+    "confirm.close": "关闭",
     "confirm.delete": "删除",
     "confirm.working": "正在删除…",
     "confirm.done": "已删除：{list}",

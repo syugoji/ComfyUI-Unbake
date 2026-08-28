@@ -725,6 +725,7 @@ export const messages = {
     "confirm.files": "{count} dosya, toplam {size}.",
     "confirm.filesPartial": "{count} dosya; {size} ölçüldü, gerisi bilinmiyor.",
     "confirm.cancel": "Vazgeç",
+    "confirm.close": "Kapat",
     "confirm.delete": "Sil",
     "confirm.working": "Siliniyor…",
     "confirm.done": "Silindi: {list}",

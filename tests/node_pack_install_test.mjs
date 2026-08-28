@@ -297,7 +297,7 @@ const mountBoth = async (io = {}) => {
     const { createUnbakePanel } = await import('../web/panel/panel.js');
     const { fakeDocument } = await import('./fake_dom.mjs');
     const doc = fakeDocument();
-    const calls = { install: [], plan: [] };
+    const calls = { install: [], plan: [], start: [] };
     const panel = createUnbakePanel(doc.createElement('div'), {
         documentRef: doc,
         display: { listView: 'tiles', confirmBeforeDelete: true },
@@ -307,7 +307,7 @@ const mountBoth = async (io = {}) => {
             install: async (...args) => { calls.install.push(args); return { queued: ['comfyui_smznodes'], failed: [] }; },
         },
         downloadIo: {
-            start: async () => ({ ok: true }),
+            start: async (versionId) => { calls.start.push(versionId); return { ok: true }; },
             state: async () => ({}),
             plan: async (ids) => { calls.plan.push(ids); return { items: [] }; },
         },
@@ -360,6 +360,17 @@ test('「モデルとノード」は、ノードの面が閉じるまでモデ�
     // **入れたのに「消しました」と言わない。**
     assert.ok(!panel.root.text.includes(tr('confirm.done', { list: 'comfyui_smznodes' })),
         `入れる問いに消す側の語が出ている: ${panel.root.text.slice(-200)}`);
+    /*
+     * **済んだ後の出口が「やめる」のままではない**（2026-08-28 利用者の報告
+     * 「ここから先に進めません」）。頼み終わった画面で押せる口が「やめる」
+     * だけだと、押すと取り消されるようにしか読めない——実際には閉じるだけで、
+     * ここでは**次の段（モデル）の始まり**でもある。
+     */
+    const ways = panel.root.findAll(node => node.tagName === 'BUTTON' && !node.disabled)
+        .map(node => node.textContent);
+    assert.ok(ways.includes(tr('confirm.close')),
+        `済んだのに出口が「閉じる」になっていない: ${JSON.stringify(ways)}`);
+
     // 面を閉じて初めて、続き（モデル）が始まる。
     const close = panel.root.byClass('unbake-confirm-close');
     assert.ok(close, '閉じる口が無い');
