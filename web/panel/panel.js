@@ -44,6 +44,7 @@
 
 import { DROP_ROUTES, UNSUPPORTED_CODES, routeDrop } from './dropRouting.js';
 import { nameOnlyModels } from '../core/modelEvidence.js';
+import { withFreshness } from '../core/outputUrl.js';
 
 /**
  * 扱えなかった種類ごとの文言。**表で持つ**——鍵を組み立てると、
@@ -906,10 +907,32 @@ export function createUnbakePanel(el, {
      */
     async function openMadeOrQueue(record, key) {
         lastPressedReplay = key;
+        /*
+         * **消すと言った絵は、読む前に本当に消す**（2026-08-29 利用者の報告
+         * 「レコードの出た絵の削除を行った後再現すると比較画像が表示される」）。
+         *
+         * 消す口は押した瞬間には消さず、**12秒の猶予**を置いて戻せるようにしてある。
+         * その間、絵は**ディスクにも索引にも生きている**——この口は
+         * 「絵が在るなら作らずに開く」約束なので、**猶予の中で押されると
+         * 消したはずの絵を見つけて、それを開いて終わる。**
+         *
+         * 同じ理由は `reproduceOne()` と `runBatch()` には既に入っていた
+         * （2026-08-27）。**▶ の単押しだけが漏れていて、そこが一番よく使われる。**
+         * 直したのに直っていない、と言われ続けた理由がこれ。
+         */
+        /*
+         * **読む物も消す物も無いなら、1拍も待たない。**
+         *
+         * 素で `await` を置くと、**押した手応えが1拍遅れる**——このボタンは
+         * 「押した瞬間に走っている姿になる」ことを固定してある
+         * （`panel_mount_test.mjs`・2026-08-24 実機の「大きなラグがある」に対する直し）。
+         * 実測すると通信は速く、遅いのは手応えの方だった、という経緯がある。
+         * **待つのは、待つ理由が在るときだけ。**
+         */
         let made = [];
-        try {
-            if (typeof loadFreshOutputs === 'function') made = await loadFreshOutputs(record) || [];
-        } catch { made = []; }
+        if (pendingDeletes.size || typeof loadFreshOutputs === 'function') {
+            try { made = await freshOutputs(record); } catch { made = []; }
+        }
         if (!made.length && typeof loadVariants === 'function') {
             try { made = ((await loadVariants(record))?.outputs || []).filter(item => item?.url); }
             catch { made = []; }
@@ -1719,6 +1742,28 @@ export function createUnbakePanel(el, {
     }
 
     /**
+     * **消えた絵を映している見比べは畳む**（2026-08-29 利用者の報告
+     * 「消えてからも比較画面が表示されます」）。
+     *
+     * 消す口は12秒の猶予を置くので、**押した後も絵はしばらく生きている**。
+     * その間に見比べが開くことは在り得るし、開いたまま猶予が切れることも在る
+     * ——そのとき画面には**死んだ URL を指した箱**だけが残り、見ている人には
+     * 「消したのに残っている」としか見えない。
+     *
+     * **名前で見る。** URL には鮮度の印（`_ub`）が付くので、URL の等値では当たらない。
+     */
+    function dropFromLightbox({ filename, subfolder = '' } = {}) {
+        if (!lightbox || !filename) return false;
+        const name = encodeURIComponent(String(filename));
+        const folder = encodeURIComponent(String(subfolder || ''));
+        const hit = (lightbox.shows || []).some(url =>
+            url.includes(`filename=${name}`) && url.includes(`subfolder=${folder}`));
+        if (!hit) return false;
+        closeLightbox();
+        return true;
+    }
+
+    /**
      * 絵を大きく出し、**元の1枚と見比べる**。
      *
      * ---
@@ -1758,17 +1803,26 @@ export function createUnbakePanel(el, {
      * 見比べる面は**出したばかりの絵**を出すところなので、ここだけは必ず取り直す。
      * 一覧のように何十枚も並べる面ではやらない（毎回取り直すと重くなる）。
      */
-    function freshImageUrl(url) {
-        const text = String(url || '');
-        if (!text) return text;
-        return `${text}${text.includes('?') ? '&' : '?'}_ub=${Date.now().toString(36)}`;
+    /**
+     * **印は `core/outputUrl.js` が持つ**（2026-08-29 に1本へ寄せた）。
+     *
+     * ここに自前の実装を置いていたのが、そもそもの負けだった——URL を作る所は
+     * 5箇所あり、印はこの1箇所にしか無かったので、**塞いでいない口から
+     * 同じ症状が出続けた**（利用者が何度も報告した「直っていない」の正体）。
+     *
+     * 素材の値（`modified` / `size`）が渡れば**中身が変わったときだけ**印が動く。
+     * 渡らなければ毎回変わる——見比べる面は出したばかりの絵を出す所なので、
+     * 判らないなら取り直す側へ倒してよい。
+     */
+    function freshImageUrl(url, entry = null) {
+        return withFreshness(url, entry);
     }
 
     function openCompare(record, others = [], { single = false } = {}) {
         closeLightbox();
         const list = (others || [])
             .filter(item => item?.url)
-            .map(item => ({ ...item, url: freshImageUrl(item.url) }));
+            .map(item => ({ ...item, url: freshImageUrl(item.url, item) }));
         let index = 0;
 
         const baseImage = record?.previewUrl
@@ -1839,7 +1893,13 @@ export function createUnbakePanel(el, {
         shell.addEventListener('wheel', onWheel);
         doc.addEventListener?.('keydown', onKey);
         root.append(shell);
-        lightbox = { root: shell, onKey, count: list.length, show, get index() { return index; } };
+        // **何を映しているかを持つ。** 消した絵をそのまま出し続けないため
+        // （2026-08-29 利用者の報告「消えてからも比較画面が表示されます」）。
+        lightbox = {
+            root: shell, onKey, count: list.length, show,
+            get index() { return index; },
+            shows: list.map(item => String(item?.url || '')),
+        };
         return lightbox;
     }
 
@@ -2257,7 +2317,7 @@ export function createUnbakePanel(el, {
         const forRunner = { ...edited, id: record?.id ?? edited.id ?? null };
 
         try {
-            const runner = makeSweepRunner(forRunner);
+            const runner = makeRunner(forRunner);
             detailRunner = runner;
             // **材料が届くのを待つ。** `/object_info` は後から届くので、
             // 待たずに投げると1件中1件が落ちる（束の実行で実際に踏んだ形）。
@@ -3009,7 +3069,7 @@ export function createUnbakePanel(el, {
         let runner;
         try {
             // **上限は面が持っている設定から渡す。** 渡さないと、設定は在るのに効かない。
-            runner = makeSweepRunner(target, { maxReplayMegapixels: replayMaxMegapixels });
+            runner = makeRunner(target, { maxReplayMegapixels: replayMaxMegapixels });
         } catch {
             appendLog(t('sweep.noRunner'));
             return null;
@@ -3171,9 +3231,7 @@ export function createUnbakePanel(el, {
              * 入っていない**。実機ではまさに、直前の再現で出た1枚が索引に
              * 無く、「絵は出ませんでした」と言っていた——**絵は在ったのに。**
              */
-            if (typeof loadFreshOutputs === 'function') {
-                try { existing = await loadFreshOutputs(record); } catch { existing = []; }
-            }
+            try { existing = await freshOutputs(record); } catch { existing = []; }
             if (!existing.length && typeof loadVariants === 'function') {
                 try {
                     const found = await loadVariants(record);
@@ -4062,6 +4120,52 @@ export function createUnbakePanel(el, {
         return variantsView;
     }
 
+    /**
+     * **出た絵を読むのは、この1本を通す**（2026-08-29）。
+     *
+     * 読む前に**消すと言った絵を本当に消す**。消す口は12秒の猶予を置くので、
+     * その間は絵が**ディスクにも索引にも生きている**——素で読むと、
+     * **消したはずの絵を見つけて開いてしまう**（利用者の報告した症状）。
+     *
+     * 呼び手ごとに `await flushPendingDeletes()` を書く形だと、**書き忘れた口から
+     * 同じ症状が出る**。実際 `reproduceOne` と `runBatch` には入っていたのに
+     * **▶ の単押しだけ漏れていた**ので、読む側を1本にして構造で塞ぐ。
+     * 漏れは `replay_flushes_deletes_test.mjs` が見張る。
+     */
+    async function freshOutputs(record) {
+        await flushPendingDeletes();
+        if (typeof loadFreshOutputs !== 'function') return [];
+        return (await loadFreshOutputs(record)) || [];
+    }
+
+    /**
+     * **実行器を作るのは、この1本だけ**（2026-08-29）。
+     *
+     * 投げる前に**消すと言った絵を本当に消す**。消す口は12秒の猶予を置くので、
+     * その間は絵が**ディスクにも実行器の索引にも生きている**。そして
+     * `SweepRunner.run()` の `reuseExisting` は**既定が true** なので、
+     * 実行器は「この条件はもう出ている」と読み、**投げずに、消しかけの絵を返す**
+     * ——12秒後にファイルだけが消え、画面には**死んだ絵を指した比較が残る。**
+     * 利用者の報告「消えてからも比較画面が表示されます」がこれ。
+     *
+     * `reproduceOne()` と `runBatch()` には呼び手ごとに書いてあったが、
+     * **詳細の面の実行ボタン（`runOneWithChanges`）が漏れていた**。呼び手ごとに
+     * 書く形だと、**書き忘れた口から同じ症状が出る**——実際、これで3度目になる。
+     * だから**作る側**を1本にした。新しい口が増えても自動で通る。
+     * 漏れは `runner_flushes_deletes_test.mjs` が見張る。
+     */
+    function makeRunner(...args) {
+        const runner = makeSweepRunner(...args);
+        if (!runner || typeof runner.run !== 'function') return runner;
+        const run = runner.run.bind(runner);
+        runner.run = async (options) => {
+            // **待つのは待つ理由が在るときだけ**（押した手応えを1拍遅らせない）。
+            if (pendingDeletes.size) await flushPendingDeletes();
+            return run(options);
+        };
+        return runner;
+    }
+
     /** 猶予（ミリ秒）。**この間は1枚も消えていない。** */
     const DELETE_GRACE_MS = 12000;
     /** 消す約束。**面を閉じたら流し切る**（開いたまま忘れない）。 */
@@ -4091,6 +4195,8 @@ export function createUnbakePanel(el, {
                 // **消えたら索引からも落とす。** 落とさないと、消したのに
                 // 「出た絵」へ出続ける（再読み込みでしか消えなかった）。
                 if (result?.ok !== false) {
+                    // **その絵を映している見比べを畳む。** 残すと死んだ URL の箱になる。
+                    dropFromLightbox({ filename, subfolder });
                     variantsIo?.forget?.({ filename, subfolder });
                     // **走者の索引からも落とす**（2026-08-26 実機）。
                     // `localStorage` の控えは消えないので、残すと次の再現で

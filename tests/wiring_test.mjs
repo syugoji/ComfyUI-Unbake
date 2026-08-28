@@ -458,8 +458,17 @@ test('縮める上限が、設定から組み立てまで繋がっている', as
     assert.match(entry, /replayMaxMegapixels: settings\?\.replay_max_megapixels/, '入口が面へ渡していない');
     assert.match(entry, /maxReplayPixels: Math\.max\(0, Number\(options\.maxReplayMegapixels\)/,
         '入口が実行器へ渡していない');
-    assert.match(panel, /makeSweepRunner\(target, \{ maxReplayMegapixels: replayMaxMegapixels \}\)/,
+    // **2026-08-29 に名前が変わった。** 面は `makeSweepRunner` を直接呼ばず、
+    // `makeRunner()` を通す——投げる前に「消す」と言われた絵を流し切るため
+    // （`runner_flushes_deletes_test.mjs`）。**上限の受け渡しは素通しなので、
+    // 素通しであること自体もここで見る**（包んだ拍子に落とすと、設定は在るのに効かない）。
+    assert.match(panel, /makeRunner\(target, \{ maxReplayMegapixels: replayMaxMegapixels \}\)/,
         '面が実行器へ渡していない');
+    assert.match(
+        panel,
+        /function makeRunner\(\.\.\.args\)[\s\S]{0,120}?makeSweepRunner\(\.\.\.args\)/,
+        '包んだ実行器が引数を素通ししていない（上限が落ちる）',
+    );
     assert.match(runner, /maxReplayPixels: this\.maxReplayPixels,/, '実行器が計画へ渡していない');
     assert.match(sweep, /maxReplayPixels: options\.maxReplayPixels,/, '計画が組み立てへ渡していない');
     assert.match(builder, /capReplayPixels\(prompt, options\?\.maxReplayPixels, warnings\)/,

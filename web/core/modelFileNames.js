@@ -62,6 +62,28 @@ export function modelStem(value) {
 }
 
 /**
+ * 名前の末尾に括弧で埋め込まれた **SHA-10** を取り出す（2026-08-29 実機で確定）。
+ *
+ * 実機で観測した形（記録 `civitai_128383826` の土台）:
+ *
+ *     Illustrious/aMixIllustrious_aMix(B199B92EE9).safetensors
+ *
+ * 手元にはこれが `aMixIllustrious_aMix.safetensors` として入っており、
+ * 導入済み索引の `checkpoints.bySha10` には `"b199b92ee9"` の項が在った
+ * ——**括弧の中身は、その索引が持っているハッシュそのもの**である。
+ *
+ * **括弧を外した名前で当てにいかない。** それは推測で、同じ名前の別の版を
+ * 掴み得る。ハッシュなら索引に当たった時点で**バイト同一だと確かめられる**。
+ *
+ * @returns {string|null} 小文字10桁。読めなければ `null`。
+ */
+export function hashFromModelName(value) {
+    const stem = modelStem(value);
+    const found = /\(([0-9a-f]{10})\)$/i.exec(stem);
+    return found ? found[1].toLowerCase() : null;
+}
+
+/**
  * 別名照合用のキー。綴りの揺れ（`R-ESRGAN 4x+ Anime6B` 対
  * `RealESRGAN_x4plus_anime_6B.pth`）を越えるため、英数字だけを残す。
  */

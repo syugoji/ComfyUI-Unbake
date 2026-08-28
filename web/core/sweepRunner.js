@@ -24,6 +24,7 @@
 import { requireEnvironment } from './environment.js';
 import { readStored, writeStored, removeStored } from './storage.js';
 import { buildSweepPlan } from './recipeSweep.js';
+import { outputImageUrl } from './outputUrl.js';
 import { t } from '../i18n/index.js';
 
 const JOB_SCHEMA = 'unbake.sweep';
@@ -81,16 +82,13 @@ export function sweepHistoryImages(entry) {
     for (const output of Object.values(entry?.outputs || {})) {
         for (const image of output?.images || []) {
             if (!image?.filename) continue;
-            const params = new URLSearchParams({
-                filename: image.filename,
-                type: image.type || 'output',
-            });
-            if (image.subfolder) params.set('subfolder', image.subfolder);
+            // **組み立ては `core/outputUrl.js` の1本だけ**（2026-08-29）。
+            // ここは履歴から来た「今出たばかりの絵」で、鮮度が判らない。
             images.push({
                 filename: image.filename,
                 subfolder: image.subfolder || '',
                 type: image.type || 'output',
-                url: `/api/view?${params.toString()}`,
+                url: outputImageUrl(image, { type: image.type || 'output' }),
             });
         }
     }
@@ -284,13 +282,10 @@ export class SweepRunner {
         for (const entry of result?.outputs || []) {
             const signature = entry?.sweep?.signature;
             if (!signature) continue;
-            const query = new URLSearchParams({
-                filename: String(entry.filename || ''),
-                subfolder: String(entry.subfolder || ''),
-                type: 'output',
-            });
+            // **ここはサーバの索引から来る**ので `modified` と `size` が判る
+            // ＝**中身が変われば印も変わる**（消して作り直しても前の絵を出さない）。
             index[String(signature)] = {
-                url: `/api/view?${query.toString()}`,
+                url: outputImageUrl(entry),
                 filename: entry.filename,
                 subfolder: entry.subfolder,
                 // **どこから来た索引かを残す。** 手元の入れ物と混ざると、

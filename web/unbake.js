@@ -8,8 +8,9 @@
  * `render: (el) => {…}` の形で**コンテナ要素を渡してくる**。
  * 全画面はこちらで作った `div` を同じ関数へ渡すだけ——**器が違うだけで中身は1つ**。
  *
- * キャンバスノードは1つも登録しない（パネルがグラフを生成する）。
- * `NODE_CLASS_MAPPINGS` が空でも ComfyUI Manager は配れる。
+ * キャンバスノードは**ちょうど1個**（`D-20260829-02`）。型の登録は Python 側
+ * （`unbake/nodes.py`）で、ここがやるのは**画面へ出る言葉と、組んだグラフへ
+ * 差して配線すること**。グラフを生成するのは今もパネルである。
  *
  * ---
  *
@@ -58,6 +59,8 @@ import {
  * ここで輸入して両方を直す。
  */
 import { environmentRequestOrNull } from './core/environment.js';
+import { outputImageUrl } from './core/outputUrl.js';
+import { forgetOutput, noteOutputs } from './core/variantIndex.js';
 import { detectManager, packsForNodes, installPacks } from './core/nodePackInstall.js';
 import { buildRecipeWorkflow } from './core/recipeWorkflowBuilder.js';
 import { applyResolvedResources } from './core/civitaiResources.js';
@@ -66,13 +69,16 @@ import { findVersionByFileName } from './core/civitaiModelLookup.js';
 import { applyDarkReaderLock } from './core/darkReaderLock.js';
 import { extractParamsFromBytes } from './core/extractedParams.js';
 import {
+    OUTPUT_INDEX, UNBAKE_NODE_TYPE, planRecipeWiring, recipeBundle,
+} from './core/recipeSourceNode.js';
+import {
     fetchCivitaiImage, fetchModelVersion, recipeFromCivitaiMeta, recordFromCivitaiImage,
 } from './core/civitaiClient.js';
 import { applyVerdicts, createVerdictTable } from './core/verdictTable.js';
 import { attributeOutputs } from './core/outputAttribution.js';
 import { SweepRunner } from './core/sweepRunner.js';
 import { buildBuiltinSweepTemplates, installedModelOptions } from './core/sweepAxes.js';
-import { DROP_ROUTES } from './panel/dropRouting.js';
+import { DROP_ROUTES, UNSUPPORTED_CODES, routeDrop } from './panel/dropRouting.js';
 import { getDirection, setLocale, t } from './i18n/index.js';
 
 /** 記録の中に焼き込まない値。**毎回作り直せるもの**は書かない。 */
@@ -109,6 +115,30 @@ export function recordSaveBody(record) {
 const STYLE_ID = 'unbake-theme';
 const FULLSCREEN_ID = 'unbake-fullscreen';
 const EXTENSION_NAME = 'Unbake';
+
+/**
+ * 供給ノードに足す押し口の**内部名**。**訳さない。**
+ *
+ * 訳した文字列を名前にすると、言語を変えた瞬間に「もう在る」判定が外れて
+ * ボタンが増える。画面へ出るのは `label` の方。
+ */
+const UNBAKE_BUILD_WIDGET = 'unbake.build';
+
+/**
+ * 供給ノードの出力に付ける見出し。**`recipeSourceNode.js` の `OUTPUT_NAMES`
+ * と同じ並び**で、鍵は組み立てず literal で書く（組み立てると、抜けを機械で
+ * 確かめられない——`tests/i18n_test.mjs` がそれを赤くする）。
+ */
+const RECIPE_SOURCE_SLOT_KEYS = [
+    'node.recipeSource.out.prompt',
+    'node.recipeSource.out.negative',
+    'node.recipeSource.out.seed',
+    'node.recipeSource.out.steps',
+    'node.recipeSource.out.cfg',
+    'node.recipeSource.out.sampler',
+    'node.recipeSource.out.scheduler',
+    'node.recipeSource.out.checkpoint',
+];
 
 function ensureStyle(documentRef) {
     // **器が無ければ何もしない。** 宿主の外（検査や headless）から呼ばれると
@@ -188,11 +218,32 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
     // 設定で明示的に選ぶこともできる（2026-08-20 の要望）。**既定は空＝宿主に合わせる**
     // なので、選ばなければ以前と同じ——「アプリは日本語なのにこのパネルだけ英語」は
     // 選んだ人にしか起きない。
-    const hostLocale = readHostLocale(app);
+    /*
+     * **宿主の言語は1回きりで決めない**（2026-08-29）。
+     *
+     * ここが走るのは**モジュールが読まれた時点**で、宿主の設定が
+     * 読み終わっている保証が無い。取れなければ `null` になり、そのまま
+     * 既定の英語に固まる——**設定で選んでいない人が永久に英語のまま**になり、
+     * 「自動で切り替わらない」に見える。取れたかどうかは画面に出ないので、
+     * 起きていても誰も気づけない。
+     *
+     * 直し方は「読む時点を後ろへ動かす」ではなく**読み直せるようにする**。
+     * 設定を当てるたび（＝宿主が起き上がった後）に取り直す。
+     */
+    let hostLocale = readHostLocale(app);
     setLocale(hostLocale);
 
     /** 設定の言語を当てる。**空なら宿主へ戻す**（「英語にする」ではない）。 */
     function applyLocale(code) {
+        if (!code) {
+            const fresh = readHostLocale(app);
+            // **変わったことは言う。** 最初の読みが空振りしていた証拠になる
+            // ——黙って直すと、直ったのか元から動いていたのかが判らない。
+            if (fresh && fresh !== hostLocale) {
+                console.info(t('host.localeResolvedLate', { p1: String(hostLocale), p2: fresh }));
+                hostLocale = fresh;
+            }
+        }
         setLocale(code || hostLocale);
     }
 
@@ -340,33 +391,24 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
      * **全部組み直さない。** 実測で初回の走査は 24往復・1,334ms かかる。
      * 1枚出しただけでそれを回すのは、**待たせるためだけの往復**になる。
      */
+    /*
+     * **足し引きの中身は `core/variantIndex.js` が持つ**（2026-08-29 に切り出した）。
+     *
+     * ここに閉じ込めていたので**外から検査できず**、そのぶん欠陥が1つ埋まっていた
+     * ——同じ名前の絵が来ると「もう在る」として捨てており、**ComfyUI が
+     * 消して空いた番号を再利用する**ため、作り直した絵が古い項目に上書きされずに
+     * 残っていた（「再度生成した後に表示が前の画像」の正体）。
+     */
     const variantsIo = {
-        /** 出た絵を足す。**同じファイルは二重に入れない。** */
+        /** 出た絵を入れる。**同じ場所の絵は、新しい方で置き換える。** */
         note(recordId, outputs) {
-            const id = String(recordId ?? '');
-            if (!id || !variantIndex || !Array.isArray(outputs) || !outputs.length) return;
-            const current = variantIndex.get(id) || [];
-            const seen = new Set(current.map(item => `${item?.subfolder || ''}/${item?.filename || ''}`));
-            const added = [];
-            for (const output of outputs) {
-                const key = `${output?.subfolder || ''}/${output?.filename || ''}`;
-                if (!output?.filename || seen.has(key)) continue;
-                seen.add(key);
-                added.push(output);
-            }
-            if (!added.length) return;
-            // **新しいものを先頭へ。** 一覧は新しい順で並べている。
-            variantIndex.set(id, [...added, ...current]);
+            if (!variantIndex) return;
+            noteOutputs(variantIndex, recordId, outputs);
         },
         /** 消した絵を落とす。**どの記録に属していても落とす**（同じ絵は1つ）。 */
-        forget({ filename, subfolder = '' } = {}) {
-            if (!variantIndex || !filename) return;
-            const key = `${subfolder || ''}/${filename}`;
-            for (const [id, list] of variantIndex) {
-                const left = (list || []).filter(
-                    item => `${item?.subfolder || ''}/${item?.filename || ''}` !== key);
-                if (left.length !== (list || []).length) variantIndex.set(id, left);
-            }
+        forget(what) {
+            if (!variantIndex) return;
+            forgetOutput(variantIndex, what);
         },
     };
 
@@ -505,7 +547,233 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
         if (!prompt) return { ok: false, error: 'no-workflow' };
         if (typeof app.loadApiJson !== 'function') return { ok: false, error: 'no-loadApiJson' };
         app.loadApiJson(prompt, `${name || 'unbake'}.json`);
+        /*
+         * **組んだグラフには供給ノードを残す**（`D-20260829-02`）。
+         *
+         * ここを飛ばすと、共有された `workflow.json` に Unbake が1文字も
+         * 残らない——受け取った人の画面に赤いノードは出ず、Manager も
+         * 何も言わない。**それが今の増殖経路の全部**なので、残すこと自体が
+         * この機能の目的である。
+         *
+         * **元のグラフを開いた道（上の `ui`）には差さない。** あちらは
+         * 「作者が保存した画面をそのまま開く」（2026-08-26 利用者の指示）で、
+         * 他人のグラフをこちらの都合で組み替える場所ではない。
+         */
+        attachRecipeSourceNode(prompt, recipe);
         return { ok: true, how: 'api' };
+    }
+
+    /**
+     * 組み上がったグラフの先頭へ、供給ノードを1個置いて配線する。
+     *
+     * **失敗しても開いたグラフは壊さない。** ここで例外を出すと、
+     * 「ワークフローが開けない」に化ける——増殖経路が閉じるのは痛いが、
+     * **開けないほうがはるかに痛い**ので、置けなかったことは声に出して先へ進む。
+     *
+     * @param {object} prompt 直前に `loadApiJson` へ渡した API グラフ
+     * @param {object} recipe 値の出どころ
+     * @param {string} imageName ノードが指す入力画像の名前（無くてよい）
+     */
+    function attachRecipeSourceNode(prompt, recipe, origin = {}) {
+        try {
+            const bundle = recipeBundle(recipe, {}, origin);
+            const plan = planRecipeWiring(prompt, bundle);
+            const graph = app.graph;
+            // **`LiteGraph` はフロントの大域に在る**（実測 frontend 1.45.20）。
+            // 無ければ黙って諦めない——`window.app` を見て静かに死んだ前科がある。
+            const liteGraph = globalThis.LiteGraph;
+            if (!graph || typeof liteGraph?.createNode !== 'function') {
+                console.error(t('node.recipeSource.noLiteGraph'));
+                return { ok: false, error: 'no-litegraph' };
+            }
+            const source = liteGraph.createNode(UNBAKE_NODE_TYPE);
+            if (!source) {
+                // 拡張の Python 側が読み込まれていないと、型が登録されていない。
+                console.error(t('node.recipeSource.notRegistered', { p1: UNBAKE_NODE_TYPE }));
+                return { ok: false, error: 'not-registered' };
+            }
+            graph.add(source);
+            source.pos = leftOfGraph(graph);
+            setNodeWidget(source, 'recipe', JSON.stringify(bundle));
+            // **出どころも書き戻す。** 共有された JSON を開いた人が、
+            // ここを差し替えれば同じグラフを自分の絵で動かし直せる。
+            if (origin?.image) setNodeWidget(source, 'image', origin.image);
+            if (origin?.url) setNodeWidget(source, 'url', origin.url);
+
+            let wired = 0;
+            for (const step of plan) {
+                const target = graph.getNodeById?.(step.node)
+                    ?? graph.getNodeById?.(Number(step.node));
+                if (!target) continue;
+                // 名前で繋ぐ。**番号で繋がない**——widget の口は環境と版で
+                // 並びが変わるので、番号だと別の欄へ入る。
+                if (source.connect(OUTPUT_INDEX[step.from], target, step.input)) wired += 1;
+            }
+            // **繋げなかったことを黙らない。** ノードは置けているので画面上は
+            // 正常に見えるが、値は流れていない（差し替えても絵が変わらない）。
+            if (wired < plan.length) {
+                console.warn(t('node.recipeSource.partialWiring',
+                    { p1: wired, p2: plan.length }));
+            }
+            return { ok: true, wired, planned: plan.length };
+        } catch (error) {
+            console.error(t('node.recipeSource.attachFailed', { p1: String(error?.message || error) }));
+            return { ok: false, error: 'exception' };
+        }
+    }
+
+    /** 置き場所。**一番左の節よりさらに左**（既存の並びへ重ねない）。 */
+    function leftOfGraph(graph) {
+        const nodes = graph?._nodes || [];
+        const others = nodes.filter(node => node?.comfyClass !== UNBAKE_NODE_TYPE);
+        if (!others.length) return [0, 0];
+        const left = Math.min(...others.map(node => node.pos?.[0] ?? 0));
+        const top = Math.min(...others.map(node => node.pos?.[1] ?? 0));
+        return [left - 460, top];
+    }
+
+    /** widget の値を名前で書く。**無ければ何もしない**（作らない）。 */
+    function setNodeWidget(node, name, value) {
+        const widget = (node?.widgets || []).find(w => w?.name === name);
+        if (!widget) return false;
+        widget.value = value;
+        widget.callback?.(value);
+        return true;
+    }
+
+    /**
+     * ノードが指している画像から、値の束を作り直してグラフを組む。
+     *
+     * **ここが「画像 → 抽出 → グラフ生成」の1本。** 抽出は
+     * `extractParamsFromBytes()`、組み立ては `buildRecipeWorkflow()` を通す
+     * ——**新しい抽出器も組み立て器も作らない**（実レシピ 346 件で 346 件一致
+     * という実測が、別実装を作った瞬間に無効になる）。
+     */
+    async function buildFromRecipeSourceNode(node) {
+        const widgetValue = (name) =>
+            String((node?.widgets || []).find(w => w?.name === name)?.value ?? '').trim();
+        const url = widgetValue('url');
+        const imageName = widgetValue('image');
+        if (!url && !imageName) {
+            console.error(t('node.recipeSource.noImage'));
+            return { ok: false, error: 'no-input' };
+        }
+        // **URL が入っていればそちらを採る。** どちらを使ったかは必ず言う
+        // ——両方埋まっているとき、黙って片方を選ぶと「選んだ絵と違うものが
+        // 組み上がった」に見える。
+        const origin = url ? { url } : { image: imageName };
+        const label = url || imageName;
+        console.info(t('node.recipeSource.source', { p1: label }));
+
+        const read = url ? await recipeFromUrl(url) : await recipeFromInputImage(imageName);
+        if (!read.ok) return read;
+
+        // **束は先に書く。** グラフを組む前に書いておけば、組み立てが失敗しても
+        // 読み取れた値はノードに残る（読み直しをやり直さずに済む）。
+        setNodeWidget(node, 'recipe',
+            JSON.stringify(recipeBundle(read.recipe, read.params, origin)));
+
+        const inputs = await collectAnalysisInputs();
+        const built = buildRecipeWorkflow(read.recipe, {
+            objectInfo: inputs.objectInfo, embeddings: inputs.embeddings,
+        });
+        if (!built?.prompt) {
+            console.error(t('node.recipeSource.buildFailed', { p1: label }));
+            return { ok: false, error: 'no-workflow' };
+        }
+        if (typeof app.loadApiJson !== 'function') {
+            console.error(t('node.recipeSource.noLoadApiJson'));
+            return { ok: false, error: 'no-loadApiJson' };
+        }
+        // **グラフごと差し替わる**ので、このノードもここで作り直される。
+        app.loadApiJson(built.prompt, `${workflowFileName(label)}.json`);
+        attachRecipeSourceNode(built.prompt, read.recipe, origin);
+        return { ok: true, warnings: built.warnings || [] };
+    }
+
+    /**
+     * 開いたグラフに付ける名前。**出どころが判る字だけ残す。**
+     *
+     * URL をそのまま渡すと `/` や `?` が名前に入り、保存の口が黙って弾く
+     * ——「保存したのに出てこない」に見える。
+     */
+    function workflowFileName(label) {
+        const base = String(label || 'unbake')
+            .replace(/^https?:\/\//i, '')
+            .replace(/\.[a-z0-9]{1,5}$/i, '')
+            .replace(/[^A-Za-z0-9._-]+/g, '_')
+            .replace(/^_+|_+$/g, '')
+            .slice(0, 80);
+        return base || 'unbake';
+    }
+
+    /** `input/` に置かれた絵から読む。**抽出器は1本**（面と同じものを通す）。 */
+    async function recipeFromInputImage(imageName) {
+        const query = new URLSearchParams({
+            filename: String(imageName), type: 'input', subfolder: '',
+        });
+        let extracted = null;
+        try {
+            const bytes = await fetchOutputImage(`/view?${query.toString()}`);
+            extracted = extractParamsFromBytes(bytes, { url: String(imageName) });
+        } catch (error) {
+            console.error(t('node.recipeSource.readFailed', { p1: String(error?.message || error) }));
+            return { ok: false, error: 'unreadable' };
+        }
+        if (!extracted?.ok || !extracted.recipe) {
+            console.error(t('node.recipeSource.noParams', { p1: String(imageName) }));
+            return { ok: false, error: 'no-params' };
+        }
+        return { ok: true, recipe: extracted.recipe, params: extracted.params };
+    }
+
+    /**
+     * 絵の URL から読む（利用者の要望・2026-08-29）。
+     *
+     * **振り分けも取り込みも、サイドバーと同じ1本を通す**——`routeDrop()` で
+     * 経路を決め、`ingest()` に取らせる。ここで別の判定や取得を書くと、
+     * **「パネルでは通るのにノードでは通らない」**が生まれ、しかもどちらが
+     * 正しいのか誰にも判らなくなる。裏返せば、**パネルが扱えない URL は
+     * ここでも扱えない**——それが「全く同じもの」の意味である。
+     *
+     * `routeDrop()` は `dataTransfer` を受けるので、文字列1本をその形へ被せる。
+     * 偽物を作っているのではなく、**入口の形をそろえている**（判定は本物）。
+     */
+    async function recipeFromUrl(url) {
+        const routed = routeDrop({
+            getData: (type) => (type === 'text/plain' ? url : ''),
+            files: [],
+        });
+        if (!routed) {
+            console.error(t('node.recipeSource.urlUnknown', { p1: url }));
+            return { ok: false, error: 'unrecognised' };
+        }
+        if (routed.route === DROP_ROUTES.UNSUPPORTED) {
+            // **扱えない理由を名指しする。** 「判らない」と「判ったが1枚に
+            // 決められない」は打つ手が違う（後者は画像ページの URL を渡せば通る）。
+            console.error(t(routed.code === UNSUPPORTED_CODES.CIVITAI_POST
+                ? 'node.recipeSource.urlPost'
+                : 'node.recipeSource.urlUnknown', { p1: url }));
+            return { ok: false, error: 'unsupported' };
+        }
+        let result = null;
+        try {
+            result = await ingest(routed);
+        } catch (error) {
+            console.error(t('node.recipeSource.urlFailed',
+                { p1: url, p2: String(error?.message || error) }));
+            return { ok: false, error: 'ingest-failed' };
+        }
+        // **取り込みが言ったことは黙らない。** 記録は出来ていても欠けが在る形が
+        // あり（版が引けなかった等）、黙ると「全部そろった」と読まれる。
+        for (const message of result?.errors || []) console.warn(`[Unbake] ${message}`);
+        const recipe = result?.records?.[0] || null;
+        if (!recipe) {
+            console.error(t('node.recipeSource.urlFailed',
+                { p1: url, p2: (result?.errors || []).join(' / ') || '-' }));
+            return { ok: false, error: 'no-record' };
+        }
+        return { ok: true, recipe, params: {} };
     }
 
     /**
@@ -940,7 +1208,13 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
                 settingsPromise = null;
                 await ensureSettings().catch(() => null);
                 if (displaySettings) displaySettings.language = code;
-                rebuildSidebar?.();
+                // **開いている面を全部作り直す**（2026-08-29 実機の報告）。
+                // ここは `rebuildSidebar?.()` だけだった——**全画面から言語を
+                // 変えた人には何も起きない**し、サイドバーを一度も開いて
+                // いなければ `rebuildSidebar` は `null` なので**丸ごと空振り**する。
+                // どちらも「選んだのに日本語のまま」に見え、しかも設定は
+                // 正しく保存されているので、設定画面からは正常に見える。
+                rebuildOpenPanels();
             },
         },
     };
@@ -990,8 +1264,16 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
         variantPromise = (async () => {
             const outputs = [];
             let offset = 0;
+            // **1回に 500 件取る**（2026-08-29 実測）。サーバ側の上限がそこで、
+            // 200 件だと出力 4,848 枚で **25往復**になっていた。10往復へ減る。
+            //
+            //     直列 limit=200 … 25往復 / 1,299ms
+            //     直列 limit=500 … 10往復 /   770ms   ← これ
+            //
+            // **1ページを重くしたのではない。** 返す中身は同じで、往復の回数だけが減る
+            // （実測でも転送量は 23.1 MiB のまま変わらない）。
             for (let page = 0; page < 60; page += 1) {
-                const result = await scanOutputs({ offset, limit: 200 });
+                const result = await scanOutputs({ offset, limit: 500 });
                 if (!result.reachable) break;
                 const batch = result.outputs || [];
                 outputs.push(...batch);
@@ -1066,13 +1348,11 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
         return (result?.outputs || [])
             .filter(entry => entry?.filename)
             .map(entry => {
-                const query = new URLSearchParams({
-                    filename: String(entry.filename || ''),
-                    subfolder: String(entry.subfolder || ''),
-                    type: 'output',
-                });
+                // **組み立ては `core/outputUrl.js` の1本だけ**（2026-08-29）。
+                // サーバの索引から来るので `modified` / `size` が乗っており、
+                // **消して作り直した絵とは別の URL になる。**
                 return {
-                    url: `/api/view?${query.toString()}`,
+                    url: outputImageUrl(entry),
                     filename: entry.filename,
                     subfolder: entry.subfolder || '',
                 };
@@ -1239,8 +1519,20 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
      */
     let rebuildSidebar = null;
 
+    /**
+     * 最後に開いた全画面。**「開いているか」はこれで判断しない**
+     * ——`Esc` や閉じる釦から閉じられた場合、ここは古いまま残る
+     * （器の消滅はこちらを通らない）。開いているかどうかは器の実在で見る。
+     */
+    let fullscreenView = null;
+
     const openFullscreenWith = (seed) => {
+        // **面を作る直前に言語を当て直す。** 見出しと列名はここで一度だけ
+        // 文字が入るので、宿主の言語が後から読めるようになった場合、
+        // ここで取り直さないと**開き直しても英語のまま**になる。
+        applyLocale(displaySettings?.language);
         const view = openFullscreen(documentRef, { ...shared, display: displaySettings });
+        fullscreenView = view;
         trackPanel(view.panel);
         // 既に判定が済んでいる分は、開いた瞬間に反映する。
         if (Array.isArray(seed) && seed.length) view.panel.setRecords(applyVerdicts(seed, verdicts));
@@ -1253,6 +1545,36 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
     // 引数を渡してくることがあり、それを seed と読むと壊れる。
     const open = () => openFullscreenWith(null);
 
+    /**
+     * 開いている面を作り直す。**言語を変えたときだけ使う。**
+     *
+     * サイドバーだけを作り直していたのが不具合だった（2026-08-29 実機の報告）:
+     * 全画面から言語を変えた人には何も起きず、サイドバーを一度も開いていなければ
+     * `rebuildSidebar` が `null` で**丸ごと空振り**する。設定は正しく保存され、
+     * 設定画面の選択も新しい言語を指しているので、**画面からは正常に見える。**
+     *
+     * @returns {number} 作り直した面の数。**0 も返す**（何も起きなかったことを言うため）
+     */
+    function rebuildOpenPanels() {
+        let rebuilt = 0;
+        if (rebuildSidebar) { rebuildSidebar(); rebuilt += 1; }
+        // **器の実在で見る。** `fullscreenView` は `Esc` で閉じられても
+        // 更新されないので、これを「開いている」の根拠にすると
+        // 閉じた面を開き直してしまう。
+        if (documentRef?.getElementById?.(FULLSCREEN_ID) && fullscreenView) {
+            let seed = null;
+            try { seed = fullscreenView.panel?.getRecords?.() ?? null; } catch { seed = null; }
+            // **先に閉じる。** 閉じずに開き直すと器だけ差し替わり、
+            // 古い面が `openPanels` に残って見えない場所へ描き続ける。
+            try { fullscreenView.close(); } catch { /* 既に閉じている */ }
+            fullscreenView = null;
+            openFullscreenWith(seed);
+            rebuilt += 1;
+        }
+        if (!rebuilt) console.info(t('host.localeNoPanel'));
+        return rebuilt;
+    }
+
     app.registerExtension({
         name: EXTENSION_NAME,
         commands: [{
@@ -1260,6 +1582,50 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
             label: t('app.openFullscreen'),
             function: open,
         }],
+        /*
+         * **キャンバスノードの見た目と言葉**（`D-20260829-02`）。
+         *
+         * ノードの型そのものは Python 側（`unbake/nodes.py`）が登録する。
+         * ここでやるのは**画面へ出る言葉の差し替え**で、そうする理由は
+         * `NODE_DISPLAY_NAME_MAPPINGS` が固定の1文字列しか持てないからである
+         * ——ComfyUI 本体の訳の仕組みに乗ると、こちらの 12 言語のカタログと
+         * **訳が2箇所に分かれる**（片方だけ直る形を作らない）。
+         */
+        beforeRegisterNodeDef(nodeType, nodeData) {
+            if (nodeData?.name !== UNBAKE_NODE_TYPE) return;
+            nodeType.title = t('node.recipeSource.title');
+            if (nodeData) {
+                nodeData.display_name = t('node.recipeSource.title');
+                nodeData.description = t('node.recipeSource.help');
+            }
+        },
+        nodeCreated(node) {
+            if (node?.comfyClass !== UNBAKE_NODE_TYPE) return;
+            node.title = t('node.recipeSource.title');
+            // **押す口を1つ足す。** 画像を選んだだけでは組み直さない
+            // ——`loadApiJson` は**画面のグラフを丸ごと差し替える**ので、
+            // 選び間違えた1回で作りかけが消える。押した時だけにする。
+            if (!(node.widgets || []).some(w => w?.name === UNBAKE_BUILD_WIDGET)) {
+                node.addWidget?.('button', UNBAKE_BUILD_WIDGET, null, () => {
+                    buildFromRecipeSourceNode(node).catch(error => {
+                        console.error(t('node.recipeSource.buildFailed',
+                            { p1: String(error?.message || error) }));
+                    });
+                }, { serialize: false });
+                const button = (node.widgets || []).find(w => w?.name === UNBAKE_BUILD_WIDGET);
+                // 表示は訳す。**名前（鍵）は訳さない**——訳を鍵にすると、
+                // 言語を変えた瞬間に「もう在る」判定が外れてボタンが増える。
+                if (button) button.label = t('node.recipeSource.build');
+            }
+            // **URL の欄にも見出しを当てる。** 生の `url` のままだと、
+            // 何を貼る欄なのか（絵の URL なのか API の URL なのか）が判らない。
+            const urlWidget = (node.widgets || []).find(w => w?.name === 'url');
+            if (urlWidget) urlWidget.label = t('node.recipeSource.url');
+            for (const [index, key] of RECIPE_SOURCE_SLOT_KEYS.entries()) {
+                const slot = node.outputs?.[index];
+                if (slot) slot.label = t(key);
+            }
+        },
         // **`setup()` の中で登録する。** モジュールの評価時点では
         // `extensionManager` がまだ組み上がっていないことがある。
         async setup() {
@@ -1300,6 +1666,10 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
                 type: 'custom',
                 render: (el) => {
                     const build = () => {
+                        // **面を作る直前に言語を当て直す**（全画面と同じ理由）。
+                        // 宿主の設定はここまでに読み終わっているので、
+                        // 登録の時点で取れなかった言語がここで取れる。
+                        applyLocale(displaySettings?.language);
                         const panel = trackPanel(createUnbakePanel(el, {
                             ...shared,
                             mode: 'sidebar',
@@ -1363,6 +1733,11 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
     return {
         openFullscreen: open,
         whenLibraryReady: () => ensureLibrary(),
+        // 検査用の口。**「作り直した面の数」を外から数えられるようにする**
+        // ——言語の不具合は「保存も選択も正しいのに描き直らない」形で出るので、
+        // 内部が呼ばれたかではなく**何面が作り直されたか**を見ないと捕まらない
+        // （0 を返すのが、まさに実機で起きていた症状）。
+        rebuildOpenPanels: () => rebuildOpenPanels(),
         // 検査と実測用。**判定の表は1つしか無いことを外から確かめられるようにする。**
         verdicts,
     };

@@ -33,6 +33,8 @@
  * ——消すと「記録には何と書いてあったか」が辿れなくなる。
  */
 
+import { hashFromModelName } from './modelFileNames.js';
+
 /** `sha256` 由来の短い hash（Civitai の AutoV2）。**大文字小文字を揃える。** */
 function shortHash(value) {
     const text = String(value || '').trim().toLowerCase();
@@ -85,6 +87,25 @@ export function resolveOne(resource, kindIndex, installed = []) {
     const hash = shortHash(resource.hash) || shortHash(resource.sha256);
     if (hash && kindIndex.bySha10?.[hash]) {
         return { resolved: true, name: kindIndex.bySha10[hash], by: 'hash' };
+    }
+    // 2.5 **名前の中に埋まっているハッシュ**（2026-08-29 実機で確定）。
+    //
+    //     記録が要求     Illustrious/aMixIllustrious_aMix(B199B92EE9).safetensors
+    //     手元に在る     IllustriousnimeMixIllustrious_aMix.safetensors
+    //     索引の bySha10  "b199b92ee9" -> "aMixIllustrious_aMix"
+    //
+    // **括弧の中身は、その索引が持っているハッシュそのもの**だった。両側が鍵を
+    // 持っているのに装飾つきの名前を素で突き合わせて外し、「未導入モデル」と
+    // 言っていた（利用者の報告「再現不可に分類されます」の正体・記録 128383826）。
+    //
+    // **版 id より前に置く。** ハッシュはバイト同一の証拠で、版 id は申告にすぎない
+    // ——上の 0. と 2. が同じ理由で名前より前に在るのと揃える。
+    //
+    // **括弧を外した名前では当てにいかない。** それは推測で、同じ名前の別の版を
+    // 掴み得る。索引に当たらなければ、ここは何も言わない。
+    const embedded = hashFromModelName(declared);
+    if (embedded && kindIndex.bySha10?.[embedded]) {
+        return { resolved: true, name: kindIndex.bySha10[embedded], by: 'hash' };
     }
     // 3. 版 id。**`modelVersionId` の別名も見る**（Civitai の API 経由だとこちら）。
     for (const key of ['id', 'modelVersionId', 'versionId']) {

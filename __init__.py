@@ -3,13 +3,24 @@
 Copyright (C) 2026 syugoji
 SPDX-License-Identifier: GPL-3.0-or-later
 
-**キャンバスノードは1つも登録しない。** この拡張が出すのはパネルで、
-グラフはそのパネルが生成する。`NODE_CLASS_MAPPINGS` が空でも
-ComfyUI Manager は配れる（`ComfyUI-Custom-Scripts` が同じ形）。
+**キャンバスノードはちょうど1個だけ登録する**（`D-20260829-02`）。
+この拡張の中心は今もパネルで、グラフはそのパネルが生成する——ノードを出すのは
+**ComfyUI で唯一の自動増殖経路が「共有された workflow.json に載っていること」だから**で、
+Manager が見るのは `node.type` だけなので、0 個の拡張はその連鎖に原理的に乗れない。
+
+**表はここで組まない**（`unbake/nodes.py` が正本）。ここで `= {}` と書き直すと、
+あちらを直しても ComfyUI へ届かない——`tests/comfy_package_test.mjs` が
+「入口が表を自前で定義し直していないこと」まで見ている。
 """
 
-NODE_CLASS_MAPPINGS: dict = {}
-NODE_DISPLAY_NAME_MAPPINGS: dict = {}
+try:
+    from .unbake.nodes import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
+except ImportError:
+    # **入口を素の module として取り込む読まれ方がある**（pytest はここに
+    # `__init__.py` が在るせいで、入口自体を `__init__` という名前で読み込む）。
+    # そのとき相対輸入は成立しないが、**空の表で代用しない**——代用すると
+    # 「ノードが1個も出ない状態」が検査では緑になる。指す先は同じ1つのまま。
+    from unbake.nodes import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
 
 #: ComfyUI がここを静的配信し、直下の `*.js` を拡張として読み込む。
 WEB_DIRECTORY = "./web"

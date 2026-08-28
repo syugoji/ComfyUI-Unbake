@@ -272,8 +272,21 @@ Install `ComfyUI-Unbake` from ComfyUI Manager, or place it under `custom_nodes`.
 ComfyUI/custom_nodes/ComfyUI-Unbake/
 ```
 
-**It adds no canvas nodes at all.** What appears is a sidebar tab, and the same screen can
+**It adds exactly one canvas node.** The rest is a sidebar tab, and the same screen can
 be opened fullscreen (command `Unbake: Open fullscreen`, `Esc` to close).
+
+The node is **Unbake — Recipe from Image**. Give it a picture — or paste an image URL —
+press the button, and it reads how that picture was made and builds the graph from it.
+**The node stays at the head of the graph** and feeds prompt, seed, steps and cfg
+downstream — swap the image and the whole graph follows it.
+
+The URL field takes exactly what the sidebar takes: a Civitai image page, or a ComfyUI
+output URL. It goes through the same routing, so anything the panel accepts the node
+accepts, and anything it refuses the node refuses too — with the reason on the console.
+
+The trade is worth stating plainly: **a graph built that way needs Unbake installed to
+run.** A graph that works without Unbake and a graph that follows the image cannot be the
+same graph. If you want the plain one, open the sidebar and build from there instead.
 
 ---
 

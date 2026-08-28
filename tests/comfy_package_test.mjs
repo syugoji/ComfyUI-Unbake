@@ -98,8 +98,77 @@ test('サイドバーのボタンから製品名にたどり着ける（どの�
     }
 });
 
-test('キャンバスノードを1つも登録しない（パネルだけを出す）', () => {
-    assert.match(INIT, /NODE_CLASS_MAPPINGS:\s*dict\s*=\s*\{\}/, 'ノードを登録し始めている');
+/**
+ * **キャンバスノードは ちょうど 1 個。**
+ *
+ * 以前ここは「1つも登録しない」を固定していた（`NODE_CLASS_MAPPINGS: dict = {}`）。
+ * `D-20260829-02` でその宣言だけを撤回した——ComfyUI で唯一の自動増殖経路は
+ * 「ワークフロー JSON を共有 → 開いた人の画面に赤いノードが出る → Manager が入れ方を言う」
+ * であり、Manager が見るのは `node.type` だけなので、**キャンバスノードを 0 個しか
+ * 持たない拡張は保存された workflow.json に一度も現れない**（この連鎖に原理的に乗らない）。
+ *
+ * **撤回したのは 0 個であって、上限ではない。** 機能ごとにノードを生やすと、
+ * 「パネルでやること」と「ノードでやること」が二重化して両方が腐る。だから
+ * **増殖を機械で止める**——0 個へ戻す・2 個へ増やす・登録名を変える、の
+ * どれをやってもここが赤くなる（変異試験で3通りとも確認済み・2026-08-29）。
+ */
+const NODES = fs.readFileSync(path.join(ROOT, 'unbake/nodes.py'), 'utf8');
+
+/** `nodes.py` の表から鍵を読む。**値は見ない**（クラス名は改名しても構わない）。 */
+function mappingKeys(source, name) {
+    const block = source.match(
+        new RegExp(String.raw`^${name}[^=\r\n]*=\s*\{([\s\S]*?)^\}`, 'm'));
+    assert.ok(block, `${name} の宣言が読めない（表の形が変わった）`);
+    return [...block[1].matchAll(/^\s*["']([^"']+)["']\s*:/gm)].map(m => m[1]);
+}
+
+test('キャンバスノードをちょうど1個だけ登録する（増やさない・減らさない）', () => {
+    assert.deepEqual(
+        mappingKeys(NODES, 'NODE_CLASS_MAPPINGS'),
+        ['UnbakeRecipeSource'],
+        'キャンバスノードの数か登録名が変わっている（1個・UnbakeRecipeSource で固定）',
+    );
+    // **入口が空の表を再定義していないこと。** `nodes.py` が正しくても、
+    // `__init__.py` が後から `= {}` で上書きすれば ComfyUI には何も出ない。
+    assert.doesNotMatch(
+        INIT, /NODE_CLASS_MAPPINGS\s*(?::\s*dict\s*)?=\s*\{/,
+        '入口が表を自前で定義し直している（nodes.py の表が届かなくなる）',
+    );
+    assert.match(
+        INIT, /from\s+\.unbake\.nodes\s+import[\s\S]{0,200}?NODE_CLASS_MAPPINGS/,
+        '入口が nodes.py の表を輸入していない',
+    );
+});
+
+test('表示名の表が、登録した鍵と1対1で対応する', () => {
+    // 片方だけ改名すると、**ノードは出るが名前が生の識別子のまま**になる。
+    // 実害が小さいので気づかれず、そのまま公開される形。
+    assert.deepEqual(
+        mappingKeys(NODES, 'NODE_DISPLAY_NAME_MAPPINGS'),
+        mappingKeys(NODES, 'NODE_CLASS_MAPPINGS'),
+        '登録名と表示名の鍵が食い違っている',
+    );
+});
+
+test('README が「ノードは1つも増えない」と言い続けていない（両言語）', () => {
+    // **宣言は4箇所に散っていた**（入口の docstring・README 2本・入口 JS）。
+    // 1つでも残すと、**読んだ人は実物と違うことを信じる**——しかも
+    // 「増えない」と書いてある方が安心なので、疑われずに残る。
+    for (const name of ['README.md', 'README.ja.md']) {
+        const text = fs.readFileSync(path.join(ROOT, name), 'utf8');
+        assert.doesNotMatch(text, /no canvas nodes|キャンバスノードは1つも/,
+            `${name} が「ノードを出さない」と言ったままになっている`);
+        assert.match(text, /Unbake — (?:Recipe from Image|画像から再現の値)/,
+            `${name} がノードの名前を書いていない`);
+    }
+});
+
+test('登録したノードの型名を、フロント側も同じ字で持っている', async () => {
+    // **ここが割れると、組み上がったグラフにノードが差さらない**——増殖経路が
+    // 静かに切れる（グラフは開くので、見た目には何も壊れていない）。
+    const { UNBAKE_NODE_TYPE } = await import('../web/core/recipeSourceNode.js');
+    assert.equal(UNBAKE_NODE_TYPE, mappingKeys(NODES, 'NODE_CLASS_MAPPINGS')[0],
+        'Python の登録名とフロントの型名が違う');
 });
 
 test('pyproject.toml に依存が無い（依存のライセンスが乗ってこないこと）', () => {

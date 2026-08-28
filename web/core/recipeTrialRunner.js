@@ -27,6 +27,7 @@
 import { requireEnvironment } from './environment.js';
 import { readStored, writeStored, removeStored } from './storage.js';
 import { analyzeRecipeReplayCapability } from './recipeReplayCapability.js';
+import { outputImageUrl } from './outputUrl.js';
 import { t } from '../i18n/index.js';
 
 const STORAGE_PREFIX = 'unbake.trial.';
@@ -136,12 +137,10 @@ export function historyImages(entry) {
                 output_node_id: outputNodeId,
                 image_index: images.filter(item => item.output_node_id === outputNodeId).length,
             };
-            const params = new URLSearchParams({
-                filename: normalized.filename,
-                subfolder: normalized.subfolder,
-                type: normalized.type,
-            });
-            normalized.url = `/api/view?${params.toString()}`;
+            // **組み立ては `core/outputUrl.js` の1本だけ**（2026-08-29）。
+            // 履歴から来た1枚は mtime も大きさも判らないので、印は毎回変わる形になる
+            // ——**出したばかりの絵が古い中身で出る**のを防ぐには、それが正しい。
+            normalized.url = outputImageUrl(normalized, { type: normalized.type });
             images.push(normalized);
             return;
         }

@@ -307,8 +307,12 @@ test('画面のコードが使う鍵は全部カタログに在る', async () =>
     // `t('…')` の走査に映らないので、**足し忘れると `[settings.foo]` が
     // 画面に出るまで気づけない**（実際に12個まとめて足し忘れた）。
     // ここは「鍵らしい形の文字列」を拾って、名前空間が既知のものだけを見る。
+    // `node` は 2026-08-29 に足した（`D-20260829-02` のキャンバスノード）。
+    // **表へ入れて引く形しか無い名前空間**——出力の見出しは配列から `t(key)` で
+    // 引くので、ここへ入れないと**足し忘れがノードの口に `[鍵]` として出るまで
+    // 誰も気づけない**（`settings` で12個まとめて足し忘れたのと同じ形）。
     const NAMESPACES = new Set(['app', 'mode', 'drop', 'filter', 'column', 'verdict',
-        'list', 'log', 'reason', 'sweep', 'settings', 'host', 'core']);
+        'list', 'log', 'reason', 'sweep', 'settings', 'host', 'core', 'node']);
     const tableKeys = new Set();
     for (const f of files) {
         const text = stripComments(await readFile(f, 'utf8'));

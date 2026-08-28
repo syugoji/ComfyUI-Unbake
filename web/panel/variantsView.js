@@ -20,6 +20,7 @@
 import { describeDifference, FINGERPRINT_BLIND_SPOTS, FINGERPRINT_FIELDS } from '../core/outputFingerprint.js';
 import { conditionsFromPrompt, conditionsFromRecord } from '../core/outputFingerprint.js';
 import { t } from '../i18n/index.js';
+import { outputImageUrl } from '../core/outputUrl.js';
 
 function makeElement(documentRef, tag, attributes = {}, children = []) {
     const node = documentRef.createElement(tag);
@@ -33,14 +34,16 @@ function makeElement(documentRef, tag, attributes = {}, children = []) {
     return node;
 }
 
-/** 画像を ComfyUI の口で引く URL（**パスは組み立てない**）。 */
+/**
+ * 画像を ComfyUI の口で引く URL（**パスは組み立てない**）。
+ *
+ * **組み立ては `core/outputUrl.js` の1本だけ**（2026-08-29）。ここで自前に
+ * 組んでいたせいで、**消して作り直した絵に鮮度の印が載らず**、ブラウザが
+ * 前の中身を出していた（ComfyUI は空いた番号を再利用するので URL が同じになる）。
+ * 名前は呼び手のために残す——中身だけを1本へ寄せる。
+ */
 export function outputViewUrl(entry) {
-    const query = new URLSearchParams({
-        filename: String(entry?.filename || ''),
-        subfolder: String(entry?.subfolder || ''),
-        type: 'output',
-    });
-    return `/api/view?${query.toString()}`;
+    return outputImageUrl(entry);
 }
 
 /**

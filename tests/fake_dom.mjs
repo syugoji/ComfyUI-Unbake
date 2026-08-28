@@ -240,10 +240,25 @@ function matchOne(root, selector) {
     return null;
 }
 
+/** 木を降りて `id` の一致する節を探す。**最初の1つ**（本物と同じ）。 */
+function findById(roots, id) {
+    for (const node of roots) {
+        if (!node) continue;
+        if (node.id === id) return node;
+        const hit = findById(node.children || [], id);
+        if (hit) return hit;
+    }
+    return null;
+}
+
 export function fakeDocument() {
     const doc = {
         createElement: (tag) => new FakeNode(tag, doc),
-        getElementById: () => null,
+        // **本当に探す。** `() => null` の偽物にしていたので、`id` で器を
+        // 探す実装（全画面の差し替え・作り直し）が**検査からは常に「無い」**
+        // と見え、**付けても外しても同じ結果**になっていた。
+        // 人形の穴は、原因が実装側に在るように見えるので一番たちが悪い。
+        getElementById: (id) => findById([doc.head, doc.body].filter(Boolean), String(id)),
         querySelector: (selector) => matchOne([doc.head, doc.body].filter(Boolean), selector),
         head: null,
         body: null,
