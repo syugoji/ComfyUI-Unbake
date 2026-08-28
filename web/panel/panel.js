@@ -226,6 +226,10 @@ const verdictShort = (key) => (VERDICT_CODES[key] ? t(VERDICT_CODES[key].short) 
 /** 一覧の見せ方。**モードではなく器**——記録も絞り込みも並びも共通で、変わるのは並べ方だけ。 */
 export const LIST_VIEWS = new Set(['table', 'tiles']);
 
+/** 品書きの見積もり寸法（丸め用）。**実測ではなく余白**——大きめに見ておく。 */
+const MENU_ROOM_INLINE = 280;
+const MENU_ROOM_BLOCK = 40;
+
 /** 狭い器と判断する幅。ComfyUI のサイドバー既定はこれより狭い。 */
 export const COMPACT_WIDTH = 520;
 
@@ -3278,7 +3282,17 @@ export function createUnbakePanel(el, {
                 off: !downloadIo || !nodePackIo || !canModel || !canNode,
             },
         ].filter(item => !item.off);
-        if (!items.length) return null;
+        if (!items.length) {
+            // **押したのに何も起きない、を作らない**（`D-20260828-01` F4）。
+            // 絞り込みで対象が消えた・口が渡っていない、のどちらでも
+            // ここへ来る。**理由を言えば、次の一手が決まる。**
+            const why = (!downloadIo && !nodePackIo)
+                ? t('download.unavailable')
+                : t('download.nothingHere');
+            appendLog(why);
+            showToast(why);
+            return null;
+        }
         const box = downloadButton.getBoundingClientRect?.() || { left: 0, bottom: 0 };
         return showMenu(items, {
             x: Number(box.left) || 0,
@@ -3734,10 +3748,21 @@ export function createUnbakePanel(el, {
             button.addEventListener('click', () => { closeContextMenu(); item.run(); });
             return button;
         }));
-        // 押した所に出す。`fixed` なので、一覧を巻いても位置がずれない。
+        /*
+         * 押した所に出す。`fixed` なので、一覧を巻いても位置がずれない。
+         *
+         * **ただし視野の外へは出さない**（`D-20260828-01` F3）。一覧の下の方や
+         * 右端で押すと、`fixed` の座標がそのまま窓の外を指し、
+         * **品書きが画面の外に出て届かない**（`fixed` なので巻いても追えない）。
+         */
+        const view = doc?.defaultView || globalThis;
+        const room = (available, size, at) => {
+            if (!Number.isFinite(available) || available <= 0) return Math.max(0, at);
+            return Math.max(0, Math.min(at, available - size));
+        };
         menu.style.position = 'fixed';
-        menu.style.left = `${x}px`;
-        menu.style.top = `${y}px`;
+        menu.style.left = `${room(view?.innerWidth, MENU_ROOM_INLINE, x)}px`;
+        menu.style.top = `${room(view?.innerHeight, MENU_ROOM_BLOCK * items.length, y)}px`;
         contextMenuNode = menu;
         root.append(menu);
         /*
@@ -5378,8 +5403,17 @@ export function createUnbakePanel(el, {
          * 「圧迫感を与えないように」）。**小さくするのではなく、出さない。**
          * 全部揃っている環境では1つも出ないので、帯は元の長さのまま。
          */
-        const canModel = records.filter(isDownloadable).length;
-        const canNode = records.filter(needsNode).length;
+        /*
+         * **数える母集団を、語と揃える**（`D-20260828-01` F4）。
+         *
+         * 出す出さないは `records`（全件）で決めているのに、口に書く件数は
+         * `shownRecords()`（絞り込み後）だった。**絞り込むと「ダウンロード（0）」
+         * が出たまま押せて、押しても品書きが開かない**——`openDownloadMenu` は
+         * 行が0本なら黙って `null` を返すので、押した人には何も起きない。
+         */
+        const shownForDownload = shownRecords();
+        const canModel = shownForDownload.filter(isDownloadable).length;
+        const canNode = shownForDownload.filter(needsNode).length;
         // **足りない物が無ければ、口ごと出さない**（2026-08-28）。
         // 圧迫感への答えは「小さくする」ではなく「出さない」。
         downloadButton.style.display = (canModel || canNode) ? '' : 'none';
@@ -5451,7 +5485,14 @@ export function createUnbakePanel(el, {
         }
 
         tableBody.replaceChildren();
-        for (const run of runs) {
+        /*
+         * **見えない表を組まない**（`D-20260828-01` F2）。
+         *
+         * タイル表示のときも表を全件ぶん組んでいた。実測（346件）で
+         * **5,536節点**が毎回捨てられる——しかも `render()` は検索欄の
+         * **打鍵ごと**に走るので、打つたびにそれを作り直していた。
+         */
+        if (!asTiles) for (const run of runs) {
         if (run.name !== null) {
             tableBody.append(element('tr', { class: 'unbake-group-row' }, [
                 element('td', {

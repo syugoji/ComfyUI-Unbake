@@ -174,9 +174,17 @@ test('全画面は、手持ちをそのまま受け取る（落とし込み分�
         const opened = shell.byClass('unbake-root');
         assert.ok(opened, '全画面にパネルが描かれていない');
         // **取り直すと 20 に戻る。** 21 であることが「手渡した」ことの証拠。
+        //
+        // **器は表とタイルの両方がありうる**（既定はタイル・2026-08-28 以降は
+        // タイル表示のとき表を組まない）。数えたいのは件数なので、
+        // 出ている方を数える——**器の違いでこの検査が落ちる意味は無い。**
         const rows = opened.allByClass('unbake-table')[0]
             ?.findAll(n => n.tagName === 'TR').length ?? 0;
-        assert.ok(rows >= 21, `全画面が ${rows} 行しか描いていない（取り直して落とし込み分が消えている）`);
+        const tiles = opened.allByClass('unbake-tile')
+            .filter(node => node.className === 'unbake-tile').length;
+        const shown = Math.max(rows, tiles);
+        assert.ok(shown >= 21,
+            `全画面が ${shown} 件しか描いていない（取り直して落とし込み分が消えている）`);
     } finally { calls.restore(); }
 });
 
@@ -219,6 +227,8 @@ test('狭い器でも Sweep のセルを行ごとに組み立てている（見�
     const el = doc.createElement('div');
     const panel = narrowTo(createUnbakePanel(el, {
         documentRef: doc, width: 297, makeSweepRunner: () => ({}),
+        // **表示は表**（Sweep の列を数える検査）。面の既定はタイル。
+        display: { listView: 'table' },
     }));
     panel.setRecords(rowsOf(3).map(libraryRowToRecord).map(r => ({ ...r, libraryId: r.id })));
     assert.equal(panel.density, 'compact');

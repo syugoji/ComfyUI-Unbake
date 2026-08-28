@@ -77,6 +77,7 @@ export const messages = {
     "reason.previewTooLarge": "画像が大きすぎるので記録に添えませんでした（記録は残ります）",
     "reason.civitaiNotWired": "Civitai 画像 {id}: URL しか来ないので、API から取り直して再構成する必要があります。この経路はまだ配線していません。",
     "host.notFound": "[Unbake] ComfyUI の app が見つからないので登録しませんでした。/scripts/app.js も window.comfyAPI.app.app も解決できていません。",
+    "host.noSidebarTab": "[Unbake] サイドバーへ登録できませんでした（extensionManager.registerSidebarTab が見つかりません）。ComfyUI 本体の frontend が変わった可能性があります。コマンドパレットの「Unbake を全画面で開く」からは開けます。",
 
     // --- generationRecord ---
     "core.generationRecord.1": "(名前なし)",
@@ -561,6 +562,7 @@ export const messages = {
     "download.cancel": "止める",
     "download.stopping": "今の1本が終わったら止めます…",
     "download.unavailable": "この構成ではダウンロードの口が配線されていません。",
+    "download.nothingHere": "いま見えているレコードには、ダウンロードするものがありません（絞り込みを外すと変わることがあります）。",
     "download.busy": "既にダウンロード中です。",
     "download.scopeHidden": "※ {hidden} 件は絞り込みや選択の外なので見ていません。",
     "download.rate": "{index} / {total} 件（{running} 本を同時に取得中） {done} / {all}（{percent}%） {speed}",

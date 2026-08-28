@@ -563,6 +563,25 @@ export function buildSweepPlan(recipe, template, options = {}) {
             recipeId: template.recipeId || recipe.id || null,
         });
     }
+    /*
+     * **同じ絵を指す2つの升を通さない**（`D-20260828-01` E5）。
+     *
+     * `validateAxis` は**軸の値が同じ**ときを弾くが、**違う値が同じ組み上がりへ
+     * 潰れる**ことがある（範囲外の値がクランプされる・効かない組み合わせで
+     * 無視される、など）。潰れると signature が一致し、実行側は
+     * 「もう出ている」と読んで**片方を回さない**——再開すると
+     * **別ラベルの2タイルが同じ1枚を指す**。
+     *
+     * それでも画面は「N件中N件が比較できる」と言い続ける。この面の中核の宣言は
+     * **比較が妥当であること**なので、ここは黙って通してはいけない。
+     */
+    const seen = new Map();
+    for (const cell of built) {
+        const prior = seen.get(cell.signature);
+        assert(!prior, `cells "${prior}" and "${cell.id}" build the same graph`
+            + ' (different axis values collapsed into one), so they cannot be compared');
+        seen.set(cell.signature, cell.id);
+    }
     return { cells: built, baselineId: baseline.id };
 }
 

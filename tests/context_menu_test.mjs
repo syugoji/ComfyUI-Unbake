@@ -28,7 +28,8 @@ function mount(records, io = {}) {
         documentRef: doc,
         // **確認を切って測る。** 確認の面まで通すと、測っているのが
         // 品書きなのか確認の面なのか判らなくなる。
-        display: { confirmBeforeDelete: false },
+        // **表示は表**（下の検査が行を見る）。面の既定はタイル。
+        display: { confirmBeforeDelete: false, listView: 'table' },
         ...io,
     });
     panel.setRecords(records);

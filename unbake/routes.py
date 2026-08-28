@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -69,6 +70,11 @@ from . import originals
 from .outputs import RAW_KEYS, delete_output, get_output_scanner, recover_graph
 from .raindrop import list_bookmarks
 from .services.recipe_output_index import get_recipe_output_index
+from .environment import (
+    UnbakeEnvironment,
+    has_environment,
+    install_environment,
+)
 from .settings import FileSettings
 
 #: 参照画像として返してよい型。**中身の型で決める**（拡張子は名乗りにすぎない）。
@@ -95,6 +101,57 @@ def get_library() -> RecordLibrary:
     if _library is None:
         _library = RecordLibrary(get_settings())
     return _library
+
+
+async def _download_file_for_environment(url, save_path, *, progress_callback=None):
+    """伴走モデル1本を、**置き先が決まっている**形で落とす。
+
+    `UnbakeEnvironment(download_file=...)` の形（`(bool, 結果)` を返す）に合わせた
+    薄い覆いで、中身は `download_model` をそのまま使う——HTML を掴んだときの
+    判別・続きからの再開・大きさと hash の照合・上限は**あちらが既に持っている**。
+
+    **`kind` は渡さない。** 伴走の置き場は目録の `folder`（`text_encoders` /
+    `ultralytics_bbox` など）で、`ALLOWED_KINDS` には無い。呼び手が
+    ComfyUI の `folder_paths` で解決済みなので、その `save_path` をそのまま使う。
+    """
+    import asyncio
+
+    def run():
+        return download_model(
+            url=str(url),
+            kind="",
+            filename=os.path.basename(str(save_path)),
+            api_key=str(get_settings().get("civitai_api_key", "") or ""),
+            target=str(save_path),
+            on_progress=(
+                (lambda written, total: None) if progress_callback is None else None
+            ),
+        )
+
+    try:
+        result = await asyncio.to_thread(run)
+    except DownloadError as error:
+        return False, str(error)
+    return True, result
+
+
+def install_default_environment() -> None:
+    """環境を据える。**据えないと伴走モデルの取得が必ず 500 になる。**
+
+    `D-20260828-01` E2。`install_environment(...)` を呼ぶ場所がどこにも無く、
+    `require_environment()` が毎回 `RuntimeError: Unbake: 環境が未設置` を投げていた
+    ——Flux / Qwen / Chroma の**全件**で失敗する。しかも画面は
+    `downloadable: true` を出すので、**押すと必ず失敗する口が出ていた。**
+
+    **据え直さない。** 検査が自前の環境を入れている間に上書きすると、
+    そちらの意図を黙って壊す。
+    """
+    if has_environment():
+        return
+    install_environment(UnbakeEnvironment(
+        settings=get_settings(),
+        download_file=_download_file_for_environment,
+    ))
 
 
 def reset_state() -> None:
@@ -440,6 +497,23 @@ def start_download(version_id: str, *, kind: Optional[str] = None,
         with _downloads_lock:
             _downloads[key] = _download
         return {"ok": False, "error": str(error), "code": code, "state": dict(_download)}
+    except BaseException as error:
+        # **枠を握ったまま落ちない**（`D-20260828-01` E3）。
+        #
+        # 元は `DownloadError` しか受けていなかった。置き場が未作成だと
+        # `shutil.disk_usage` が `FileNotFoundError` を投げてここを素通りし、
+        # **`_downloads[key]` は永久に `running` のまま**残る。走行枠は
+        # `MAX_PARALLEL_DOWNLOADS` 本しか無いので、**3回起きると以後は
+        # `busy` しか返らない**——ComfyUI を再起動するまで1本も落とせない。
+        # しかも画面には「取得中」と出続けるので、詰まっていることが判らない。
+        #
+        # `BaseException` で受けるのは、`KeyboardInterrupt` や
+        # `SystemExit` でも枠を返す必要があるため。**握り潰さずに投げ直す。**
+        _download = {**mine, "state": "failed", "error": str(error) or type(error).__name__,
+                     "code": "unexpected"}
+        with _downloads_lock:
+            _downloads[key] = _download
+        raise
 
     _download = {**mine, "state": "done", **result}
     with _downloads_lock:
@@ -583,6 +657,11 @@ def register_routes() -> bool:
     if routes is None:
         return False
 
+    # **環境を据えるのはここ**（`D-20260828-01` E2）。据える場所がどこにも無く、
+    # 伴走モデルの取得が**全件 500** を返していた。口を登録する側と同じ場所で
+    # 据えれば、口が在るのに環境が無い、という組み合わせが起こらない。
+    install_default_environment()
+
     @routes.get("/unbake/settings")
     async def _get_settings(_request):
         return web.json_response(read_settings())
@@ -604,7 +683,15 @@ def register_routes() -> bool:
             except (TypeError, ValueError):
                 return fallback
 
-        return web.json_response(list_records(
+        import asyncio
+
+        # **本体のイベントループの上で走らせない**（`D-20260828-01` 群D）。
+        # 初回は `fill_base_models()` → `model_index.build()` が走り、実測 5〜6秒。
+        # `MAX_FILES=20000` に近い環境では数十秒——その間 ComfyUI の
+        # `/prompt` も進捗の WebSocket もキュー表示も**全部返らない。**
+        # このファイルは既に7箇所で `to_thread` を使っている。同じ形にする。
+        return web.json_response(await asyncio.to_thread(
+            list_records,
             offset=_int("offset", 0),
             limit=max(1, min(1000, _int("limit", 200))),
             rescan=request.query.get("rescan") == "1",
@@ -620,11 +707,21 @@ def register_routes() -> bool:
 
     @routes.get("/unbake/outputs")
     async def _get_outputs(request):
+        import asyncio
+
         record_id = request.query.get("id", "")
         if record_id:
-            return web.json_response(record_outputs(
+            # **既定では数え直さない**（`D-20260828-01` 群D）。
+            #
+            # `recipe_output_index.get_outputs()` の `refresh` は既定 True で、
+            # 出力フォルダ全体を `os.walk` して**全ファイルの `getmtime` を取る**
+            #（実測 4,851枚で初回 2,891ms・差分でも 187ms）。ここの既定も
+            # `!= "0"` ＝ True だったので、**呼べば必ず全件 stat していた。**
+            # 更新が要る呼び手（再現の直後・Sweep の開始時）は `refresh=1` を付ける。
+            return web.json_response(await asyncio.to_thread(
+                record_outputs,
                 record_id,
-                refresh=request.query.get("refresh") != "0",
+                refresh=request.query.get("refresh") == "1",
             ))
 
         def _int(name: str, fallback: int) -> int:
@@ -634,7 +731,9 @@ def register_routes() -> bool:
                 return fallback
 
         raw_keys = [key for key in request.query.get("keys", "").split(",") if key]
-        return web.json_response(scan_outputs(
+        # **実測で一番重い口。** 出力 4,851枚で約45秒、その間すべての HTTP が返らない。
+        return web.json_response(await asyncio.to_thread(
+            scan_outputs,
             offset=_int("offset", 0),
             limit=max(1, _int("limit", 200)),
             keys=raw_keys or None,

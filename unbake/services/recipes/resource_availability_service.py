@@ -53,8 +53,9 @@ SCHEMA_VERSION = 1
 #: 「手段を奪う側」へ倒れてはいけないので、黒リストへ反転させた。
 #:
 #: `static/js/utils/recipeMissingModels.js` の `NON_LOADABLE_FILE_TYPES` と
-#: 同一集合であることを `tests/services/test_resource_availability_service.py` が
-#: 両ファイルを読んで固定する。
+#: 同一集合であることを `tests/declared_tests_exist_test.mjs` が
+#: 両ファイルを読んで固定する（2026-08-28: それまでは**存在しない検査**を
+#: 名指ししていた。名前が在ると読んだ人はそこで確かめるのをやめる）。
 NON_LOADABLE_FILE_TYPES = frozenset({"training data", "config"})
 
 AVAILABLE = "available"

@@ -82,6 +82,7 @@ export const messages = {
     "reason.previewTooLarge": "الصورة أكبر من أن تُرفق (يُحفظ السجل على أي حال)",
     "reason.civitaiNotWired": "صورة Civitai رقم {id}: يصل رابط فقط، لذا يجب جلبها من الواجهة البرمجية وإعادة بنائها. هذا المسار لم يُوصَل بعد.",
     "host.notFound": "[Unbake] لم يُعثر على app الخاص بـ ComfyUI، لذا لم يُسجَّل شيء. لم يُحلّ لا /scripts/app.js ولا window.comfyAPI.app.app.",
+    "host.noSidebarTab": "[Unbake] تعذّر تسجيل تبويب الشريط الجانبي (extensionManager.registerSidebarTab غير موجود). ربما تغيّرت واجهة ComfyUI. لا يزال بإمكانك فتح Unbake من لوحة الأوامر.",
 
     // --- generationRecord ---
     "core.generationRecord.1": "(بلا اسم)",
@@ -566,6 +567,7 @@ export const messages = {
     "download.cancel": "إيقاف",
     "download.stopping": "سيتوقف بعد الملف الحالي…",
     "download.unavailable": "التنزيل غير موصول في هذه النسخة.",
+    "download.nothingHere": "لا يوجد ما يمكن تنزيله بين السجلات المعروضة حاليا (إزالة عوامل التصفية قد تغيّر ذلك).",
     "download.busy": "هناك تنزيل جارٍ بالفعل.",
     "download.scopeHidden": "ملاحظة: {hidden} سجلًا خارج التصفية أو التحديد الحالي ولم يُنظر فيها.",
     "download.rate": "{index} / {total} ({running} في آن واحد) {done} / {all} ({percent}٪) {speed}",

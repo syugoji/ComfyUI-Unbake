@@ -81,8 +81,15 @@ export function applyResolvedResources(recipe, resolved) {
 
     // --- LoRA ---------------------------------------------------------------
     // 解決できた LoRA の資源だけを候補にする（checkpoint は上で使った）。
+    // **LoRA として積むのは LoRA だけ**（`D-20260828-01` 群B）。
+    //
+    // 元は「checkpoint でなければ」で拾っていたので、
+    // **embed / vae / upscaler が `LoraLoader` へ押し込まれていた**
+    // ——実測の分布（`civitaiClient.js`・316件）に embed 65 / upscaler 15 /
+    // vae 6 が在るので、珍しい形ではない。種別は `resourceKind()` が寄せる
+    // （`lycoris` / `locon` / `dora` はここで `lora` になる）。
     const candidates = resources
-        .filter(item => item.kind && item.kind !== 'checkpoint')
+        .filter(item => item.kind === 'lora')
         .map(item => ({ resource: item, hit: byVersion.get(Number(item.modelVersionId)) }))
         .filter(item => item.hit);
 

@@ -99,6 +99,33 @@ def _host_of(url: str) -> str:
         return ""
 
 
+#: 鍵を出してよい相手。**鍵は Civitai のもの**なので、Civitai にしか出さない。
+#:
+#: `civitai.py` の `DOWNLOAD_HOSTS` と同じ並びだが、**ここは import しない**——
+#: あちらは「落として良い相手」で、`use_civarchive` を入れると
+#: `huggingface.co` が足される（`civarchive.EXTRA_DOWNLOAD_HOSTS`）。
+#: **落として良い相手と、鍵を出してよい相手は別**なので、同じ名前に寄せると
+#: 片方を広げた瞬間にもう片方も広がる。
+AUTH_HOSTS = ("civitai.com", "civitai.red")
+
+
+def _may_send_key(url: str, api_key: str) -> bool:
+    """この宛先へ鍵を出してよいか。
+
+    **転送のときだけ守っていた**（`_DropAuthOnHostChange`）。**初回の要求には
+    その判定が無かった**ので、`use_civarchive` を入れていると
+    `civarchive.py` が返した `huggingface.co` のミラーへ
+    `Authorization: Bearer <Civitaiのキー>` をそのまま付けて出していた。
+
+    **宛先を決めているのは civarchive.com（第三者）**である。返す URL を
+    変えるだけで、こちらの鍵をどこへでも送らせられる形になっていた。
+    """
+    if not api_key:
+        return False
+    host = _host_of(url)
+    return host in AUTH_HOSTS or any(host.endswith(f".{allowed}") for allowed in AUTH_HOSTS)
+
+
 class _DropAuthOnHostChange(urllib.request.HTTPRedirectHandler):
     """行き先が変わったら `Authorization` を持ち越さない。
 
@@ -221,8 +248,17 @@ def download_model(
     opener: Optional[Callable[..., Any]] = None,
     should_cancel: Optional[Callable[[], bool]] = None,
     root: str = "",
+    target: Optional[str] = None,
 ) -> Dict[str, Any]:
     """モデルを1つ落とす。
+
+    Args:
+        target: 置き先を**呼び手が既に決めている**とき（伴走モデルは
+            ComfyUI の `folder_paths` で解決済みの `folder` を持つ）。
+            渡さなければ `safe_target(kind, filename, root)` が決める。
+            **渡す側が ComfyUI の置き場から取ること**——ここは任意のパスを
+            受ける口ではあるが、外から届く値を通す口ではない
+            （画面が渡せるのは系統名だけで、パスは渡せない）。
 
     Returns:
         ``{"ok": True, "path": …, "bytes": …, "sha256": …, "elapsedMs": …}``
@@ -230,7 +266,7 @@ def download_model(
     Raises:
         DownloadError: 置き先が作れない・既にある・大きすぎる・hash が合わない
     """
-    target = safe_target(kind, filename, root)
+    target = target or safe_target(kind, filename, root)
     if os.path.exists(target):
         # **上書きしない。** 同名の別物へ差し替えると、
         # 「同じ名前なのに別の絵が出る」という一番厄介な壊れ方をする。
@@ -277,7 +313,7 @@ def download_model(
 
     headers = {
         "User-Agent": "ComfyUI-Unbake",
-        **({"Authorization": f"Bearer {api_key}"} if api_key else {}),
+        **({"Authorization": f"Bearer {api_key}"} if _may_send_key(url, api_key) else {}),
     }
     if resume_from:
         headers["Range"] = f"bytes={resume_from}-"

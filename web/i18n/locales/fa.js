@@ -82,6 +82,7 @@ export const messages = {
     "reason.previewTooLarge": "تصویر برای پیوست‌شدن بزرگ است (رکورد همچنان ذخیره می‌شود)",
     "reason.civitaiNotWired": "تصویر Civitai شمارهٔ {id}: فقط یک نشانی می‌رسد، پس باید از API دوباره گرفته و بازسازی شود. این مسیر هنوز وصل نشده است.",
     "host.notFound": "[Unbake] app مربوط به ComfyUI پیدا نشد، پس چیزی ثبت نشد. نه /scripts/app.js و نه window.comfyAPI.app.app حل نشدند.",
+    "host.noSidebarTab": "[Unbake] ثبت زبانهٔ نوار کناری ممکن نشد (extensionManager.registerSidebarTab وجود ندارد). شاید فرانت‌اند ComfyUI تغییر کرده باشد. هنوز می‌توانید Unbake را از پالت فرمان باز کنید.",
 
     // --- generationRecord ---
     "core.generationRecord.1": "(بدون نام)",
@@ -566,6 +567,7 @@ export const messages = {
     "download.cancel": "توقف",
     "download.stopping": "پس از فایل کنونی متوقف می‌شود…",
     "download.unavailable": "در این نسخه مسیر دانلود وصل نشده است.",
+    "download.nothingHere": "میان رکوردهای نمایش‌داده‌شده چیزی برای دانلود نیست (برداشتن فیلترها ممکن است این را تغییر دهد).",
     "download.busy": "یک دانلود در حال اجراست.",
     "download.scopeHidden": "یادداشت: {hidden} رکورد بیرون از پالایش یا گزینش کنونی است و بررسی نشد.",
     "download.rate": "{index} / {total} ({running} هم‌زمان) {done} / {all} ({percent}٪) {speed}",

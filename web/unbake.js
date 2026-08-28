@@ -73,7 +73,7 @@ import { attributeOutputs } from './core/outputAttribution.js';
 import { SweepRunner } from './core/sweepRunner.js';
 import { buildBuiltinSweepTemplates, installedModelOptions } from './core/sweepAxes.js';
 import { DROP_ROUTES } from './panel/dropRouting.js';
-import { setLocale, t } from './i18n/index.js';
+import { getDirection, setLocale, t } from './i18n/index.js';
 
 /** 記録の中に焼き込まない値。**毎回作り直せるもの**は書かない。 */
 const VIEW_ONLY_KEYS = new Set([
@@ -133,6 +133,15 @@ export function openFullscreen(documentRef = globalThis.document, options = {}) 
     const shell = documentRef.createElement('div');
     shell.id = FULLSCREEN_ID;
     shell.className = 'unbake-fullscreen';
+    /*
+     * **書字方向を当てる**（`D-20260828-01` F1）。
+     *
+     * 全画面は `document.body` の直下へ置くので、面の中で当てている `dir` が
+     * 届かない。アラビア語・ペルシア語だと**閉じる釦が見出しの上に重なり**、
+     * その下の操作が押せなくなる（釦は `inset-inline` で寄せているので、
+     * 器の方向が既定のままだと反対側へ出る）。
+     */
+    shell.setAttribute('dir', getDirection());
     documentRef.body.append(shell);
 
     // **閉じ方を目で見えるようにする。** Escape だけだと、
@@ -1048,7 +1057,9 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
         if (!id) return [];
         let result;
         try {
-            result = await listRecordOutputs(id);
+            // **ここは数え直す。** この関数の目的が「索引が古いので探し直す」
+            // ——出たばかりの絵は、数え直さなければ索引に載っていない。
+            result = await listRecordOutputs(id, { refresh: true });
         } catch {
             return [];
         }
@@ -1261,7 +1272,21 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
             // 時点で描くので、`render(el)` を待つとアイコンの規則が
             // 間に合わず、最初の一瞬だけ**四角い空白**が出る。
             ensureStyle(globalThis.document);
-            app.extensionManager?.registerSidebarTab?.({
+            /*
+             * **登録できなかったことを黙らない**（`D-20260828-01` E9）。
+             *
+             * 元は `app.extensionManager?.registerSidebarTab?.({...})` の
+             * 1行で、**両方の `?.` が無音で外れる**。frontend が
+             * `extensionManager` を改名・移動しただけで、
+             *   - 起動ログは正常
+             *   - `/api/extensions` に全ファイルが載る
+             *   - コマンドパレットからは開ける
+             * のに**サイドバーにボタンだけが無い**——過去に実際に起きた事故と
+             * 同じ形で、しかも「拡張は入っている」ように見えるので原因を探せない。
+             */
+            const manager = app.extensionManager;
+            const registerSidebarTab = manager?.registerSidebarTab;
+            const sidebarTab = {
                 id: 'unbake',
                 // **専用の印。** 元は `pi pi-images` で、並びの他の面と同じ絵だった
                 // ——アイコンからはどれが Unbake か判らない（2026-08-22 利用者の指示）。
@@ -1323,7 +1348,13 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
                     reoverlay();
                     return current;
                 },
-            });
+            };
+            if (typeof registerSidebarTab === 'function') {
+                registerSidebarTab.call(manager, sidebarTab);
+            } else {
+                // **理由まで出す。** 「出ない」だけだと、入れ忘れと見分けがつかない。
+                console.error(t('host.noSidebarTab'));
+            }
         },
     });
 
@@ -1557,7 +1588,9 @@ export function makeSweepRunner(record, options = {}) {
         embeddings: null,
         // **再利用索引はディスクを真実源にする。** 手元の入れ物には
         // 「このブラウザでこの Unbake が回した分」しか入らず、実測で3枚しか無かった。
-        loadRecordOutputs: listRecordOutputs,
+        // Sweep の開始時に「もう出ている升」を数える口。**ここも数え直す**
+        // ——古い索引だと、既に在る絵を「無い」と読んで GPU を回し直す。
+        loadRecordOutputs: (id) => listRecordOutputs(id, { refresh: true }),
     });
     // 面が開くのと同時に取りに行く。人が軸を確かめている間に揃う。
     //

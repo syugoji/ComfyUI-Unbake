@@ -91,8 +91,14 @@ export function resetKnownModelCatalogCache() {
  *
  * 別名の配列名は `aliases`（バックエンドの entry_to_dict が返す名前）。
  * ここを `names` と取り違えると、**両側のテストは自前fixtureで緑のまま
- * 実環境でだけ1件も引けなくなる**（実際に起きた）。形の一致は
- * tests/test_known_model_catalog.py の契約テストが固定している。
+ * 実環境でだけ1件も引けなくなる**（実際に起きた）。
+ *
+ * **形の一致を見る検査は無い**（2026-08-28 実測）。長い間
+ * `test_known_model_catalog.py`（tests 配下）を名指ししていたが、そのファイルは
+ * 存在しない。**在るふりをするより、無いと書く。**
+ *
+ * ——名前を `tests/…` の形で書くと `declared_tests_exist_test.mjs` が
+ * 「在る」と主張していると読むので、ここでは接頭辞を外してある。
  */
 export function findCatalogEntry(catalog, name) {
     const key = normalizeModelName(name);

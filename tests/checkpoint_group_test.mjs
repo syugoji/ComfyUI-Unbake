@@ -33,9 +33,14 @@ const rec = (id, checkpoint, extra = {}) => ({
     checkpoint, ...extra,
 });
 
+// **表の行を見る検査が多いので、この面の既定は表にする**
+// （2026-08-28 F2 でタイル表示のときは隠れた表を組まなくなった。
+//  面そのものの既定はタイル）。
 function mount(records, display = null) {
     const doc = fakeDocument();
-    const panel = createUnbakePanel(doc.createElement('div'), { documentRef: doc, display });
+    const panel = createUnbakePanel(doc.createElement('div'), {
+        documentRef: doc, display: { listView: 'table', ...(display || {}) },
+    });
     panel.setRecords(records);
     return panel;
 }
@@ -115,9 +120,13 @@ test('まとめが切れていると、名札は1つも出ない', () => {
 });
 
 test('タイルでも同じ語が出る（器だけが違う）', () => {
-    const panel = mount(RECORDS, { groupByCheckpoint: true, sortKey: 'title', listView: 'tiles' });
-    const table = heads(panel, 'unbake-group-name');
-    const tiles = heads(panel, 'unbake-tile-group');
+    // **器ごとに組み直して比べる**（2026-08-28 F2 以降）。
+    // 元は1つの面から両方を読んでいたが、それはタイル表示のときにも
+    // **隠れた表を組んでいた**から成り立っていた比べ方だった。
+    const asTable = mount(RECORDS, { groupByCheckpoint: true, sortKey: 'title', listView: 'table' });
+    const asTiles = mount(RECORDS, { groupByCheckpoint: true, sortKey: 'title', listView: 'tiles' });
+    const table = heads(asTable, 'unbake-group-name');
+    const tiles = heads(asTiles, 'unbake-tile-group');
     assert.equal(tiles.length, 2, `タイルの名札が ${tiles.length} 件`);
     assert.deepEqual(tiles, table, '表とタイルで語が違う');
 });

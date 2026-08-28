@@ -16,8 +16,11 @@
  * **宣言は検査ではない。** `recipeMissingModels.js` の該当行には
  * 「バックエンドの `normalize_model_name` と同じ規則」と書いてあったが、
  * 実体はバックエンドとも一致していなかった。同値は
- * `tests/frontend/utils/modelFileNames.test.js` と
- * `tests/utils/test_model_file_names.py` が**両言語のファイルを読んで固定する**。
+ * `tests/declared_tests_exist_test.mjs` が**両言語のファイルを読んで固定する**。
+ *
+ * （2026-08-28: ここは長い間、**存在しない検査を2本名指ししていた**。
+ * 名前が在ると読んだ人はそこで確かめるのをやめるので、無い検査を指すのは
+ * 何も書かないより悪い。同じ検査が、名指しの実在も機械で見ている。）
  *
  * ここで扱うのは**名前の正規化**であって、中身が本当にそのモデルかの検査ではない。
  * 後者は `py/utils/model_file_validation.py`（先頭バイトの契約）で、

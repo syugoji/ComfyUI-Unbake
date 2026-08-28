@@ -164,6 +164,16 @@ export class SweepRunner {
         this.loadRecordOutputs = loadRecordOutputs;
         this.plan = plan;
         this.currentJob = null;
+        /**
+         * 人が「投入しない」と決めた升の id（`D-20260828-01` E6）。
+         *
+         * **画面が持っているのは写し**（`onUpdate` は `clone()` を渡す）なので、
+         * そちらの `status` を書き換えても実行器には届かない——タイルは即
+         * `skipped` に見えるのに、**順番が来ると投入されて GPU 時間を使い**、
+         * 次の `onUpdate` で `completed` に戻る。押した人には「×が効かない」
+         * ではなく「押したのに勝手に戻った」と見える。
+         */
+        this.droppedCells = new Set();
         this.running = false;
         this.stopRequested = false;
         this.onUpdate = null;
@@ -183,6 +193,28 @@ export class SweepRunner {
             throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
         }
         return payload;
+    }
+
+    /**
+     * 升を1つ「投入しない」にする。**実体へ書く。**
+     *
+     * 走る前（計画を見ている段階）に押されることも、走っている最中に
+     * 押されることもある。**どちらでも効くように**、id を覚えたうえで
+     * 手元に実体が在るならその場でも印を付ける。
+     *
+     * @returns {boolean} 実体へ書けたか（覚えるのは常に行う）
+     */
+    dropCell(cellId) {
+        const id = String(cellId ?? '');
+        if (!id) return false;
+        this.droppedCells.add(id);
+        const job = this.currentJob;
+        const cell = (job?.cells || []).find(item => String(item.id) === id);
+        if (!cell || DONE_STATES.has(cell.status)) return false;
+        cell.status = 'skipped';
+        this.persist(job);
+        this.emit(job);
+        return true;
     }
 
     emit(job = this.currentJob) {
@@ -663,6 +695,14 @@ export class SweepRunner {
                 signature: cell.signature,
             };
         });
+
+        // **走る前に外した分をここで効かせる。** 計画を見ている段階の × は
+        // まだ実体が無いので id だけ覚えてある（`dropCell`）。
+        for (const cell of cells) {
+            if (this.droppedCells.has(String(cell.id)) && !DONE_STATES.has(cell.status)) {
+                cell.status = 'skipped';
+            }
+        }
 
         const job = {
             schema: JOB_SCHEMA,

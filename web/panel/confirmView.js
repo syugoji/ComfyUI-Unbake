@@ -110,6 +110,15 @@ export function createConfirmView({
     // **重ねる面。** 一覧は後ろに見えたまま残る。
     const root = element('div', {
         class: 'unbake-confirm-backdrop', role: 'dialog', 'aria-modal': 'true',
+        /*
+         * **焦点を受け取れる箱にする**（`D-20260828-01` E8）。
+         *
+         * `keydown` は**焦点から上へしか伝わらない**。この箱は `tabindex` を
+         * 持たず `.focus()` も呼ばれていなかったので、下の Esc の受け口へは
+         * **永久に届かなかった**——代わりに面の側の `keydown` が走り、
+         * **取り消せない削除の確認が開いたまま、後ろの選択だけが消えていた。**
+         */
+        tabindex: '-1',
     });
     const box = element('div', { class: 'unbake-confirm' });
     root.append(box);
@@ -128,9 +137,17 @@ export function createConfirmView({
         if (event?.target === root) onClose?.();
     });
     // **Esc で閉じる。** 逃げ道は多いほどよい（閉じる＝消さない）。
-    root.addEventListener('keydown', (event) => {
-        if (event?.key === 'Escape') { event.stopPropagation?.(); onClose?.(); }
-    });
+    // `stopPropagation` は面の側の `keydown`（選択の解除）を止めるために要る。
+    const onEscape = (event) => {
+        if (event?.key !== 'Escape') return;
+        event.stopPropagation?.();
+        onClose?.();
+    };
+    root.addEventListener('keydown', onEscape);
+    // **焦点がこの箱の外に在っても効く。** 開いた直後は下で焦点を移すが、
+    // 面の別の場所を押すと焦点は出ていく——そこで Esc が死ぬと、
+    // 「さっきは閉じたのに閉じない」という一番読みにくい形になる。
+    doc.addEventListener?.('keydown', onEscape);
 
     // **取り消せないことを、色ではなく字で言う。**（消す面だけ）
     if (destructive) {
@@ -299,6 +316,10 @@ export function createConfirmView({
         return result;
     });
 
+    // **開いたら焦点をこの箱へ移す。** 鍵盤の操作がここから始まるようにする
+    // （移さないと、後ろの一覧へ矢印や Esc が届いてしまう）。
+    try { root.focus?.(); } catch { /* 焦点を移せない環境でも面は出す */ }
+
     return {
         root,
         box,
@@ -307,6 +328,11 @@ export function createConfirmView({
         get suppressed() { return suppress.checked === true; },
         /** 今えらばれている行。**呼び手が押す前に読める。** */
         get picked() { return pickedFiles(); },
-        destroy() { root.remove(); },
+        destroy() {
+            // **付けた聞き手を必ず外す。** 残ると、閉じた面のために Esc を
+            // 拾い続ける（次の面を勝手に閉じる形で表に出る）。
+            doc.removeEventListener?.('keydown', onEscape);
+            root.remove();
+        },
     };
 }

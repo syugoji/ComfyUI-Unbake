@@ -832,7 +832,19 @@ export function createSweepView({
                 });
                 drop.addEventListener('click', (event) => {
                     event?.stopPropagation?.();
-                    // **状態を変えるだけ。** 実行器は `skipped` を投げない。
+                    /*
+                     * **実行器の実体へ伝える**（`D-20260828-01` E6）。
+                     *
+                     * ここで手にしている `cells` は `onUpdate` が渡した**写し**
+                     *（`clone()`）なので、書き換えても実行器には届かない。
+                     * 元はそれだけをして「実行器は `skipped` を投げない」と
+                     * 書いてあったが、**投げないのは実体の側の `skipped` を見た時**で、
+                     * 写しの `skipped` は誰も見ていない——タイルは即
+                     * `skipped` に見えるのに、**順番が来ると投入されて GPU を使い**、
+                     * 次の更新で `completed` に戻る。
+                     */
+                    runner?.dropCell?.(cell.id);
+                    // 写しの側も変える。**次の更新まで待たせない**（押した手応えが要る）。
                     cell.status = 'skipped';
                     renderGrid(cells);
                 });

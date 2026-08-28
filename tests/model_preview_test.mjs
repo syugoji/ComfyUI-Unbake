@@ -180,7 +180,9 @@ test('触っただけで判定の色を変えない（不足が近似に見え�
 test('比べる相手が無ければ、字を出さずに絵を大きくする', () => {
     setLocale('en');
     const doc = fakeDocument();
-    const panel = createUnbakePanel(doc.createElement('div'), { documentRef: doc });
+    const panel = createUnbakePanel(doc.createElement('div'), {
+        documentRef: doc, display: { listView: 'table' },
+    });
     panel.setRecords([{
         id: 'a', libraryId: 'a', title: 'Civitai_Recipe_1', verdict: 'reproducible',
         previewUrl: '/unbake/record-preview?id=a',

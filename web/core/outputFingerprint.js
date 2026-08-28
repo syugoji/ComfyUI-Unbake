@@ -37,6 +37,7 @@
  * 片方だけ別の正規化を通すと、比較は「対象の違い」ではなく「測り方の違い」を測る。
  */
 
+import { modelStem } from './modelFileNames.js';
 import { resolveSamplerScheduler } from './genParamsMapper.js';
 
 /**
@@ -76,11 +77,19 @@ const CHECKPOINT_INPUTS = ['ckpt_name', 'unet_name'];
 /** サンプラーが持つ入力。 */
 const SAMPLER_NUMBERS = { steps: 'steps', cfg: 'cfg', denoise: 'denoise' };
 
-/** モデル名の正規化。**ここにしか無い。** */
+/**
+ * モデル名の正規化。**規則は `modelFileNames.js` が持つ**（`D-20260828-01` 群B）。
+ *
+ * 元はここに「**ここにしか無い**」と書いたうえで、拡張子を手書きで並べていた
+ * ——`pt2` `pkl` `onnx` が抜けていて、**宣言と実体が食い違っていた**。
+ * 抜けの実害: `.pt2` を持つグラフは `outputAttribution.js` の突き合わせで
+ * 土台の名前が食い違い、**自分が出した絵が自分の記録にぶら下がらない**。
+ *
+ * ここが落とすのは拡張子だけで、**綴りは畳まない**（`compactModelName` とは別）。
+ * 指紋は「同じ材料か」を厳しく見る側なので、記号まで潰すと別物が同じに見える。
+ */
 export function normalizeModelName(value) {
-    const text = String(value ?? '').replaceAll('\\', '/');
-    const base = text.split('/').at(-1) || text;
-    return base.replace(/\.(safetensors|ckpt|pt|pth|sft|bin)$/i, '').trim().toLowerCase();
+    return modelStem(value).trim().toLowerCase();
 }
 
 /** 文字列の正規化。**空白の畳み方を1つに決める。** */

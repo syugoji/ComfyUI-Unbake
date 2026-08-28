@@ -148,11 +148,21 @@ export async function listLibraryRecords({ offset = 0, limit = 500, rescan = fal
  *
  * 取れなくても投げない——Sweep は索引が無くても回せる（回し直しが増えるだけ）。
  */
-export async function listRecordOutputs(recordId) {
+export async function listRecordOutputs(recordId, { refresh = false } = {}) {
     if (!recordId) return { outputs: [], total: 0, reachable: false };
     const doRequest = ensureInstalled();
     try {
-        const response = await doRequest(`/unbake/outputs?id=${encodeURIComponent(recordId)}`);
+        /*
+         * **数え直しは頼んだときだけ**（`D-20260828-01` 群D）。
+         *
+         * サーバ側の数え直しは出力フォルダ全体を歩いて**全ファイルの更新時刻を
+         * 取る**（実測 4,851枚で初回 2,891ms・差分でも 187ms）。既定で付けると
+         * **再現を押すたび・Sweep を始めるたびに**それが走る。
+         * 要るのは「今出たばかりの絵を探す」場面だけなので、そこだけが頼む。
+         */
+        const query = new URLSearchParams({ id: String(recordId) });
+        if (refresh) query.set('refresh', '1');
+        const response = await doRequest(`/unbake/outputs?${query.toString()}`);
         if (!response?.ok) return { outputs: [], total: 0, reachable: false };
         return { reachable: true, ...(await response.json()) };
     } catch {

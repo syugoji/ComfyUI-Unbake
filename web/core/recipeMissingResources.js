@@ -33,7 +33,8 @@ import {
 
 /**
  * 素材の種別。`api/apiConfig.js` の `MODEL_TYPES` と同一でなければならない。
- * 同値性は `tests/frontend/utils/recipeMissingResources.test.js` が固定する。
+ * 同値性は **固定する検査は無い**（2026-08-28 実測。長い間、存在しない
+ * `frontend/utils/recipeMissingResources.test.js`（tests 配下）を名指ししていた）。
  */
 export const RECIPE_RESOURCE_TYPES = {
     LORA: 'loras',

@@ -32,7 +32,10 @@ const fine = (id) => ({ id, libraryId: id, title: `そのまま${id}`, verdict: 
 
 function mount(records) {
     const doc = fakeDocument();
-    const panel = createUnbakePanel(doc.createElement('div'), { documentRef: doc });
+    // **表示は表**（下の検査が列の題を読む）。面の既定はタイル。
+    const panel = createUnbakePanel(doc.createElement('div'), {
+        documentRef: doc, display: { listView: 'table' },
+    });
     panel.setRecords(records);
     return panel;
 }
@@ -114,7 +117,7 @@ test('入れたことを覚える', async () => {
     const written = [];
     const doc = fakeDocument();
     const panel = createUnbakePanel(doc.createElement('div'), {
-        documentRef: doc,
+        documentRef: doc, display: { listView: 'table' },
         settingsIo: { write: async (patch) => { written.push(patch); return { ok: true }; } },
     });
     panel.setRecords([downloadable('1')]);

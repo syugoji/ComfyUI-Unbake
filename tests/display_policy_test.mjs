@@ -32,9 +32,14 @@ function narrowTo(panel, width) {
     return panel;
 }
 
+// **表の行を見る検査が多いので、この面の既定は表にする**
+// （2026-08-28 F2 でタイル表示のときは隠れた表を組まなくなった。
+//  面そのものの既定はタイル）。
 const mount = (display, records) => {
     const doc = fakeDocument();
-    const panel = createUnbakePanel(doc.createElement('div'), { documentRef: doc, display });
+    const panel = createUnbakePanel(doc.createElement('div'), {
+        documentRef: doc, display: { listView: 'table', ...(display || {}) },
+    });
     panel.setRecords(records);
     return panel;
 };

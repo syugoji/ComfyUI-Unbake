@@ -138,7 +138,9 @@ test('狭くても全件描く（行を切る道が1つも残っていない）'
     // した。**行数の設定そのものは 2026-08-25 に撤去**（既定のままなら何も
     // 起きない設定で、戻す先は利用者が一度嫌った挙動だった）。
     const doc = fakeDocument();
-    const panel = createUnbakePanel(container(doc), { mode: 'sidebar', width: 320 });
+    // **表の行を見る検査は、表示を明示する**（2026-08-28 F2 で、
+    // タイル表示のときは隠れた表を組まなくなった。既定はタイル）。
+    const panel = createUnbakePanel(container(doc), { mode: 'sidebar', width: 320, display: { listView: 'table' } });
     const rows = () => walk(panel.root).filter(n => n.tagName === 'TR' && n.parent?.tagName === 'TBODY').length;
 
     panel.setRecords(Array.from({ length: 10 }, (_, i) => ({ id: 'r' + i, verdict: 'reproducible' })));
@@ -273,7 +275,9 @@ test('描くたびに測り直す（仕掛けが全部空振りしても追い�
 
 test('絞り込みは描く前に効き、外した種別も件数は見え続ける', () => {
     const doc = fakeDocument();
-    const panel = createUnbakePanel(container(doc), { mode: 'fullscreen', width: 1200 });
+    // **表の行を見る検査は、表示を明示する**（2026-08-28 F2 で、
+    // タイル表示のときは隠れた表を組まなくなった。既定はタイル）。
+    const panel = createUnbakePanel(container(doc), { mode: 'fullscreen', width: 1200, display: { listView: 'table' } });
     panel.setRecords([
         { id: 'a', title: 'fox', verdict: 'reproducible', checkpoint: 'anima.safetensors' },
         { id: 'b', title: 'cat', verdict: 'blocked' },
@@ -1206,7 +1210,9 @@ test('絵を引きずれること自体は残す（持ち出しを奪わない�
 test('判定は色帯で示し、判定済みを薄くしない', () => {
     // 判定対象を劣化させると見直せなくなる。**表示の劣化ではなく帯で区別する。**
     const doc = fakeDocument();
-    const panel = createUnbakePanel(container(doc), { mode: 'sidebar' });
+    // **表の行を見る検査は、表示を明示する**（2026-08-28 F2 で、
+    // タイル表示のときは隠れた表を組まなくなった。既定はタイル）。
+    const panel = createUnbakePanel(container(doc), { mode: 'sidebar', display: { listView: 'table' } });
     panel.setRecords([
         { id: 'a', verdict: 'reproducible' },
         { id: 'b', verdict: 'approximate' },

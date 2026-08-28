@@ -82,6 +82,7 @@ export const messages = {
     "reason.previewTooLarge": "l’image est trop grande pour être jointe (l’enregistrement est conservé)",
     "reason.civitaiNotWired": "Image Civitai {id} : seule une URL arrive, il faut donc la récupérer via l’API et la reconstruire. Ce chemin n’est pas encore branché.",
     "host.notFound": "[Unbake] app ComfyUI introuvable, rien n’a donc été enregistré. Ni /scripts/app.js ni window.comfyAPI.app.app n’ont pu être résolus.",
+    "host.noSidebarTab": "[Unbake] Impossible d'enregistrer l'onglet lateral (extensionManager.registerSidebarTab est absent). Le frontend de ComfyUI a peut-etre change. Unbake reste accessible depuis la palette de commandes.",
 
     // --- generationRecord ---
     "core.generationRecord.1": "(sans nom)",
@@ -566,6 +567,7 @@ export const messages = {
     "download.cancel": "Arrêter",
     "download.stopping": "Arrêt après le fichier en cours…",
     "download.unavailable": "Le téléchargement n’est pas branché dans cette version.",
+    "download.nothingHere": "Rien a telecharger parmi les enregistrements affiches (retirer les filtres peut changer cela).",
     "download.busy": "Un téléchargement est déjà en cours.",
     "download.scopeHidden": "À noter : {hidden} enregistrements sont hors du filtre ou de la sélection et n'ont pas été examinés.",
     "download.rate": "{index} / {total} ({running} à la fois) {done} / {all} ({percent}%) {speed}",

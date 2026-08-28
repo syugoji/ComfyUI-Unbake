@@ -20,6 +20,10 @@
  * LoRA 9本ぶんの版 ID がそこに在った）。
  */
 
+// **種別を寄せる規則は1箇所**（`civitaiClient.js` の `resourceKind`）。
+// ここで手書きすると、`embed` / `vae` / `upscaler` が LoRA になる。
+import { resourceKind } from './civitaiClient.js';
+
 /** 設定行に出る鍵。**1つも当たらない行は設定行と見なさない。** */
 const KNOWN_KEYS = new Set([
     'steps', 'sampler', 'cfg scale', 'seed', 'size', 'model', 'model hash',
@@ -88,14 +92,39 @@ export function parseAirUrn(value) {
     };
 }
 
+/**
+ * プロンプトに書かれた `<lora:…>` の綴り。**知っているのはここだけ**
+ *（`D-20260828-01` 群B）。
+ *
+ * A1111 が正式に受ける形は3つある:
+ *
+ *     <lora:name>              重み省略（＝1）
+ *     <lora:name:0.8>          model と clip に同じ重み
+ *     <lora:name:0.8:0.5>      model と clip で別の重み
+ *
+ * **毎回新しい正規表現を返す。** `g` 付きを使い回すと `lastIndex` が持ち越され、
+ * 呼ぶ順番で結果が変わる（`replace` と `matchAll` を両方使う側が居る）。
+ */
+export function loraTagRegex() {
+    return /<lora:([^:>]+)(?::([^:>]*))?(?::([^:>]*))?[^>]*>/gi;
+}
+
 /** プロンプトに直接書かれた `<lora:名前:効き目>`。 */
 export function loraTagsIn(text) {
     const out = [];
-    for (const match of String(text ?? '').matchAll(/<lora:([^:>]+)(?::([^:>]*))?[^>]*>/gi)) {
+    for (const match of String(text ?? '').matchAll(loraTagRegex())) {
         const name = String(match[1] || '').trim();
         if (!name) continue;
         const weight = Number(match[2]);
-        out.push({ name, strength: Number.isFinite(weight) ? weight : 1 });
+        const clip = Number(match[3]);
+        const strength = Number.isFinite(weight) ? weight : 1;
+        out.push({
+            name,
+            strength,
+            // **model と clip が別なら、別のまま持つ。** 同じ値へ潰すと
+            // 実測32本で clip 側が落ちる（`recipeWorkflowBuilder` の既知の轍）。
+            clipStrength: Number.isFinite(clip) ? clip : strength,
+        });
     }
     return out;
 }
@@ -255,7 +284,18 @@ export function normalizeResources(list) {
             modelName: item?.modelName ?? null,
             versionName: item?.versionName ?? item?.modelVersionName ?? null,
             weight: typeof item?.weight === 'number' ? item.weight : null,
-            kind: air?.kind ?? plainKind,
+            /*
+             * **種別は `resourceKind()` が決める**（`D-20260828-01` 群B）。
+             *
+             * 元は生の `type` をそのまま入れていた。読む側は
+             * 「checkpoint でなければ LoRA」で振り分けるので、
+             * **embed / vae / upscaler が `LoraLoader` へ押し込まれていた**。
+             * リポジトリ自身の実測（`civitaiClient.js` の分布・316件）でも
+             * embed 65 / upscaler 15 / vae 6 が在る——珍しい形ではない。
+             */
+            kind: resourceKind(air?.kind ?? plainKind),
+            /** 寄せる前の値。**判らなかったときに何が来たのかを残す。** */
+            rawKind: air?.kind ?? plainKind,
             modelId: air?.modelId ?? (Number.isFinite(plainModelId) ? plainModelId : null),
             modelVersionId: air?.modelVersionId
                 ?? (Number.isFinite(plainVersionId) ? plainVersionId : null),

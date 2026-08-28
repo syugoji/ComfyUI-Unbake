@@ -82,6 +82,7 @@ export const messages = {
     "reason.previewTooLarge": "la imagen es demasiado grande para adjuntarla (el registro se guarda igual)",
     "reason.civitaiNotWired": "Imagen de Civitai {id}: solo llega una URL, así que hay que volver a obtenerla desde la API y reconstruirla. Esa ruta todavía no está conectada.",
     "host.notFound": "[Unbake] No se encontró el app de ComfyUI, así que no se registró nada. Ni /scripts/app.js ni window.comfyAPI.app.app se resolvieron.",
+    "host.noSidebarTab": "[Unbake] No se pudo registrar la pestana lateral (falta extensionManager.registerSidebarTab). El frontend de ComfyUI puede haber cambiado. Aun puedes abrir Unbake desde la paleta de comandos.",
 
     // --- generationRecord ---
     "core.generationRecord.1": "(sin nombre)",
@@ -566,6 +567,7 @@ export const messages = {
     "download.cancel": "Detener",
     "download.stopping": "Se detendrá al terminar el archivo actual…",
     "download.unavailable": "La descarga no está conectada en esta versión.",
+    "download.nothingHere": "No hay nada que descargar entre los registros mostrados (quitar los filtros puede cambiarlo).",
     "download.busy": "Ya hay una descarga en curso.",
     "download.scopeHidden": "Nota: {hidden} registros quedan fuera del filtro o la selección y no se revisaron.",
     "download.rate": "{index} / {total} ({running} a la vez) {done} / {all} ({percent}%) {speed}",

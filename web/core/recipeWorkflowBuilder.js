@@ -13,11 +13,14 @@ import { normalizeModelName } from './recipeMissingModels.js';
 import { stripModelExtension } from './modelFileNames.js';
 // **A1111 の資源欄を読むのは1箇所に閉じる。** 解析を書き足すと、
 // `air` の有無で片方だけが読める、という食い違いがまた生まれる。
-import { normalizeResources, parseA1111Parameters } from './a1111Parameters.js';
+import { loraTagRegex, normalizeResources, parseA1111Parameters } from './a1111Parameters.js';
 import { createRecipeWorkflowName } from './recipeWorkflowName.js';
 
 const WORKFLOW_CONTAINER_KEYS = ['comfy', 'comfy_workflow', 'workflow'];
-const LORA_TAG_PATTERN = /<lora:([^:>]+):\s*(-?(?:\d+(?:\.\d*)?|\.\d+))\s*>/gi;
+// **綴りは `a1111Parameters.js` の `loraTagRegex()` が持つ**（`D-20260828-01` 群B）。
+// ここに別の正規表現を置いていたので、A1111 が正式に受ける `<lora:name>`（重み省略）と
+// `<lora:name:model:clip>` を**両方とも取り逃していた**——一致した分しか本文から
+// 消さないので、**タグの文字列が正のプロンプトに残って CLIP のトークンを食う。**
 const REPLAY_MANIFEST_SCHEMA = 'lora-manager.replay-manifest';
 const REPLAY_MANIFEST_VERSION = 1;
 
@@ -350,31 +353,45 @@ function loraCandidateNames(lora) {
     ].filter(Boolean);
 }
 
+/**
+ * LoRA の強度。**未記録は既定（1）へ落とす。**
+ *
+ * 元は `candidates.find(c => Number.isFinite(Number(c)))` で、`null` を
+ * **「見つけた」** ことにしていた（`Number(null)` は 0・`isFinite` は true）。
+ * `value === undefined` でしか既定へ行かないので、返るのは 1 ではなく **0**
+ * ——**LoRA は名前どおり挿入されるのに、絵には一本も効かない。**
+ * `null` が来る経路は実在する（`generationRecord.js` は強度がリンク供給なら
+ * `strength: null` を書き、`recordShape.js` の `numberOf()` も読めない値に `null` を返す）。
+ */
 function getLoraStrength(lora, fallback = 1) {
-    const candidates = [lora?.weight, lora?.strength];
-    const value = candidates.find(candidate => Number.isFinite(Number(candidate)));
-    return value === undefined ? fallback : Number(value);
+    return firstRecordedNumber(lora?.weight, lora?.strength) ?? fallback;
 }
 
 function getLoraStrengths(lora, fallback = 1) {
     const shared = getLoraStrength(lora, fallback);
-    const model = Number.isFinite(Number(lora?.strength_model))
-        ? Number(lora.strength_model)
-        : shared;
-    const clip = Number.isFinite(Number(lora?.strength_clip))
-        ? Number(lora.strength_clip)
-        : shared;
-    return { model, clip };
+    return {
+        model: firstRecordedNumber(lora?.strength_model) ?? shared,
+        clip: firstRecordedNumber(lora?.strength_clip) ?? shared,
+    };
 }
 
 function extractPromptLoras(prompt) {
     if (typeof prompt !== 'string') return { text: prompt, loras: [] };
 
     const loras = [];
-    const text = prompt.replace(LORA_TAG_PATTERN, (tag, rawName, rawStrength) => {
+    const text = prompt.replace(loraTagRegex(), (tag, rawName, rawStrength, rawClip) => {
         const name = String(rawName || '').trim();
+        if (!name) return tag;
         const strength = Number(rawStrength);
-        if (name && Number.isFinite(strength)) loras.push({ name, strength });
+        const clip = Number(rawClip);
+        // **重みが書いてなければ 1**（A1111 の既定）。書いていない物を
+        // 「読めなかった」として残すと、タグが本文に居座る。
+        const model = Number.isFinite(strength) ? strength : 1;
+        loras.push({
+            name,
+            strength: model,
+            clipStrength: Number.isFinite(clip) ? clip : model,
+        });
         return '';
     }).replace(/\s{2,}/g, ' ').trim();
 
@@ -2207,8 +2224,10 @@ function standardPrompt(recipe, warnings, options = {}) {
     const checkpointName = getResourceFilename(recipe?.checkpoint, 'Model')
         || filenameFromName(gen.model);
     const vaeName = recipeVaeName(recipe, options, warnings);
-    const steps = Number.isFinite(Number(gen.steps)) ? Number(gen.steps) : 20;
-    const cfg = Number.isFinite(Number(gen.cfg_scale)) ? Number(gen.cfg_scale) : 7;
+    // **未記録は既定へ落とす。** `Number(null)` は 0 で `Number.isFinite` は true なので、
+    // 素直に書くと steps=0 の絵（1歩も denoise しない灰色の塊）になる。
+    const steps = firstRecordedNumber(gen.steps) ?? 20;
+    const cfg = firstRecordedNumber(gen.cfg_scale) ?? 7;
 
     if (!checkpointName && !diffusionName) {
         throw new Error(t('core.recipeWorkflowBuilder.29'));
@@ -2366,8 +2385,8 @@ function standardPrompt(recipe, warnings, options = {}) {
         const hiresSamplerInputs = {
             ...prompt['5'].inputs,
             seed: normalizeSeed(gen.seed) + 1,
-            steps: Number.isFinite(Number(gen.hires_steps)) ? Number(gen.hires_steps) : steps,
-            cfg: Number.isFinite(Number(gen.hires_cfg_scale)) ? Number(gen.hires_cfg_scale) : cfg,
+            steps: firstRecordedNumber(gen.hires_steps) ?? steps,
+            cfg: firstRecordedNumber(gen.hires_cfg_scale) ?? cfg,
             // **null を 0 に化けさせない。**
             //
             // `Number(null)` は 0 で、`Number.isFinite(0)` は true。よって
@@ -2768,16 +2787,23 @@ function patchGenerationParameters(prompt, recipe, warnings, source) {
         if (/KSampler/i.test(node.class_type || '')) {
             const isHiresPass = isHiresSampler(prompt, node, inputs);
             if ('seed' in inputs) {
-                const sourceSeed = Number.isFinite(Number(gen.seed)) ? gen.seed : inputs.seed;
+                // **記録が無ければグラフの seed を残す。** `Number(null)`=0 を
+                // 「記録されている」と読むと、**埋め込みグラフの正しい seed を 0 で潰す。**
+                // 渡すのは生の値のまま（2^53 を超える seed は Number にすると精度が落ちる）。
+                const sourceSeed = firstRecordedNumber(gen.seed) === null ? inputs.seed : gen.seed;
                 inputs.seed = normalizeSeed(sourceSeed) + (isHiresPass ? 1 : 0);
             }
-            const requestedSteps = isHiresPass && Number.isFinite(Number(gen.hires_steps))
+            const requestedSteps = isHiresPass && firstRecordedNumber(gen.hires_steps) !== null
                 ? gen.hires_steps : gen.steps;
-            const requestedCfg = isHiresPass && Number.isFinite(Number(gen.hires_cfg_scale))
+            const requestedCfg = isHiresPass && firstRecordedNumber(gen.hires_cfg_scale) !== null
                 ? gen.hires_cfg_scale : gen.cfg_scale;
-            if (Number.isFinite(Number(requestedSteps)) && 'steps' in inputs) inputs.steps = Number(requestedSteps);
-            if (Number.isFinite(Number(requestedCfg)) && 'cfg' in inputs && !isFluxRecipe(recipe)) {
-                inputs.cfg = Number(requestedCfg);
+            // **書き換えるのは記録が在るときだけ。** 無いならグラフの値を残す
+            //（0 を書くと hires 段が丸ごと効かなくなる）。
+            const wantedSteps = firstRecordedNumber(requestedSteps);
+            if (wantedSteps !== null && 'steps' in inputs) inputs.steps = wantedSteps;
+            const wantedCfg = firstRecordedNumber(requestedCfg);
+            if (wantedCfg !== null && 'cfg' in inputs && !isFluxRecipe(recipe)) {
+                inputs.cfg = wantedCfg;
             }
             if ('denoise' in inputs) {
                 if (samplerUsesEmptyLatent(prompt, inputs)) {
@@ -2800,7 +2826,9 @@ function patchGenerationParameters(prompt, recipe, warnings, source) {
         }
 
         if (normalizedClassType(node.class_type) === 'randomnoise' && 'noise_seed' in inputs) {
-            const sourceSeed = Number.isFinite(Number(gen.seed)) ? gen.seed : inputs.noise_seed;
+            // **`:2771` と同じ罠。** ここ（`RandomNoise`）だけ直し漏れると、
+            // 新しい抽出器を使うグラフでだけ seed が 0 に潰れる。
+            const sourceSeed = firstRecordedNumber(gen.seed) === null ? inputs.noise_seed : gen.seed;
             inputs.noise_seed = normalizeSeed(sourceSeed);
         }
     }
@@ -4604,8 +4632,8 @@ function insertAdetailerStages(prompt, recipe, warnings, objectInfo, resolvedSam
                 bbox_detector: [detectorId, 0],
                 guide_size: 512, guide_size_for: true, max_size: 1024,
                 seed: normalizeSeed(gen?.seed),
-                steps: Number.isFinite(Number(gen?.steps)) ? Number(gen.steps) : 20,
-                cfg: Number.isFinite(Number(gen?.cfg_scale)) ? Number(gen.cfg_scale) : 8,
+                steps: firstRecordedNumber(gen?.steps) ?? 20,
+                cfg: firstRecordedNumber(gen?.cfg_scale) ?? 8,
                 sampler_name: resolvedSampler?.sampler || 'euler',
                 scheduler: resolvedSampler?.scheduler || 'normal',
                 denoise: Number.isFinite(stage.denoise) ? stage.denoise : 0.4,
@@ -4808,11 +4836,13 @@ export function buildRecipeWorkflow(recipe, options = {}) {
     // これまで `strength` 1つを両方へ入れていたため、実測32本で clip 側が
     // 潰れていた（例: model 0.35 / clip 1 が両方 0.35 になっていた）。
     if (resourceStack && resourceStack.loraStrengths.size > 0) {
-        const differing = effectiveRecipe.loras.filter(lora =>
-            Number.isFinite(Number(lora?.strength_model))
-            && Number.isFinite(Number(lora?.strength_clip))
-            && Number(lora.strength_model) !== Number(lora.strength_clip)
-        ).length;
+        // **未記録どうしを「食い違っている」と数えない。** `Number(null)` は 0 なので、
+        // 片方だけ未記録の組が「model 0 / clip 0.5 で食い違う」として警告に出ていた。
+        const differing = effectiveRecipe.loras.filter((lora) => {
+            const model = firstRecordedNumber(lora?.strength_model);
+            const clip = firstRecordedNumber(lora?.strength_clip);
+            return model !== null && clip !== null && model !== clip;
+        }).length;
         if (differing > 0) {
             warnings.push(
                 t('core.recipeWorkflowBuilder.71', { p1: differing })

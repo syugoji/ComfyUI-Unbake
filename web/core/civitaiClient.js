@@ -351,6 +351,19 @@ function sameName(a, b) {
  * 型（`model.type`）で決め直す——推測で振り分けると、別の欄へ入った素材が
  * 「無い」ことになる。
  */
+/**
+ * 記録されている数値だけを返す。**未記録は `null`**（`D-20260828-01` 群A）。
+ *
+ * `recipeWorkflowBuilder.js` の `firstRecordedNumber()` と同じ役目。
+ * あちらを import すると**中核の重い側を丸ごと引き込む**ので、
+ * 3行の判定はここに置く（規則そのものは短く、写しても食い違いようがない）。
+ */
+function recordedNumber(value) {
+    if (value === null || value === undefined || value === '') return null;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+}
+
 export function resourceKind(rawType) {
     let text = String(rawType ?? '').trim().toLowerCase();
     if (!text || text === 'null' || text === 'undefined' || text === 'none') return null;
@@ -388,7 +401,11 @@ export function recipeFromCivitaiMeta(item, meta, versions = new Map()) {
             modelVersionId: resource?.modelVersionId ?? null,
             modelVersionName: resource?.modelVersionName ?? null,
             file_name: fileNameOf(resource?.modelVersionId),
-            strength: Number.isFinite(Number(resource?.weight)) ? Number(resource.weight) : 1,
+            // **未記録は 1**（`D-20260828-01` 群A の同型）。`Number(null)` は 0 で
+            // `Number.isFinite(0)` は true なので、素直に書くと**強度 0 で積む**
+            // ——`normalizeResources` は重みが数値でなければ**明示的に `null`**
+            // を書くので、これは実際に通る道である。
+            strength: recordedNumber(resource?.weight) ?? 1,
             // 版IDは**その版そのもの**を指すので、名前照合より強い根拠になる。
             evidence: 'versionId',
         };
@@ -438,7 +455,7 @@ export function recipeFromCivitaiMeta(item, meta, versions = new Map()) {
         const kind = String(resource?.type || '').toLowerCase();
         const name = resource?.name || resource?.modelName || null;
         if (!name) continue;
-        const strength = Number.isFinite(Number(resource?.strength)) ? Number(resource.strength) : 1;
+        const strength = recordedNumber(resource?.strength) ?? 1;
         const entry = { file_name: String(name), strength, evidence: 'name' };
         if (kind === 'lora' || kind === 'locon' || kind === 'lycoris' || kind === 'dora') {
             if (!loras.some(item => item?.file_name === entry.file_name)) loras.push(entry);

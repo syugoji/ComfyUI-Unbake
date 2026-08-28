@@ -22,7 +22,7 @@ import assert from 'node:assert/strict';
 
 import {
     applyA1111ToSummary, loraTagsIn, looksLikeParameterLine, parseA1111Parameters,
-    parseAirUrn, recipeFromA1111, splitParameterLine,
+    parseAirUrn, recipeFromA1111, splitParameterLine, normalizeResources,
 } from '../web/core/a1111Parameters.js';
 import { buildRecordFromTextChunks, summarizePrompt } from '../web/core/generationRecord.js';
 import { setLocale } from '../web/i18n/index.js';
@@ -107,7 +107,15 @@ test('air の URN から種別と版 ID を取る', () => {
 
 test('`<lora:名前:効き目>` を拾う（効き目が無ければ 1）', () => {
     assert.deepEqual(loraTagsIn('<lora:a:0.7> x <lora:b>'),
-        [{ name: 'a', strength: 0.7 }, { name: 'b', strength: 1 }]);
+        [{ name: 'a', strength: 0.7, clipStrength: 0.7 },
+         { name: 'b', strength: 1, clipStrength: 1 }]);
+});
+
+test('model と clip が別に書かれていれば、別のまま持つ', () => {
+    // A1111 が正式に受ける3つ目の形（`D-20260828-01` 群B）。
+    // 同じ値へ潰すと、実測32本で clip 側が落ちる（組み立て側が踏んだ轍）。
+    assert.deepEqual(loraTagsIn('<lora:a:0.8:0.5>'),
+        [{ name: 'a', strength: 0.8, clipStrength: 0.5 }]);
 });
 
 // --- 記録の項目へ写す -------------------------------------------------------
@@ -205,4 +213,25 @@ test('本当に材料の無い画像は、今までどおり再現不可', () =>
         { kind: 'local_file', filename: 'x.png' });
     assert.equal(built.record.verdict, 'blocked');
     assert.equal(built.record.needsBuild, undefined);
+});
+
+test('資源の種別は `resourceKind()` が寄せる（生の値を通さない）', () => {
+    /*
+     * `D-20260828-01` 群B。生の `type` をそのまま入れていたので、読む側の
+     * 「checkpoint でなければ LoRA」に当たって **embed / vae / upscaler が
+     * `LoraLoader` へ押し込まれていた**。寄せる規則は `civitaiClient.js` の
+     * `resourceKind()` にしか無い——ここで手書きすると、また食い違う。
+     */
+    const got = normalizeResources([
+        { type: 'embed', modelVersionId: 1 },
+        { type: 'VAE', modelVersionId: 2 },
+        { type: 'upscaler', modelVersionId: 3 },
+        { type: 'lycoris', modelVersionId: 4 },
+        { type: 'TextualInversion', modelVersionId: 5 },
+    ]);
+    assert.deepEqual(got.map(item => item.kind),
+        ['embedding', 'vae', 'upscaler', 'lora', 'embedding'],
+        '生の値のまま通している');
+    // **寄せる前の値も残す。** 判らなかったときに何が来たのかが読めなくなる。
+    assert.equal(got[0].rawKind, 'embed');
 });

@@ -82,6 +82,7 @@ export const messages = {
     "reason.previewTooLarge": "görsel eklenemeyecek kadar büyük (kayıt yine de saklanır)",
     "reason.civitaiNotWired": "Civitai görseli {id}: yalnızca bir URL geliyor, bu yüzden API’den yeniden alınıp yeniden kurulması gerekiyor. Bu yol henüz bağlanmadı.",
     "host.notFound": "[Unbake] ComfyUI app bulunamadı, bu yüzden hiçbir şey kaydedilmedi. Ne /scripts/app.js ne de window.comfyAPI.app.app çözümlenebildi.",
+    "host.noSidebarTab": "[Unbake] Yan panel sekmesi kaydedilemedi (extensionManager.registerSidebarTab yok). ComfyUI arayuzu degismis olabilir. Unbake'i komut paletinden yine de acabilirsiniz.",
 
     // --- generationRecord ---
     "core.generationRecord.1": "(adsız)",
@@ -566,6 +567,7 @@ export const messages = {
     "download.cancel": "Durdur",
     "download.stopping": "Geçerli dosyadan sonra durulacak…",
     "download.unavailable": "Bu yapıda indirme bağlı değil.",
+    "download.nothingHere": "Gosterilen kayitlar arasinda indirilecek bir sey yok (filtreleri kaldirmak bunu degistirebilir).",
     "download.busy": "Zaten bir indirme sürüyor.",
     "download.scopeHidden": "Not: {hidden} kayıt geçerli filtre veya seçim dışında olduğu için incelenmedi.",
     "download.rate": "{index} / {total} ({running} eşzamanlı) {done} / {all} (%{percent}) {speed}",

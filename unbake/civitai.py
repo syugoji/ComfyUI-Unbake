@@ -153,12 +153,27 @@ def _get_json(url: str, api_key: str = "", timeout: int = 30) -> Optional[Dict[s
             except (TypeError, ValueError):
                 retry_after = 0
             logger.warning("civitai rate limited (%s), retry after %ss", error.code, retry_after)
-            return {"__unbake_rate_limited__": True, "retryAfter": max(0, retry_after)}
+            return {RATE_LIMIT_FLAG: True, "retryAfter": max(0, retry_after)}
         logger.debug("civitai request failed: %s", error)
         return None
     except (urllib.error.URLError, ValueError, OSError) as error:
         logger.debug("civitai request failed: %s", error)
         return None
+
+
+#: 上限に当たったことを示す印。**`_get_json` の戻りは dict なので、
+#: 素直に `isinstance(payload, dict)` だけを見ると「引けた」と読める。**
+RATE_LIMIT_FLAG = "__unbake_rate_limited__"
+
+
+def is_rate_limited(payload: Any) -> bool:
+    """この応答は「上限に当たった」か。
+
+    **読む所を1つにする。** 印の綴りを各所で手書きすると、片方だけ直り
+    もう片方が「引けた」と読み続ける——実際に `model_previews.py` がそうなっていて、
+    **429 を「見本が無いモデル」として永久に焼いていた**（`D-20260828-01` E4）。
+    """
+    return isinstance(payload, dict) and bool(payload.get(RATE_LIMIT_FLAG))
 
 
 def _try_civarchive(model_id, version_id, allowed: bool, fetch, kind=None) -> Optional[Dict[str, Any]]:
@@ -238,7 +253,7 @@ def resolve_version(
 
     getter = fetch or _get_json
     version = getter(f"https://{api_host}/api/v1/model-versions/{version_id}", api_key)
-    if isinstance(version, dict) and version.get("__unbake_rate_limited__"):
+    if is_rate_limited(version):
         # **待てば通るものを「もう引けない」と言わない。**
         wait = int(version.get("retryAfter") or 0)
         return {

@@ -82,6 +82,7 @@ export const messages = {
     "reason.previewTooLarge": "圖片過大，未能附加（記錄仍會保存）",
     "reason.civitaiNotWired": "Civitai 圖片 {id}：只拿到 URL，必須從 API 重新取得並重建。這條路徑還沒接上。",
     "host.notFound": "[Unbake] 找不到 ComfyUI 的 app，因此未註冊。/scripts/app.js 與 window.comfyAPI.app.app 都無法解析。",
+    "host.noSidebarTab": "[Unbake] 無法註冊側邊欄標籤（缺少 extensionManager.registerSidebarTab）。ComfyUI 前端可能已變更。仍可從命令面板開啟 Unbake。",
 
     // --- generationRecord ---
     "core.generationRecord.1": "（未命名）",
@@ -566,6 +567,7 @@ export const messages = {
     "download.cancel": "停止",
     "download.stopping": "目前檔案完成後停止…",
     "download.unavailable": "此版本未接上下載介面。",
+    "download.nothingHere": "目前顯示的紀錄中沒有可下載的內容（清除篩選後可能會變）。",
     "download.busy": "已有下載正在進行。",
     "download.scopeHidden": "注：{hidden} 筆記錄不在目前篩選或選取範圍內，未被查看。",
     "download.rate": "{index} / {total}（同時 {running} 個） {done} / {all}（{percent}%） {speed}",

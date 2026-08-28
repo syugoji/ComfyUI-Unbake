@@ -14,7 +14,10 @@ The damage was real: a recipe recording ``ae.sft`` failed to match the installed
 **Declaring a shared rule is not checking it.** The comment on
 ``recipeMissingModels.js`` said "same rule as the backend ``normalize_model_name``"
 while the two lists differed. Equality between the JavaScript and Python sides is
-pinned by ``tests/utils/test_model_file_names.py``, which reads both files.
+pinned by ``tests/declared_tests_exist_test.mjs``, which reads both files.
+
+(2026-08-28: this line named a test that did not exist. The same test now also
+checks that every test named from source is real.)
 
 This module is about *names*. Whether a file's bytes really are that model is a
 different question, answered by ``py.utils.model_file_validation`` — which

@@ -33,7 +33,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from .civitai import API_HOSTS, _get_json
+from .civitai import API_HOSTS, _get_json, is_rate_limited
 
 #: 見本を置いてよい型。**中身の型で決める**（拡張子は名乗りにすぎない）。
 PREVIEW_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
@@ -185,6 +185,24 @@ def fetch_preview(
         # **取れなかったことを「無い」と混ぜない。** 覚えておくのは
         # 「探して無かった」ときだけで、届かなかったのは次に再試行してよい。
         return {"ok": False, "error": "could not reach the Civitai API for this hash"}
+    if is_rate_limited(version):
+        # **上限を「見本が無い」と読まない**（`D-20260828-01` E4）。
+        #
+        # 429 のとき `_get_json` が返すのは**印を持った dict** なので、
+        # `isinstance(dict)` は素通りする。そのまま進むと絵が見つからず、
+        # 下の `_remember_miss` が「見本が無いモデル」として**永久に焼く**
+        # ——`routes.py` の `cached_miss` が短絡するので、**上限が解けても
+        # 二度と取りに行かない**。画面から戻す手段は無い。
+        #
+        # 実際に起きる形: Sweep のモデル選択で by-hash を十数件連射すると
+        # Civitai が 429 を返し、**残り全部が「見本の無いモデル」になる。**
+        retry_after = version.get("retryAfter") or 0
+        return {
+            "ok": False,
+            "error": "the Civitai API is rate limited; try again later",
+            "rateLimited": True,
+            "retryAfter": retry_after,
+        }
 
     url = pick_still_image(version)
     if not url:

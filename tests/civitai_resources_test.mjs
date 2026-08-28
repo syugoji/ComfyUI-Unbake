@@ -148,3 +148,56 @@ test('失敗の応答（ok=false）を解決結果として扱わない', () => 
     ]);
     assert.equal(out.recipe.loras[1].file_name, 'zodaplus_v1_anima.safetensors');
 });
+
+// --- 種別（`D-20260828-01` 群B）-----------------------------------------------
+
+test('embed / VAE / 拡大器を LoRA として積まない', () => {
+    /*
+     * 元は「checkpoint でなければ LoRA」で拾っていたので、**プロンプトに
+     * 書かれていない資源を足す**経路が embed / vae / upscaler を
+     * `LoraLoader` へ押し込んでいた。リポジトリ自身の実測分布（316件）に
+     * embed 65 / upscaler 15 / vae 6 が在るので、珍しい形ではない。
+     *
+     * 押し込まれると絵が変わるだけでなく、**「同じ材料で再現した」という
+     * 主張ごと嘘になる。**
+     */
+    const recipe = {
+        checkpoint: { file_name: 'base', modelVersionId: 1 },
+        loras: [],
+        civitai_resources: [
+            { modelName: 'E', kind: 'embedding', modelVersionId: 11, weight: 1 },
+            { modelName: 'V', kind: 'vae', modelVersionId: 12, weight: 1 },
+            { modelName: 'U', kind: 'upscaler', modelVersionId: 13, weight: 1 },
+            { modelName: 'L', kind: 'lora', modelVersionId: 14, weight: 0.6 },
+        ],
+    };
+    const resolved = [
+        { versionId: 11, filename: 'e.pt', kind: 'embedding' },
+        { versionId: 12, filename: 'v.safetensors', kind: 'vae' },
+        { versionId: 13, filename: 'u.pth', kind: 'upscaler' },
+        { versionId: 14, filename: 'l.safetensors', kind: 'lora' },
+    ];
+    const out = applyResolvedResources(recipe, resolved);
+    const names = (out.recipe.loras || []).map(item => item.file_name);
+    assert.deepEqual(names, ['l.safetensors'],
+        `LoRA でないものを積んでいる: ${JSON.stringify(names)}`);
+});
+
+test('lycoris / locon / dora は LoRA として積む', () => {
+    // **絞りすぎない。** これらは `LoraLoader` で載る（種別を寄せる側が決める）。
+    const recipe = {
+        checkpoint: null,
+        loras: [],
+        civitai_resources: [
+            { modelName: 'A', kind: 'lycoris', modelVersionId: 21, weight: 1 },
+            { modelName: 'B', kind: 'locon', modelVersionId: 22, weight: 1 },
+        ].map(item => ({ ...item, kind: item.kind })),
+    };
+    // `normalizeResources` を通した後の形（`resourceKind` が寄せる）を模す。
+    recipe.civitai_resources = recipe.civitai_resources.map(item => ({ ...item, kind: 'lora' }));
+    const out = applyResolvedResources(recipe, [
+        { versionId: 21, filename: 'a.safetensors' },
+        { versionId: 22, filename: 'b.safetensors' },
+    ]);
+    assert.equal((out.recipe.loras || []).length, 2, 'LyCORIS / LoCon を落としている');
+});

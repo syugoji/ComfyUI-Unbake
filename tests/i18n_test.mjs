@@ -453,3 +453,41 @@ test('落とす先の説明には、具体的な入力例が入っている', ()
     }
     setLocale('ja');
 });
+
+// --- 文字体系（`D-20260828-01` F5）-------------------------------------------
+
+test('ロシア語がキリル文字で書かれている（ラテン翻字を残さない）', async () => {
+    /*
+     * 実測（2026-08-28）で **14行がラテン翻字**だった
+     *（`Uzel, sobirayushchiy LoRA, otsutstvuet…`）。読める人には読めるが、
+     * **翻訳が入っていない状態と区別が付かない**——しかも他の行はキリル文字なので、
+     * 画面の中で文字体系が混ざる。「未訳」ではなく「訳したつもり」なので、
+     * 誰も直しに来ない形で残り続ける。
+     *
+     * **製品名は除く。** `Generation Record` / `Replay Manifest` / `Sweep` は
+     * この面が意図して3層の語彙として持っているもので、訳さない。
+     */
+    const { readFile } = await import('node:fs/promises');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+    const source = await readFile(join(root, 'web/i18n/locales/ru.js'), 'utf8');
+
+    /** 訳さない語（製品名・固有名詞・単位）。 */
+    const KEPT = /Unbake|Generation Record|Replay Manifest|Sweep|LoRA|LyCORIS|Civitai|ComfyUI|Workflow Overview|SaveImage|seed|API|VAE|CLIP|PNG|JSON|URL|GB|MB|KB/gi;
+
+    const suspects = [];
+    for (const line of source.split('\n')) {
+        const match = /^\s*"([a-zA-Z.0-9]+)":\s*"(.*)",\s*$/.exec(line);
+        if (!match) continue;
+        const text = match[2]
+            .replace(/\{[^}]*\}/g, ' ')   // 差し込み口は文字体系を持たない
+            .replace(KEPT, ' ');
+        const letters = [...text].filter(char => /\p{L}/u.test(char));
+        if (letters.length < 12) continue;
+        const cyrillic = letters.filter(char => /[\u0400-\u04FF]/.test(char)).length;
+        if (cyrillic / letters.length < 0.3) suspects.push(`${match[1]}: ${match[2].slice(0, 70)}`);
+    }
+    assert.deepEqual(suspects, [],
+        `ラテン翻字が残っている（訳したつもりで誰も直しに来ない）:\n  ${suspects.join('\n  ')}`);
+});

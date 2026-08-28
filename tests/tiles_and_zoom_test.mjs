@@ -59,7 +59,9 @@ test('記録の名前が、出す絵の名前と同じ規則になる', () => {
 
 test('一覧は新しい名前で出し、元の題は吹き出しと絞り込みに残る', () => {
     setLocale('en');
-    const panel = mount([rec('137337754')]);
+    // **表の要素を見る検査は、表示を明示する**（2026-08-28 F2 で、
+    // タイル表示のときは隠れた表を組まなくなった。既定はタイル）。
+    const panel = mount([rec('137337754')], { listView: 'table' });
     const cell = panel.root.find(n => n.tagName === 'TD' && n.className === 'unbake-col-title');
     assert.equal(cell.textContent, 'civitai_137337754');
 
@@ -205,7 +207,9 @@ test('絵を押すと詳細が開き、そこから拡大へ進む（2026-08-22 
     // 大きくしても、どのモデルで・どのプロンプトで出したのかが見えないので
     // 次の一手が決まらない。**詳細を先に出し、絵を押すとそこから拡大へ進む。**
     setLocale('en');
-    const panel = mount([rec('42')]);
+    // **表の要素を見る検査は、表示を明示する**（2026-08-28 F2 で、
+    // タイル表示のときは隠れた表を組まなくなった。既定はタイル）。
+    const panel = mount([rec('42')], { listView: 'table' });
     const thumb = panel.root.byClass('unbake-thumb');
     assert.equal(thumb.getAttribute('data-zoom'), 'true', '押せる絵になっていない');
 
@@ -245,7 +249,9 @@ test('絵を押すと詳細が開き、そこから拡大へ進む（2026-08-22 
 
 test('詳細は同時に2つ開かない', async () => {
     setLocale('en');
-    const panel = mount([rec('1'), rec('2')]);
+    // `.unbake-thumb` は表の側の絵（タイルは `.unbake-tile-image`）。
+    // **表示を明示する**（2026-08-28 F2 で隠れた表を組まなくなった）。
+    const panel = mount([rec('1'), rec('2')], { listView: 'table' });
     const thumbs = panel.root.allByClass('unbake-thumb');
     thumbs[0].dispatch('click', {});
     await settle();
@@ -267,7 +273,9 @@ test('タイルの絵も押せる', async () => {
 
 test('面を畳むと詳細も拡大も閉じる（見えない器が残らない）', async () => {
     setLocale('en');
-    const panel = mount([rec('1')]);
+    // `.unbake-thumb` は表の側の絵（タイルは `.unbake-tile-image`）。
+    // **表示を明示する**（2026-08-28 F2 で隠れた表を組まなくなった）。
+    const panel = mount([rec('1')], { listView: 'table' });
     panel.root.byClass('unbake-thumb').dispatch('click', {});
     await settle();
     assert.ok(panel.root.byClass('unbake-detail'));

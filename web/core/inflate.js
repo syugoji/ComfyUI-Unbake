@@ -143,13 +143,31 @@ function readDynamicTables(bits) {
  * @param {Uint8Array} bytes
  * @returns {Uint8Array}
  */
-export function inflateRaw(bytes) {
+/**
+ * 展開してよい上限。**圧縮爆弾で画面ごと持っていかれないため**（`D-20260828-01` E7）。
+ *
+ * 元は上限が無く、`push` が倍々で伸びるだけだった。zTXt に高圧縮のデータを
+ * 仕込んだ PNG を**1枚落とし込む**と、同期関数のままメインスレッドが
+ * 数GBまで確保し、**ComfyUI のページ全体が無応答になる**（読んでいるのは
+ * 利用者が拾ってきた画像なので、悪意ある1枚は普通に届きうる）。
+ *
+ * 256 MB は実データから決めた: この面が読むのは PNG のテキスト塊
+ *（`parameters` / `workflow` / `prompt`）で、手元の実測で最大 **1.4 MB**。
+ * 2桁以上の余裕を置いてある。
+ */
+export const MAX_INFLATED_BYTES = 256 * 1024 * 1024;
+
+export function inflateRaw(bytes, { limit = MAX_INFLATED_BYTES } = {}) {
     const bits = new Bits(bytes);
-    let out = new Uint8Array(Math.max(1024, bytes.length * 4));
+    let out = new Uint8Array(Math.max(1024, Math.min(limit, bytes.length * 4)));
     let size = 0;
     const push = (byte) => {
         if (size === out.length) {
-            const grown = new Uint8Array(out.length * 2);
+            // **伸ばす前に上限を見る。** 見ないと、確保してから気づくことになる。
+            if (out.length >= limit) {
+                throw new Error(`inflate: output exceeds ${limit} bytes`);
+            }
+            const grown = new Uint8Array(Math.min(limit, out.length * 2));
             grown.set(out);
             out = grown;
         }
@@ -201,14 +219,14 @@ export function inflateRaw(bytes) {
  * **検査値は確かめない。** 壊れていれば展開の途中で必ず落ちるし、
  * ここで Adler-32 を回すと**読めるものまで捨てる**方向に倒れる。
  */
-export function inflate(bytes) {
+export function inflate(bytes, { limit = MAX_INFLATED_BYTES } = {}) {
     if (!bytes || bytes.length < 2) throw new Error('inflate: too short');
     const method = bytes[0] & 0x0f;
     const check = ((bytes[0] << 8) | bytes[1]) % 31;
     // zlib なら方式8・検査値が31で割り切れる。そうでなければ生の DEFLATE とみなす。
     if (method === 8 && check === 0) {
         const preset = (bytes[1] >> 5) & 1;
-        return inflateRaw(bytes.subarray(preset ? 6 : 2));
+        return inflateRaw(bytes.subarray(preset ? 6 : 2), { limit });
     }
-    return inflateRaw(bytes);
+    return inflateRaw(bytes, { limit });
 }
