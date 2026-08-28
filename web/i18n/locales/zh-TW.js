@@ -200,6 +200,7 @@ export const messages = {
     "core.recipeWorkflowBuilder.35": "原圖的提示詞只有 LoRA 標籤，沒有描述要畫什麼。照這樣生成只會得到一張單色圖，因此無法重現。",
     "core.recipeWorkflowBuilder.keptGraphText": "記錄中沒有{role}提示詞，因此沿用了已儲存工作流程中的文字。",
     "core.recipeWorkflowBuilder.36": "這是多階段工作流程，因此記錄的最終尺寸（{p1}x{p2}）沒有套用到第一階段的 latent。保留原有的階段結構。",
+    "core.recipeWorkflowBuilder.sizeFromGraph": "紀錄寫的是 {p1}x{p2}，但內嵌工作流程是 {p3}x{p4}。這裡採用工作流程——它才是實際執行的設定，紀錄中的尺寸只是對輸出的描述。",
     "core.recipeWorkflowBuilder.37": "重現時移除了未安裝的 {p1} 個 LoRA（{p2}）。沒有的東西無法猜出來，因此畫面會與原圖不同。",
     "core.recipeWorkflowBuilder.38": "範本中找不到可以接 LoRA 的 MODEL/CLIP 載入器。",
     "core.recipeWorkflowBuilder.39": "偵測到含糊的 VAE 指定：4 通道的 SDXL latent 卻會選到 16 通道的 Flux ae.safetensors，已替換為 checkpoint 內建的 VAE。",

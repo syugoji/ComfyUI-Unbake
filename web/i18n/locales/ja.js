@@ -195,6 +195,7 @@ export const messages = {
     "core.recipeWorkflowBuilder.35": "元画像のプロンプトがLoRAタグだけで、描画内容の記述がありません。このまま生成しても単色の画像になるため、再現できません。",
     "core.recipeWorkflowBuilder.keptGraphText": "記録に{role}側のプロンプトが無かったので、保存されているグラフの文字をそのまま使いました。",
     "core.recipeWorkflowBuilder.36": "多段構成のワークフローのため、記録された最終サイズ（{p1}x{p2}）を1段目のlatentへは適用しませんでした。元の段組みを保ちます。",
+    "core.recipeWorkflowBuilder.sizeFromGraph": "記録は {p1}x{p2} と言っていますが、埋め込みグラフは {p3}x{p4} です。グラフの方を使いました——グラフは実際に走った設定そのもので、記録の寸法は出力についての申告にすぎません。",
     "core.recipeWorkflowBuilder.37": "未導入のLoRA{p1}件（{p2}）を外して再現します。無い物は当てられないため、絵は元画像と変わります。",
     "core.recipeWorkflowBuilder.38": "LoRAを接続できるMODEL/CLIPローダーがテンプレート内に見つかりませんでした。",
     "core.recipeWorkflowBuilder.39": "SDXL系の4ch潜在に対して16chのFlux系 ae.safetensors が選ばれる曖昧なVAE指定を検出し、チェックポイント内蔵VAEへ置換しました。",

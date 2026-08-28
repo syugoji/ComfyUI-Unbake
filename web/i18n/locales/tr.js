@@ -200,6 +200,7 @@ export const messages = {
     "core.recipeWorkflowBuilder.35": "Kaynak görüntünün promptu yalnızca LoRA etiketlerinden oluşuyor, ne çizileceğine dair bir tarif yok. Böyle üretmek tek renkli bir görüntü verir, bu yüzden yeniden üretilemez.",
     "core.recipeWorkflowBuilder.keptGraphText": "Kayıtta {role} istemi yoktu; kaydedilmiş iş akışındaki metin korundu.",
     "core.recipeWorkflowBuilder.36": "Bu çok aşamalı bir iş akışı, bu yüzden kayıtlı son boyut ({p1}x{p2}) ilk aşamanın latent’ine uygulanmadı. Özgün aşama yapısı korunuyor.",
+    "core.recipeWorkflowBuilder.sizeFromGraph": "Kayit {p1}x{p2} diyor, gomulu grafik ise {p3}x{p4}. Grafik kullanildi: gercekten calisan kurulum odur, kayitli boyut yalnizca ciktiya dair bir beyandir.",
     "core.recipeWorkflowBuilder.37": "Kurulu olmayan {p1} LoRA ({p2}) yeniden üretimden çıkarıldı. Olmayan şey tahmin edilemez, bu yüzden görüntü kaynaktan farklı olacak.",
     "core.recipeWorkflowBuilder.38": "Şablonda bir LoRA’nın bağlanabileceği MODEL/CLIP yükleyici bulunamadı.",
     "core.recipeWorkflowBuilder.39": "4 kanallı SDXL latent için 16 kanallı Flux ae.safetensors seçilmesine yol açan belirsiz bir VAE göndermesi saptandı ve checkpoint’in gömülü VAE’siyle değiştirildi.",

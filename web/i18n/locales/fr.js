@@ -200,6 +200,7 @@ export const messages = {
     "core.recipeWorkflowBuilder.35": "Le prompt de l’image source ne contient que des balises LoRA, sans description de ce qu’il faut dessiner. Générer ainsi donnerait une image d’une seule couleur : la relecture est impossible.",
     "core.recipeWorkflowBuilder.keptGraphText": "L'enregistrement n'avait pas de prompt {role} ; le texte du workflow enregistré a été conservé.",
     "core.recipeWorkflowBuilder.36": "Ce workflow comporte plusieurs passes : la taille finale enregistrée ({p1}x{p2}) n’a donc pas été appliquée au latent de la première passe. La structure de passes d’origine est conservée.",
+    "core.recipeWorkflowBuilder.sizeFromGraph": "L'enregistrement indique {p1}x{p2}, mais le graphe integre indique {p3}x{p4}. C'est le graphe qui a ete utilise : il correspond a ce qui a reellement tourne, la taille enregistree n'etant qu'une declaration sur la sortie.",
     "core.recipeWorkflowBuilder.37": "{p1} LoRA non installés ({p2}) ont été retirés de la relecture. Ce qui est absent ne peut pas être deviné : l’image différera de la source.",
     "core.recipeWorkflowBuilder.38": "Aucun chargeur MODEL/CLIP auquel rattacher un LoRA n’a été trouvé dans le modèle de workflow.",
     "core.recipeWorkflowBuilder.39": "Référence VAE ambiguë détectée : un ae.safetensors Flux à 16 canaux aurait été choisi pour un latent SDXL à 4 canaux. Remplacé par le VAE intégré au checkpoint.",

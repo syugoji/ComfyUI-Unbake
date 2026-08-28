@@ -198,6 +198,7 @@ export const messages = {
     "core.recipeWorkflowBuilder.35": "The prompt of the source image is nothing but LoRA tags, with no description of what to draw. Generating from it would produce a flat single-colour image, so this cannot be replayed.",
     "core.recipeWorkflowBuilder.keptGraphText": "The record had no {role} prompt, so the text already in the saved workflow was kept.",
     "core.recipeWorkflowBuilder.36": "This is a multi-pass workflow, so the recorded final size ({p1}x{p2}) was not applied to the first-pass latent. The original pass structure is kept.",
+    "core.recipeWorkflowBuilder.sizeFromGraph": "The record says {p1}x{p2}, but the embedded graph says {p3}x{p4}. The graph was used: it is the setup that actually ran, while the recorded size is only a report about the output.",
     "core.recipeWorkflowBuilder.37": "{p1} LoRA(s) that are not installed ({p2}) were removed from the replay. What is absent cannot be guessed at, so the picture will differ from the source.",
     "core.recipeWorkflowBuilder.38": "No MODEL/CLIP loader that a LoRA could attach to was found in the template.",
     "core.recipeWorkflowBuilder.39": "Detected an ambiguous VAE reference where a 16-channel Flux ae.safetensors would be chosen for a 4-channel SDXL latent, and replaced it with the checkpoint's built-in VAE.",

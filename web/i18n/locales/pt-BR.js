@@ -200,6 +200,7 @@ export const messages = {
     "core.recipeWorkflowBuilder.35": "O prompt da imagem de origem só tem tags de LoRA, sem descrever o que desenhar. Gerar assim daria uma imagem de cor única, então não dá para reproduzir.",
     "core.recipeWorkflowBuilder.keptGraphText": "O registro não tinha prompt {role}, então o texto do fluxo salvo foi mantido.",
     "core.recipeWorkflowBuilder.36": "Este é um fluxo de trabalho de várias passadas, então o tamanho final registrado ({p1}x{p2}) não foi aplicado ao latente da primeira passada. A estrutura original de passadas é mantida.",
+    "core.recipeWorkflowBuilder.sizeFromGraph": "O registro diz {p1}x{p2}, mas o grafo embutido diz {p3}x{p4}. O grafo foi usado: ele e a configuracao que realmente rodou, enquanto o tamanho registrado apenas descreve a saida.",
     "core.recipeWorkflowBuilder.37": "{p1} LoRA não instalados ({p2}) foram removidos da reprodução. O que não existe não pode ser adivinhado, então a imagem vai diferir da original.",
     "core.recipeWorkflowBuilder.38": "Nenhum carregador MODEL/CLIP ao qual um LoRA pudesse se conectar foi encontrado no modelo de fluxo.",
     "core.recipeWorkflowBuilder.39": "Detectada uma referência ambígua de VAE em que um ae.safetensors do Flux de 16 canais seria escolhido para um latente SDXL de 4 canais; substituído pelo VAE embutido do checkpoint.",

@@ -200,6 +200,7 @@ export const messages = {
     "core.recipeWorkflowBuilder.35": "原图的提示词只有 LoRA 标签，没有描述要画什么。照这样生成只会得到一张单色图，因此无法复现。",
     "core.recipeWorkflowBuilder.keptGraphText": "记录中没有{role}提示词，因此沿用了已保存工作流中的文本。",
     "core.recipeWorkflowBuilder.36": "这是多阶段工作流，因此记录的最终尺寸（{p1}x{p2}）没有应用到第一阶段的 latent。保留原有的阶段结构。",
+    "core.recipeWorkflowBuilder.sizeFromGraph": "记录写的是 {p1}x{p2}，但内嵌工作流是 {p3}x{p4}。这里采用了工作流——它才是实际运行的设置，记录中的尺寸只是对输出的描述。",
     "core.recipeWorkflowBuilder.37": "复现时移除了未安装的 {p1} 个 LoRA（{p2}）。没有的东西无法猜出来，因此画面会与原图不同。",
     "core.recipeWorkflowBuilder.38": "模板中没有找到可以接 LoRA 的 MODEL/CLIP 加载器。",
     "core.recipeWorkflowBuilder.39": "检测到含糊的 VAE 指定：4 通道的 SDXL latent 却会选到 16 通道的 Flux ae.safetensors，已替换为 checkpoint 内置的 VAE。",

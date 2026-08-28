@@ -2878,6 +2878,43 @@ function applyRecordedSize(prompt, entries, recipe, gen, warnings, source) {
         return;
     }
 
+    /*
+     * **埋め込みグラフが自分で寸法を持っているなら、そちらが正しい**
+     *（2026-08-28 実機 `civitai_140604778`）。
+     *
+     * 実測: 参照画像の実寸は **832x1216**、埋め込みグラフも **832x1216**、
+     * ところが記録の `size` は **1024x1024**（Civitai の申告）。ここが記録の側で
+     * 上書きしていたので、**縦横比ごと変わって別の絵が出ていた**——判定は
+     * 「材料が全部そろっている」ので**再現性・高**と出たまま。
+     *
+     * **グラフは実際に走った設定そのもの**で、記録の `size` は出力についての
+     * 申告にすぎない。強さが違うものを、弱い側で上書きしない
+     *（この面が hash と大きさで既に決めているのと同じ順序）。
+     *
+     * 当初 embedded は守られていたが、多段グラフを守るために条件を
+     * `isMultiStageGraph` へ広げた際、**1段の埋め込みグラフが裸になった**。
+     */
+    if (source === 'embedded') {
+        const own = entries
+            .map(([, node]) => node)
+            .filter(node => isEmptyLatentClass(node?.class_type) && node?.inputs)
+            .map(node => node.inputs)
+            .find(inputs => Number.isFinite(Number(inputs.width))
+                && Number.isFinite(Number(inputs.height))
+                && !Array.isArray(inputs.width) && !Array.isArray(inputs.height));
+        if (own) {
+            const width = Number(own.width);
+            const height = Number(own.height);
+            if ((width !== size.width || height !== size.height) && Array.isArray(warnings)) {
+                // **黙って変えない。** 絵が変わる決定は、必ず言う。
+                warnings.push(t('core.recipeWorkflowBuilder.sizeFromGraph', {
+                    p1: size.width, p2: size.height, p3: width, p4: height,
+                }));
+            }
+            return;
+        }
+    }
+
     for (const [, node] of entries) {
         if (!isEmptyLatentClass(node?.class_type)) continue;
         // inputs を持たないノードで `in` 演算子を使うと TypeError で

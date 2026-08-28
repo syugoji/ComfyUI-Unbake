@@ -200,6 +200,7 @@ export const messages = {
     "core.recipeWorkflowBuilder.35": "원본 이미지의 프롬프트가 LoRA 태그뿐이고 무엇을 그릴지에 대한 설명이 없습니다. 이대로 생성하면 단색 이미지가 되므로 재현할 수 없습니다.",
     "core.recipeWorkflowBuilder.keptGraphText": "기록에 {role} 프롬프트가 없어, 저장된 워크플로의 텍스트를 그대로 사용했습니다.",
     "core.recipeWorkflowBuilder.36": "다단 구성 워크플로라서 기록된 최종 크기({p1}x{p2})를 1단계 latent에는 적용하지 않았습니다. 원래의 단 구성을 유지합니다.",
+    "core.recipeWorkflowBuilder.sizeFromGraph": "레코드는 {p1}x{p2} 라고 하지만 임베디드 그래프는 {p3}x{p4} 입니다. 그래프를 사용했습니다——그래프는 실제로 실행된 설정 그 자체이고, 기록된 크기는 출력에 대한 신고일 뿐입니다.",
     "core.recipeWorkflowBuilder.37": "설치되지 않은 LoRA {p1}개({p2})를 빼고 재현합니다. 없는 것은 채울 수 없으므로 그림이 원본과 달라집니다.",
     "core.recipeWorkflowBuilder.38": "LoRA를 연결할 수 있는 MODEL/CLIP 로더를 템플릿에서 찾지 못했습니다.",
     "core.recipeWorkflowBuilder.39": "4채널 SDXL latent에 16채널 Flux ae.safetensors가 선택되는 모호한 VAE 지정을 발견해 checkpoint 내장 VAE로 바꿨습니다.",

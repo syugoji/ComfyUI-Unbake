@@ -200,6 +200,7 @@ export const messages = {
     "core.recipeWorkflowBuilder.35": "موجّه الصورة الأصلية لا يحتوي إلا على وسوم LoRA، دون وصف لما يُرسَم. التوليد هكذا يعطي صورة بلون واحد، لذا لا يمكن إعادة الإنتاج.",
     "core.recipeWorkflowBuilder.keptGraphText": "لم يتضمن السجل موجّه {role}، لذا احتُفظ بالنص الموجود في سير العمل المحفوظ.",
     "core.recipeWorkflowBuilder.36": "هذا سير عمل متعدّد المراحل، لذا لم يُطبَّق المقاس النهائي المسجَّل ({p1}x{p2}) على latent المرحلة الأولى. بنية المراحل الأصلية محفوظة.",
+    "core.recipeWorkflowBuilder.sizeFromGraph": "يقول السجل {p1}x{p2}، بينما يقول الرسم المضمَّن {p3}x{p4}. استُخدم الرسم: فهو الإعداد الذي جرى تنفيذه فعلا، أما المقاس المسجَّل فمجرد إفادة عن الناتج.",
     "core.recipeWorkflowBuilder.37": "أُزيلت من إعادة الإنتاج {p1} من LoRA غير المثبَّتة ({p2}). ما هو غائب لا يمكن تخمينه، لذا ستختلف الصورة عن الأصل.",
     "core.recipeWorkflowBuilder.38": "لم يُعثر في القالب على مُحمِّل MODEL/CLIP يمكن ربط LoRA به.",
     "core.recipeWorkflowBuilder.39": "رُصدت إشارة VAE ملتبسة كان سيُختار فيها ae.safetensors من Flux بـ 16 قناة لـ latent من SDXL بـ 4 قنوات، واستُبدلت بـ VAE المدمج في checkpoint.",
