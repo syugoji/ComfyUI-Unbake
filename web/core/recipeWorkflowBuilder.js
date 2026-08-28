@@ -2853,6 +2853,38 @@ function isMultiStageGraph(prompt) {
         .some(node => UPSCALE_CLASS_PATTERN.test(normalizedClassType(node?.class_type)));
 }
 
+/**
+ * **記録が抱えているグラフが自分で言っている寸法。** 無ければ `null`。
+ *
+ * 記録の `size` は出力についての申告で、グラフは実際に走った設定そのもの。
+ * 食い違ったらグラフを採る——**グラフを実行に使えたかどうかとは無関係**で、
+ * ノードが足りず標準構成へ組み直す回でも、寸法の証拠としては生きている。
+ *
+ * **多段（hires）は見ない。** あちらの1段目は拡大前の寸法で、記録の `size` は
+ * 最終寸法なので、置き換えると段が無意味になる。
+ * **リンクで受けている寸法も見ない。** 別のノードが決めているものを数値にすると、
+ * その関係が消える。
+ */
+function sizeFromRecordedGraph(recipe) {
+    const prompt = findEmbeddedPrompt(recipe);
+    if (!prompt || isMultiStageGraph(prompt)) return null;
+    for (const node of Object.values(prompt)) {
+        if (!isEmptyLatentClass(node?.class_type)) continue;
+        const inputs = node?.inputs;
+        if (!inputs || typeof inputs !== 'object') continue;
+        // **リンクは別のノードが決めている。** 2要素の `[nodeId, slot]` は
+        // 下の `Number.isFinite` でも落ちるが、1要素の配列は数値へ化けるので、
+        // 形の側でも弾いておく。
+        if (Array.isArray(inputs.width) || Array.isArray(inputs.height)) continue;
+        const width = Number(inputs.width);
+        const height = Number(inputs.height);
+        if (!Number.isFinite(width) || !Number.isFinite(height)) continue;
+        if (width <= 0 || height <= 0) continue;
+        return { width, height };
+    }
+    return null;
+}
+
 function applyRecordedSize(prompt, entries, recipe, gen, warnings, source) {
     const parsed = parseSize(gen?.size);
     if (!parsed) return;
@@ -2879,7 +2911,7 @@ function applyRecordedSize(prompt, entries, recipe, gen, warnings, source) {
     }
 
     /*
-     * **埋め込みグラフが自分で寸法を持っているなら、そちらが正しい**
+     * **記録が抱えているグラフが寸法を持っているなら、そちらが正しい**
      *（2026-08-28 実機 `civitai_140604778`）。
      *
      * 実測: 参照画像の実寸は **832x1216**、埋め込みグラフも **832x1216**、
@@ -2891,28 +2923,26 @@ function applyRecordedSize(prompt, entries, recipe, gen, warnings, source) {
      * 申告にすぎない。強さが違うものを、弱い側で上書きしない
      *（この面が hash と大きさで既に決めているのと同じ順序）。
      *
-     * 当初 embedded は守られていたが、多段グラフを守るために条件を
-     * `isMultiStageGraph` へ広げた際、**1段の埋め込みグラフが裸になった**。
+     * **グラフを使えたかどうかは関係ない**（2026-08-29 利用者の報告
+     * 「ノードを入れずに生成すると寸法が変化する」）。最初は組み立て先が
+     * 埋め込みのときだけ守っていたが、**ノードが足りなくて標準構成へ組み直す道**では
+     * 守りが外れ、記録の 1024x1024 がそのまま入っていた。見るべきは
+     * 「いま組んでいるグラフ」ではなく「**記録が抱えているグラフ**」である。
+     *
+     * 多段（hires）のグラフは対象外——あちらの1段目は拡大前の寸法で、
+     * 記録の `size` は最終寸法なので、意味が違う。
      */
-    if (source === 'embedded') {
-        const own = entries
-            .map(([, node]) => node)
-            .filter(node => isEmptyLatentClass(node?.class_type) && node?.inputs)
-            .map(node => node.inputs)
-            .find(inputs => Number.isFinite(Number(inputs.width))
-                && Number.isFinite(Number(inputs.height))
-                && !Array.isArray(inputs.width) && !Array.isArray(inputs.height));
-        if (own) {
-            const width = Number(own.width);
-            const height = Number(own.height);
-            if ((width !== size.width || height !== size.height) && Array.isArray(warnings)) {
-                // **黙って変えない。** 絵が変わる決定は、必ず言う。
-                warnings.push(t('core.recipeWorkflowBuilder.sizeFromGraph', {
-                    p1: size.width, p2: size.height, p3: width, p4: height,
-                }));
-            }
-            return;
+    const declared = sizeFromRecordedGraph(recipe);
+    if (declared) {
+        if ((declared.width !== size.width || declared.height !== size.height)
+            && Array.isArray(warnings)) {
+            // **黙って変えない。** 絵が変わる決定は、必ず言う。
+            warnings.push(t('core.recipeWorkflowBuilder.sizeFromGraph', {
+                p1: size.width, p2: size.height, p3: declared.width, p4: declared.height,
+            }));
         }
+        size.width = declared.width;
+        size.height = declared.height;
     }
 
     for (const [, node] of entries) {

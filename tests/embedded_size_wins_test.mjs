@@ -114,3 +114,92 @@ test('グラフが寸法を別ノードから受けているときは、今ま�
     const latent = latentOf(built);
     assert.ok(Array.isArray(latent.width), 'リンクを数値で潰している');
 });
+
+test('ノードが足りず組み直す回でも、グラフの寸法で組む', () => {
+    /*
+     * **実機の報告**（2026-08-29）「ノードを入れずに生成してみたのですが、
+     * 寸法が変化しているようです」。
+     *
+     * 最初の直しは**組み立て先が埋め込みのときだけ**守っていた。手元に無いノードが
+     * 在ると、この面は「保存済み生成条件から標準構成へ再構築」する道に入り、
+     * そこでは守りが外れて記録の申告（1024x1024）がそのまま入っていた。
+     * 実測: smZ 有りで 832x1216 ／ smZ 無しで **1024x1024**。
+     *
+     * **グラフを実行に使えたかどうかと、寸法の証拠としての強さは別。**
+     * 使えなくても「実際に走ったのはこの寸法」という事実は変わらない。
+     */
+    const record = RECORD();
+    record.prompt[2].class_type = 'smZ CLIPTextEncode';
+    record.prompt[3].class_type = 'smZ CLIPTextEncode';
+    // 手元に smZ が無い環境（`objectInfo` に載っていない）。
+    const built = buildRecipeWorkflow(record, { objectInfo: { CLIPTextEncode: { input: { required: {} } } } });
+    assert.ok((built.missingNodes || []).includes('smZ CLIPTextEncode'),
+        `不足ノードとして扱われていない: ${JSON.stringify(built.missingNodes)}`);
+    const latent = latentOf(built);
+    assert.equal(latent.width, 832, `組み直す道で記録の申告が入っている: ${latent.width}`);
+    assert.equal(latent.height, 1216, `組み直す道で記録の申告が入っている: ${latent.height}`);
+});
+
+test('多段（拡大）のグラフからは、寸法を採らない', () => {
+    /*
+     * **1段目は拡大前の寸法**で、記録の `size` は最終寸法。意味が違うので、
+     * ここでグラフを採ると**段が無意味になる**（1段目の 512x768 を最終寸法として
+     * 組んでしまう）。守りを外すと通ってしまうので、明示的に見る。
+     */
+    const record = RECORD('1024x1536');
+    record.prompt[4].inputs = { width: 512, height: 768, batch_size: 1 };
+    record.prompt[8] = { class_type: 'ImageScale', inputs: { image: ['6', 0], width: 1024, height: 1536 } };
+    const built = buildRecipeWorkflow(record, {});
+    /*
+     * **1段目が 512x768 のまま残るのが正しい。** 多段のグラフには元から
+     * 触らない決まりがある（記録の最終寸法を1段目へ当てると段が無意味になる）。
+     * ここで見るのは「グラフの1段目を**最終寸法の証拠として採っていない**」こと
+     * ——採ると、食い違いとして報告し始める。
+     */
+    const latents = Object.values(built.prompt)
+        .filter(node => /EmptyLatent/i.test(node.class_type || ''))
+        .map(node => `${node.inputs.width}x${node.inputs.height}`);
+    assert.deepEqual(latents, ['512x768'], `段組みが変わっている: ${latents.join(' / ')}`);
+    // **食い違いを言わない。** 多段では「食い違っている」こと自体が正常。
+    assert.equal(
+        (built.warnings || []).some(text => text.includes('1024x1536') && text.includes('512x768')),
+        false,
+        '多段なのに寸法の食い違いとして報告している',
+    );
+});
+
+test('寸法をリンクで受けているグラフからは、寸法を採らない', () => {
+    // **別のノードが決めているものを数値にすると、その関係が消える。**
+    // 「グラフが自分で言っている寸法」ではないので、証拠として採らない。
+    const record = RECORD();
+    record.prompt[4].inputs.width = ['9', 0];
+    record.prompt[4].inputs.height = ['9', 1];
+    record.prompt[9] = { class_type: 'PrimitiveNode', inputs: { value: 832 } };
+    const built = buildRecipeWorkflow(record, {});
+    assert.equal(
+        (built.warnings || []).some(text => text.includes('832') && text.includes('1024')),
+        false,
+        'リンクで受けた寸法を「グラフが言っている」として採っている',
+    );
+});
+
+test('多段の記録を組み直す回でも、1段目を最終寸法として採らない', () => {
+    /*
+     * **ここが多段の守りが本当に効く場所。** 組み立て先が多段なら手前で
+     * 早期returnするので、内側の判定は通らない。ところが**ノードが足りずに
+     * 標準構成へ組み直す**と、組み立て先は1段のグラフになるので早期returnせず、
+     * 記録の側の多段グラフから 1段目（拡大前）の寸法を採ってしまう余地が残る。
+     *
+     * 1段目は拡大前の寸法なので、最終寸法として採ると**絵が小さくなる**。
+     */
+    const record = RECORD('1024x1536');
+    record.prompt[4].inputs = { width: 512, height: 768, batch_size: 1 };
+    record.prompt[8] = { class_type: 'ImageScale', inputs: { image: ['6', 0], width: 1024, height: 1536 } };
+    record.prompt[2].class_type = 'smZ CLIPTextEncode';
+    record.prompt[3].class_type = 'smZ CLIPTextEncode';
+    const built = buildRecipeWorkflow(record, { objectInfo: { CLIPTextEncode: { input: { required: {} } } } });
+    assert.ok((built.missingNodes || []).includes('smZ CLIPTextEncode'), '組み直す道に入っていない');
+    const latent = latentOf(built);
+    assert.equal(`${latent.width}x${latent.height}`, '1024x1536',
+        `多段の1段目（512x768）を最終寸法として採っている: ${latent.width}x${latent.height}`);
+});
