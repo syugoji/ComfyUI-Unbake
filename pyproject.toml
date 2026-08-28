@@ -30,8 +30,15 @@ Repository = "https://github.com/syugoji/ComfyUI-Unbake"
 [tool.comfy]
 PublisherId = "syugoji"
 DisplayName = "Unbake"
-# Registry のカードに出る絵。**サイドバーと同じ卵**を指す（`web/icon.svg`）。
+# Registry のカードに出る絵。**サイドバーの `icon.svg` とは別ファイル**
+#（`web/icon-card.svg`）。
+#
+# **同じ物を指してはいけない**（2026-08-29 利用者の報告）。`icon.svg` は
+# `mask-image` として当てるので中の色に意味が無く `#000` になっているが、
+# ここは**普通の画像として描かれる**——暗いカードの上で実測 **1.52:1** で、
+# ほぼ見えなかった。カード用は地の色が判らない場所で浮くよう板を敷いてある。
+#
 # **相対パスではなく URL でなければならない**——Registry はリポジトリを clone せず、
 # この URL をそのまま読みに行く。だから `main` が動くと絵も動く。
 # 版で固定したければ `main` をタグ名に変える。
-Icon = "https://raw.githubusercontent.com/syugoji/ComfyUI-Unbake/main/web/icon.svg"
+Icon = "https://raw.githubusercontent.com/syugoji/ComfyUI-Unbake/main/web/icon-card.svg"
