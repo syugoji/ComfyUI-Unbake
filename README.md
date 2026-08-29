@@ -7,6 +7,12 @@
 **Take one image, rebuild the ComfyUI workflow behind it.**
 Then **move exactly one axis, run it many times, and put the results side by side.**
 
+![Left: the original from Civitai. Right: what Unbake rebuilt and ran. The first pair is what you get while a model is still missing; the second is after it has been installed.](docs/demo.gif)
+
+*Left is the original, right is the replay. The first pair still has a model missing — the
+picture comes out, but it is not the same picture. The second pair is the same record after
+the missing pieces were installed.*
+
 A Civitai image, a PNG on your disk, or ComfyUI's own output — it all starts by
 dropping something onto the panel.
 
@@ -50,10 +56,22 @@ The verdict is produced by checking against what is actually installed (`/object
 **A name matching and ComfyUI being able to accept it are two different things**, so it
 looks through alias tables as well and confirms all the way to "this can be queued".
 
+![A record built from a Civitai URL, carrying the verdict "cannot" and a "download to try" badge](docs/shot-verdict.png)
+
 Whatever is missing is sorted by how you would obtain it (downloadable from Civitai /
 downloadable from a known-model ledger / manual only / no lead at all).
 **If something is no longer distributed, it says so** rather than letting you download
 a file that will not work.
+
+![The list of what will be downloaded, with the node packs separated from the models](docs/shot-download.png)
+
+**A verdict is not a promise.** These two are the same record, replayed twice. The first
+run still had a missing piece, so Unbake substituted — the picture came out, and it is not
+the same picture. The second run is after the missing pieces were installed.
+
+| still missing something | everything installed |
+|---|---|
+| ![the replay differs from the original](docs/shot-medium.jpg) | ![the replay matches the original](docs/shot-high.jpg) |
 
 ### 2. Sweep
 
