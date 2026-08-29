@@ -7,6 +7,9 @@
 **Take one image, rebuild the ComfyUI workflow behind it.**
 Then **move exactly one axis, run it many times, and put the results side by side.**
 
+*If you have ever searched ComfyUI for "workflow from image", for "PNG info", or for an
+"XY plot" — this is those three, wired together and checked against each other.*
+
 ![Left: the original from Civitai. Right: what Unbake rebuilt and ran. The first pair is what you get while a model is still missing; the second is after it has been installed.](docs/demo.gif)
 
 *Left is the original, right is the replay. The first pair still has a model missing — the

@@ -1,6 +1,6 @@
 [project]
 name = "comfyui-unbake"
-description = "Rebuild the ComfyUI workflow behind an image, then sweep one axis at a time and compare."
+description = "Drop an image and get the ComfyUI workflow back: a Civitai link, a PNG with metadata, or your own output. Unbake reads the PNG info — prompt, seed, sampler, steps, CFG, LoRAs — rebuilds the graph, and sorts the missing models by how you would obtain them. Then it runs a validated XY plot (parameter sweep) that throws if anything other than the axis you declared has moved, so the comparison you are looking at is actually a comparison."
 version = "0.1.2"
 license = { file = "LICENSE" }
 # **依存は無い。** `folder_paths` は ComfyUI 本体が、`PIL` は ComfyUI の環境が供給する。
