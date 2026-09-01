@@ -55,7 +55,7 @@ const HOST_PROVIDED_PYTHON = new Set(['folder_paths', 'PIL', 'server', 'aiohttp'
 const PY_STDLIB = new Set([
     '__future__', 'asyncio', 'base64', 'collections', 'contextlib', 'copy', 'csv',
     'concurrent', 'dataclasses', 'datetime', 'enum', 'functools', 'glob', 'hashlib', 'inspect',
-    'importlib', 'io', 'itertools', 'json', 'logging', 'math', 'os', 'pathlib',
+    'importlib', 'io', 'ipaddress', 'itertools', 'json', 'logging', 'math', 'os', 'pathlib',
     'random', 're', 'shutil', 'struct', 'subprocess', 'sys', 'tempfile', 'threading',
     'time', 'traceback', 'types', 'typing', 'urllib', 'uuid', 'zipfile',
 ]);

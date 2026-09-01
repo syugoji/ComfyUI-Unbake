@@ -73,6 +73,7 @@ from typing import Any, Dict, List, Optional
 
 from .civitai import resolve_version
 from .download import ALLOWED_KINDS as ALLOWED_MODEL_KINDS, DownloadError, download_model
+from .guard import local_only
 from .library import RecordLibrary
 from . import model_index
 from .models import ModelError, delete as delete_model_file, plan_delete, usage as model_usage
@@ -875,6 +876,7 @@ def register_routes() -> bool:
         return json_response(await asyncio.to_thread(read_settings))
 
     @routes.post("/unbake/settings")
+    @local_only
     async def _post_settings(request):
         try:
             payload = await request.json()
@@ -951,6 +953,7 @@ def register_routes() -> bool:
         ))
 
     @routes.post("/unbake/output-raw")
+    @local_only
     async def _post_output_raw(request):
         """**名指しした絵だけ**、生の値を返す（`I-20260829-01`）。
 
@@ -981,6 +984,7 @@ def register_routes() -> bool:
         return json_response({"raw": found, "keys": list(keys or RAW_KEYS)})
 
     @routes.post("/unbake/record-save")
+    @local_only
     async def _post_record_save(request):
         try:
             payload = await request.json()
@@ -1004,6 +1008,7 @@ def register_routes() -> bool:
         return json_response(result, status=200)
 
     @routes.post("/unbake/record-delete")
+    @local_only
     async def _post_record_delete(request):
         try:
             payload = await request.json()
@@ -1017,6 +1022,7 @@ def register_routes() -> bool:
         return json_response(result, status=200)
 
     @routes.post("/unbake/output-delete")
+    @local_only
     async def _post_output_delete(request):
         """出た絵を1枚消す（2026-08-25 利用者の指示）。
 
@@ -1058,6 +1064,7 @@ def register_routes() -> bool:
         return json_response({**plan, "usage": usage}, status=200)
 
     @routes.post("/unbake/model-delete")
+    @local_only
     async def _post_model_delete(request):
         try:
             payload = await request.json()
@@ -1136,6 +1143,7 @@ def register_routes() -> bool:
         return json_response(result, status=200 if result.get("ok") else 400)
 
     @routes.post("/unbake/download")
+    @local_only
     async def _post_download(request):
         try:
             payload = await request.json()
@@ -1215,6 +1223,7 @@ def register_routes() -> bool:
         })
 
     @routes.post("/unbake/download-model-companions")
+    @local_only
     async def _post_download_model_companions(request):
         """足りない伴走を落とす。**系統名しか受けない**（URL もパスも受けない）。
 
@@ -1311,6 +1320,7 @@ def register_routes() -> bool:
         return json_response(download_state())
 
     @routes.post("/unbake/download-cancel")
+    @local_only
     async def _post_download_cancel(_request):
         return json_response(cancel_download())
 
@@ -1349,6 +1359,7 @@ def register_routes() -> bool:
                             headers={"Cache-Control": "public, max-age=3600"})
 
     @routes.post("/unbake/model-preview")
+    @local_only
     async def _post_model_preview(request):
         """見本が無いモデルのぶんを、**1枚だけ**取りに行く。
 

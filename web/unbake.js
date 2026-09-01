@@ -485,7 +485,14 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
             return response.json();
         },
         async cancel() {
-            const response = await fetch('/unbake/download-cancel', { method: 'POST' });
+            const response = await fetch('/unbake/download-cancel', {
+                method: 'POST',
+                // **本文が無くても JSON を名乗る。** 口の守りが
+                // `Content-Type` を要求している——名乗らない要求は
+                // preflight 無しで他所から飛ばせるので、規則に例外を作らない。
+                headers: { 'Content-Type': 'application/json' },
+                body: '{}',
+            });
             return response.json();
         },
     };
