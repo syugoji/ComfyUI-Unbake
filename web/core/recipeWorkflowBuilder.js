@@ -9,7 +9,13 @@ import { t } from '../i18n/index.js';
 import { resolveSamplerScheduler } from './genParamsMapper.js';
 // **正規化は判定側と同じものを使う。** 別実装にすると、片方だけ直したときに
 // 「導入済みと出るのに投入は拒否される」食い違いが復活する。
-import { normalizeModelName } from './recipeMissingModels.js';
+//
+// **台帳引きも同じ**（`I-20260830-27`）。ここには `findCatalogEntry` の写しが
+// 置いてあり、コメント自身が「規則を変えたら両方直す」と人間頼みを宣言していた。
+// 判定側と実行側で答えが割れると、画面は「導入済み」と言うのに投入は
+// `value_not_in_list` で拒否され、**絵が1枚も出ない**（2026-08-14 に346件中
+// 296件が投入不能になったのと同じ形）。写しを消して1本にする。
+import { findCatalogEntry, normalizeModelName } from './recipeMissingModels.js';
 import { stripModelExtension } from './modelFileNames.js';
 // **A1111 の資源欄を読むのは1箇所に閉じる。** 解析を書き足すと、
 // `air` の有無で片方だけが読める、という食い違いがまた生まれる。
@@ -165,19 +171,6 @@ function catalogChoices(objectInfo, classType, field) {
     return null;
 }
 
-/**
- * 既知モデル台帳から、要求名に一致する項目を引く（`filename` と `aliases` を見る）。
- * `recipeMissingModels.findCatalogEntry` と同じ規則。**規則を変えたら両方直す。**
- */
-function findKnownModelEntry(catalog, name) {
-    const key = normalizeModelName(name);
-    if (!key) return null;
-    return (catalog?.models || []).find(entry => {
-        if (normalizeModelName(entry?.filename) === key) return true;
-        return (entry?.aliases || []).some(alias => normalizeModelName(alias) === key);
-    }) || null;
-}
-
 /** 末尾のファイル名。区切りは両方あり得る。 */
 function catalogBasename(value) {
     return String(value).replaceAll('\\', '/').split('/').pop() || '';
@@ -225,7 +218,7 @@ function alignModelNamesToCatalog(prompt, objectInfo, knownModelCatalog = null) 
      * 「導入済み」と表示しながら投入が拒否される状態になる。
      */
     const aliasRule = value => {
-        const entry = findKnownModelEntry(knownModelCatalog, value);
+        const entry = findCatalogEntry(knownModelCatalog, value);
         if (!entry?.filename) return null;
         const key = normalizeModelName(entry.filename);
         return choice => normalizeModelName(choice) === key;
@@ -736,6 +729,14 @@ function mergePromptLoras(
             // The inline tag is the explicit per-image setting, so it wins over
             // a generic resource strength stored in the recipe.
             result[existingIndex].weight = tagged.strength;
+            // **CLIP 側も写す**（2026-08-31・監査 I-20260831-04）。
+            // ここが `weight` しか写していなかったので、`<lora:名前:model:clip>`
+            // の第3項が**値によらず常に失われ**、`getLoraStrengths` が
+            // model 側の値を共有値として埋めていた。姉妹経路の
+            // `a1111LoraMerge.js` は同じ値をちゃんと使っている。
+            if (Number.isFinite(Number(tagged.clipStrength))) {
+                result[existingIndex].strength_clip = Number(tagged.clipStrength);
+            }
             const aliases = new Set(result[existingIndex].promptAliases || []);
             aliases.add(tagged.name);
             result[existingIndex].promptAliases = [...aliases];
@@ -747,6 +748,10 @@ function mergePromptLoras(
             name: tagged.name,
             file_name: tagged.name,
             weight: tagged.strength,
+            // 新しく足す側も同じ（I-20260831-04）。
+            ...(Number.isFinite(Number(tagged.clipStrength))
+                ? { strength_clip: Number(tagged.clipStrength) }
+                : {}),
         });
         byName.set(key, result.length - 1);
     }
@@ -876,15 +881,92 @@ export function getResourceFilename(resource, preferredType = null) {
     return filename;
 }
 
-// \u6f5c\u5728\u7a7a\u9593\u306f 1/8 \u30b9\u30b1\u30fc\u30eb\u306a\u306e\u3067\u3001ComfyUI \u306e Empty*LatentImage \u306f
-// \u5185\u90e8\u3067 `width // 8` \u306b\u5207\u308a\u6368\u3066\u308b\u3002\u8a18\u9332\u5024\u3092\u305d\u306e\u307e\u307e\u6e21\u3059\u3068\u3001\u5ba3\u8a00\u3057\u305f\u5bf8\u6cd5\u3068
-// \u5b9f\u969b\u306b\u51fa\u308b\u753b\u7d20\u6570\u304c\u305a\u308c\u308b\uff08\u5b9f\u6e2c: 8\u306e\u500d\u6570\u3067\u306a\u3044\u8a18\u9332\u5024\u304c\u5b58\u5728\u3057\u3001
-// 84334115 \u306e `2305x1537` \u306f\u4fdd\u5b58\u30ce\u30fc\u30c9\u3078**\u624b\u5165\u529b\u3055\u308c\u305f\u98fe\u308a\u5024**\u3060\u3063\u305f\uff09\u3002
-// \u4e0b\u6d41\u3068\u540c\u3058\u5207\u308a\u6368\u3066\u3092\u3053\u3053\u3067\u6e08\u307e\u305b\u3001\u5ba3\u8a00\u3068\u5b9f\u7269\u3092\u4e00\u81f4\u3055\u305b\u308b\u3002
+// 潜在空間は 1/8 スケールなので、ComfyUI の Empty*LatentImage は
+// 内部で `width // 8` に切り捨てる。記録値をそのまま渡すと、宣言した寸法と
+// 実際に出る画素数がずれる（実測: 8の倍数でない記録値が存在し、
+// 84334115 の `2305x1537` は保存ノードへ**手入力された飾り値**だった）。
+// 下流と同じ切り捨てをここで済ませ、宣言と実物を一致させる。
 function snapToLatentGrid(value) {
     const numeric = Number(value);
     if (!Number.isFinite(numeric) || numeric <= 0) return null;
     return Math.max(8, Math.floor(numeric / 8) * 8);
+}
+
+/**
+ * 組み上がったグラフが**実際に描く寸法**を読む（`I-20260830-02`）。
+ *
+ * 詳細画面が出しているのは記録の報告値（`gen_params.size`）で、こちらとは
+ * 一致しない。実測（2026-08-30・実データ200件）で **一致 129 / 記録が空 49 /
+ * 食い違い 12**。食い違いの中身は 8の倍数への丸め・画素数の上限・
+ * 埋め込みグラフ優先・多段の1段目・転置補正で、**丸めと上限は画面に何も出ない**。
+ *
+ * **サンプラーの `latent_image` を辿る。** 幅・高さを持つ最初の節を拾うと
+ * `smZ CLIPTextEncode` の条件付け用 1024x1024 に当たる——実際それで
+ * 「118件が食い違う」という誤った数を出した（実際は12件）。
+ *
+ * @returns {{width: number, height: number, via: string}|null} 読めなければ null
+ */
+export function generatedSizeOf(prompt) {
+    const nodes = Object.entries(prompt || {});
+
+    /** 画素・潜在のどちらでも、寸法を持っていれば返す。 */
+    const sizeOf = (node) => {
+        const inputs = node?.inputs || {};
+        if (typeof inputs.width !== 'number' || typeof inputs.height !== 'number') return null;
+        return { width: inputs.width, height: inputs.height, via: String(node.class_type || '') };
+    };
+
+    /**
+     * 保存の節から上流へ遡り、**最初に寸法を持っている節**を返す。
+     *
+     * 多段（hires）では、拡大の節が最終寸法を持ち、その先に1段目の空潜在が居る。
+     * **手前で止める**ので、返るのは最終段の寸法になる。
+     */
+    const upstreamOf = (startLink) => {
+        const seen = new Set();
+        let link = startLink;
+        for (let hop = 0; hop < 24 && Array.isArray(link) && link.length; hop += 1) {
+            const id = String(link[0]);
+            if (seen.has(id)) break;
+            seen.add(id);
+            const node = prompt?.[id];
+            if (!node) break;
+            const found = sizeOf(node);
+            if (found) return found;
+            const inputs = node.inputs || {};
+            link = inputs.images ?? inputs.samples ?? inputs.latent_image
+                ?? inputs.latent ?? inputs.pixels ?? inputs.image ?? null;
+        }
+        return null;
+    };
+
+    // **錨は保存の節**（`I-20260830-12`）。
+    //
+    // 元は「最初に見つかったサンプラー」の `latent_image` を辿っていた。だが
+    // 多段のグラフでは節の並び順で1段目のサンプラーに当たるため、**1段目の
+    // 潜在の寸法**（例 832x1216）を返していた——保存される絵は拡大後の
+    // 1248x1824 で、詳細画面はそれを「実際に描かれるのは 832x1216」と
+    // **嘘の訂正**として出していた（実測190件中26件が最終と食い違い、
+    // うち2件は記録値のほうが正しかった）。
+    //
+    // **`findLast` では直らない。** 未接続の精錬枝が後ろに在るグラフでは、
+    // 保存へ繋がっていないサンプラーを拾って再び外す。保存から遡るのが唯一の錨。
+    for (const [, node] of nodes) {
+        if (!/save.*image|preview.*image/i.test(String(node?.class_type || ''))) continue;
+        const found = upstreamOf(node?.inputs?.images);
+        if (found) return found;
+    }
+
+    // 保存の節が無い（組み立て途中・動画の別経路）。**サンプラーから遡る。**
+    const sampler = nodes.find(([, node]) => /sampler/i.test(String(node?.class_type || '')));
+    const fromSampler = upstreamOf(sampler?.[1]?.inputs?.latent_image);
+    if (fromSampler) return fromSampler;
+
+    // 潜在を辿れない形（img2img・動画）は、素の空潜在を探す。
+    // **数字を落とさない。** `[^a-z]` で潰すと `EmptySD3LatentImage` が
+    // `emptysdlatentimage` になり、`emptysd3latent` と一致しない（検査が捕まえた）。
+    const empty = nodes.find(([, node]) => /empty.*latent/i.test(String(node?.class_type || '')));
+    return sizeOf(empty?.[1]) || null;
 }
 
 function parseSize(size) {
@@ -904,7 +986,7 @@ function parseSize(size) {
     return { width, height };
 }
 
-// SDXL \u7cfb\u306e\u6a19\u6e96\u30d0\u30b1\u30c3\u30c8\u3002\u30a2\u30b9\u30da\u30af\u30c8\u6bd4\u3057\u304b\u5206\u304b\u3089\u306a\u3044\u3068\u304d\u306e\u7740\u5730\u70b9\u306b\u4f7f\u3046\u3002
+// SDXL 系の標準バケット。アスペクト比しか分からないときの着地点に使う。
 const SDXL_BUCKETS = [
     { width: 1024, height: 1024 }, { width: 1152, height: 896 }, { width: 896, height: 1152 },
     { width: 1216, height: 832 }, { width: 832, height: 1216 }, { width: 1344, height: 768 },
@@ -924,15 +1006,15 @@ function bucketForAspect(width, height) {
 }
 
 /**
- * \u751f\u6210\u5bf8\u6cd5\u3092\u6c7a\u3081\u308b\u3002**\u6839\u62e0\u306e\u5f37\u3044\u9806\u306b\u843d\u3068\u3059\u3002**
+ * 生成寸法を決める。**根拠の強い順に落とす。**
  *
- * \u4ee5\u524d\u306f `parseSize(gen.size) || { width: 1024, height: 1024 }` \u306e1\u884c\u3067\u3001
- * size \u304c\u7121\u3044\u30ec\u30b7\u30d4\u306f\u7121\u6761\u4ef6\u306b\u6b63\u65b9\u5f62\u306b\u306a\u3063\u3066\u3044\u305f\u3002\u5b9f\u6e2c: size \u6b20\u843d\u306f346\u4ef6\u4e2d106\u4ef6
- * \uff0830.6%\uff09\u3067\u3001\u305d\u306e\u3046\u3061**\u30d7\u30ec\u30d3\u30e5\u30fc\u304c\u6b63\u65b9\u5f62\u306a\u306e\u306f16\u4ef6\u3060\u3051**\u3002\u3064\u307e\u308a
- * \u6b8b\u308a90\u4ef6\uff0885%\uff09\u306f\u6700\u521d\u304b\u3089\u30a2\u30b9\u30da\u30af\u30c8\u6bd4\u3092\u53d6\u308a\u9055\u3048\u3066\u518d\u73fe\u3057\u3066\u3044\u305f\u3002
+ * 以前は `parseSize(gen.size) || { width: 1024, height: 1024 }` の1行で、
+ * size が無いレシピは無条件に正方形になっていた。実測: size 欠落は346件中106件
+ * （30.6%）で、そのうち**プレビューが正方形なのは16件だけ**。つまり
+ * 残り90件（85%）は最初からアスペクト比を取り違えて再現していた。
  *
- * \u30d7\u30ec\u30d3\u30e5\u30fc\u753b\u50cf\u306f\u5143\u751f\u6210\u306e\u51fa\u529b\u305d\u306e\u3082\u306e\u306a\u306e\u3067\u3001\u5bf8\u6cd5\u306e\u7d76\u5bfe\u5024\u306f
- * \uff08hires\u5f8c\u306a\u306e\u3067\uff09\u5f53\u3066\u306b\u306a\u3089\u306a\u3044\u304c\u3001**\u30a2\u30b9\u30da\u30af\u30c8\u6bd4\u306f\u4e00\u6b21\u8cc7\u6599**\u3068\u3057\u3066\u4f7f\u3048\u308b\u3002
+ * プレビュー画像は元生成の出力そのものなので、寸法の絶対値は
+ * （hires後なので）当てにならないが、**アスペクト比は一次資料**として使える。
  */
 function previewAspect(recipe) {
     const preview = recipe?.preview_size || recipe?.previewSize;
@@ -975,8 +1057,8 @@ function resolveTargetSize(recipe, gen, warnings) {
     const recorded = parseSize(gen?.size);
     if (recorded) return correctTransposedSize(recorded, recipe, warnings);
 
-    // gen_params \u306b\u7121\u304f\u3066\u3082 A1111 \u539f\u6587\u306b\u306f `Size:` \u304c\u6b8b\u3063\u3066\u3044\u308b\u3053\u3068\u304c\u3042\u308b
-    // \uff08\u5b9f\u6e2c: size \u6b20\u843d106\u4ef6\u306e\u3046\u306143\u4ef6\uff09\u3002\u53d6\u308a\u3053\u307c\u3059\u7406\u7531\u304c\u7121\u3044\u3002
+    // gen_params に無くても A1111 原文には `Size:` が残っていることがある
+    // （実測: size 欠落106件のうち43件）。取りこぼす理由が無い。
     const fromParameters = parseSize(parameterValue(findA1111Parameters(recipe), 'Size'));
     if (fromParameters) return fromParameters;
 
@@ -1780,9 +1862,19 @@ function capReplayPixels(prompt, maxPixels, warnings) {
     const cap = Number(maxPixels);
     if (!Number.isFinite(cap) || cap <= 0) return false;
 
+    // **分割復号が在ることを前提にしない**（`I-20260830-08`）。
+    //
+    // 元はここで `VAEDecodeTiled` が無ければ即 return していた。だが分割復号を
+    // 選ぶかどうかは `vaeDecodeInputs` が **4.5M という別の閾値**で決めており、
+    // 利用者が入れた上限とは無関係である。結果として:
+    //
+    //   - 埋め込みグラフが素の `VAEDecode` を持つ記録は、**何メガピクセルでも縮まない**
+    //   - 上限を 2M へ下げても、4.5M 未満の記録は**一切縮まない**
+    //
+    // どちらも「大きすぎる再現を縮める」という設定が防ぐはずだった当のものが
+    // 素通りする形だった。**上限は上限として、単独で効かせる。**
     const decode = Object.values(prompt)
         .find(node => String(node?.class_type || '') === 'VAEDecodeTiled');
-    if (!decode) return false;
 
     // 縮める相手は**画素で寸法を持っている節**。潜在の側を触ると、
     // 途中の段と食い違って繋がらなくなる。
@@ -1798,18 +1890,28 @@ function capReplayPixels(prompt, maxPixels, warnings) {
 
     // **8の倍数へ落とす。** 潜在は 1/8 なので、半端だと段の途中で丸められる。
     const ratio = Math.sqrt(cap / pixels);
-    const round8 = (value) => Math.max(8, Math.round((value * ratio) / 8) * 8);
+    // **切り上げない。** `Math.round` だと丸めで上限をまたぐことがあり
+    // （1600x1600 を 2.0M へ縮めると 1416x1416 = 2,005,056 で 0.25% 超過）、
+    // 「上限」が上限でなくなる。超えた量はわずかでも、**検査で上限を assert
+    // できなくなる**のが痛い。切り捨てても減るのは1辺あたり8px 未満。
+    const round8 = (value) => Math.max(8, Math.floor((value * ratio) / 8) * 8);
     const nextWidth = round8(width);
     const nextHeight = round8(height);
     scaler.inputs.width = nextWidth;
     scaler.inputs.height = nextHeight;
 
-    // 収まったので、**分割せずに復号する**（分割こそが止まる形だった）。
-    decode.class_type = 'VAEDecode';
-    for (const key of ['tile_size', 'overlap', 'temporal_size', 'temporal_overlap']) {
-        delete decode.inputs[key];
+    // **分割をやめてよいのは、VRAM の閾値まで収まったときだけ。**
+    //
+    // 利用者が上限を 4.5M より上へ動かしていると、縮めた後もまだ分割が要る。
+    // 「縮めた＝素の復号でよい」と決め打つと、上限を上げた人のグラフを
+    // **載らない形へ書き換える**ことになる。
+    if (decode && nextWidth * nextHeight <= TILED_DECODE_PIXELS) {
+        decode.class_type = 'VAEDecode';
+        for (const key of ['tile_size', 'overlap', 'temporal_size', 'temporal_overlap']) {
+            delete decode.inputs[key];
+        }
+        if (decode._meta) decode._meta.title = 'VAE Decode';
     }
-    if (decode._meta) decode._meta.title = 'VAE Decode';
 
     warnings.push(t('core.recipeWorkflowBuilder.cappedSize', {
         p1: width, p2: height, p3: nextWidth, p4: nextHeight,
@@ -1817,8 +1919,17 @@ function capReplayPixels(prompt, maxPixels, warnings) {
     return true;
 }
 
+/**
+ * 分割復号へ切り替える画素数。**VRAM の都合であって、利用者の上限ではない。**
+ *
+ * 縮める上限（`maxReplayPixels`）とは別の概念なので混ぜない——上限を上げた人の
+ * グラフを素の復号へ戻すと、今度は VRAM に載らない。縮めた結果がこの値以下に
+ * なったときだけ、素の復号へ戻してよい。
+ */
+const TILED_DECODE_PIXELS = 4_500_000;
+
 function vaeDecodeInputs(samples, vae, pixelCount) {
-    if (pixelCount <= 4_500_000) return { inputs: { samples, vae }, class_type: 'VAEDecode' };
+    if (pixelCount <= TILED_DECODE_PIXELS) return { inputs: { samples, vae }, class_type: 'VAEDecode' };
     return {
         inputs: {
             samples,
@@ -1929,6 +2040,14 @@ const UPSCALER_ALIASES = [
     [/^r[-_ ]?esrgan\s*4x\+?\s*anime\s*6?b$/i, 'RealESRGAN_x4plus_anime_6B'],
     [/^r[-_ ]?esrgan\s*4x\+?$/i, 'RealESRGAN_x4plus'],
     [/^r[-_ ]?esrgan\s*2x\+?$/i, 'RealESRGAN_x2'],
+    // **これは死んでいない**（2026-08-30 実機で確認）。一度「台帳に無いファイル名だから
+    // 作者の手元にしか無い死んだ行」と判断して消したが、**実機に
+    // `remacri_original.pth` が実在**し、消した瞬間に 26件（`Remacri` 22 /
+    // `4x_foolhardy_Remacri` 4）が lanczos へ落ちた。
+    //
+    // ここが照合する相手は**台帳ではなく手元の一覧**である。台帳に無い綴りで
+    // 置かれているファイルを拾うのが、この表の役目そのもの——「台帳に在ること」を
+    // 条件にするのは向きが逆だった。
     [/remacri/i, 'remacri_original'],
 ];
 
@@ -1951,7 +2070,14 @@ function upscalerKey(value) {
  * @param {string} name 記録に書かれた名前
  * @param {string[]|null} installed `/object_info` から採った導入済みの一覧
  */
-function resolveInstalledUpscaler(name, installed) {
+/**
+ * **検査から呼べるように出す**（`I-20260830-10`）。
+ *
+ * 台帳の別名で引く段は、`buildRecipeWorkflow` 越しだと hires のグラフを
+ * 組み立てないと通らない。台帳の全別名を表駆動で流すには直接呼べる必要がある
+ * ——手書きで数名だけ流す検査にすると、別名を足した人の分が守られない。
+ */
+export function resolveInstalledUpscaler(name, installed, catalog = null) {
     const wanted = String(name || '');
     if (!wanted) return null;
     const list = Array.isArray(installed) ? installed : [];
@@ -1961,14 +2087,32 @@ function resolveInstalledUpscaler(name, installed) {
     const direct = byKey.get(upscalerKey(wanted));
     if (direct) return direct;
 
-    // 2. 別名表
+    // 2. **既知モデル台帳の別名で引く**（`I-20260830-10`）。
+    //
+    // ここは手書きの `UPSCALER_ALIASES` しか見ていなかった。台帳は
+    // `4x_foolhardy_Remacri.pth` と `Remacri` の対応を持っているのに、
+    // 実行側がそれを読まないので、**導入済みでも「入っていません」と言って
+    // lanczos へ落ちて**いた（ESRGAN と lanczos は質感が明確に違う）。
+    // しかも不足モデルの面は「台帳で取れる」と表示するので、落とし終えても直らない。
+    //
+    // Civitai 由来レシピの拡大器 URN は**実測346件中33件すべてが Remacri**
+    // なので、記録に拡大器が在れば毎回ここを踏んでいた。
+    const entry = findCatalogEntry(catalog, wanted);
+    if (entry) {
+        for (const candidate of [entry.filename, ...(entry.aliases || [])]) {
+            const found = byKey.get(upscalerKey(candidate));
+            if (found) return found;
+        }
+    }
+
+    // 3. 別名表（手書き。台帳に無い呼び名のための最後の砦）
     for (const [pattern, canonical] of UPSCALER_ALIASES) {
         if (!pattern.test(wanted.trim())) continue;
         const found = byKey.get(upscalerKey(canonical));
         if (found) return found;
     }
 
-    // 3. 手元が判らないなら、名前をそのまま渡す（今までの挙動）。
+    // 4. 手元が判らないなら、名前をそのまま渡す（今までの挙動）。
     //    **判っていて見つからなかったときだけ null。**
     if (list.length === 0) return wanted;
     return null;
@@ -1983,13 +2127,35 @@ function embeddedPromptNeedsRebuild(prompt, recipe) {
     return hasCheckpointLoader && (path.includes('/diffusion_models/') || path.includes('/unet/'));
 }
 
-function inlineLegacyConstants(prompt, warnings) {
+// **輸出する**（2026-09-01・走査13周目）。同種のグラフ変換
+// （`expandPowerLoraLoader` / `pruneNodesNotFeedingOutput` /
+// `inlineJoinStringMulti`）は既に輸出されており、**検査から実物を通せる**。
+// ここだけ閉じていたので、`string` の番人が抜けていることに誰も気づけなかった。
+export function inlineLegacyConstants(prompt, warnings) {
     const replacements = new Map();
     for (const [id, node] of Object.entries(prompt)) {
         const type = normalizedClassType(node?.class_type);
         if (!['int', 'float', 'string'].includes(type)) continue;
         const raw = node?.inputs?.Number ?? node?.inputs?.number ?? node?.inputs?.value
             ?? node?.inputs?.String ?? node?.inputs?.string;
+        // **値が読めなかったら畳まない**（2026-09-01・走査13周目）。
+        //
+        // 番人は `int` / `float` にしか無かった。`string` は値の鍵を1つも
+        // 持たないとき `raw` が `undefined` のまま `replacements` へ入り、
+        // 消費側の入力が `undefined` になる——**JSON にすると鍵ごと消える**ので、
+        // `CLIPTextEncode` が `text` を失って投入が拒否される。
+        // しかも**元のノードは削除される**ので、値は復元できない。
+        // 警告は「N個の定数を畳みました」と出るため、**成功に見える。**
+        //
+        // 実測（同じ形で比べた）:
+        //   `{class_type:'String', inputs:{text:'hello'}}` → 消費側が `{}` になる
+        //   `{class_type:'Int',    inputs:{text:5}}`       → 番人が効いて無傷
+        //
+        // 値の鍵の一覧（`Number`/`number`/`value`/`String`/`string`）に無い綴りで
+        // 書く節は在りうる。**読めないものは触らない**のが、
+        // このファイルが他所で守っている決めごと（`alignModelNamesToCatalog` の
+        // 「一致が無ければ何もしない」）と同じ形。
+        if (raw === undefined || raw === null) continue;
         let value = raw;
         if (type === 'int') value = Number.parseInt(raw, 10);
         if (type === 'float') value = Number.parseFloat(raw);
@@ -2010,10 +2176,37 @@ function inlineLegacyConstants(prompt, warnings) {
 
 // Civitai/A1111 use -1 to mean "random seed".  ComfyUI validates sampler
 // seeds as unsigned integers, so pass a safe non-negative value instead.
+//
+// **2^53 を超える seed は数にしない**（`I-20260831-47`）。ComfyUI の
+// `noise_seed` は 2^64-1 まで取るので `Number()` を通すと下の桁が変わり、
+// **同じ seed を指したつもりで別の絵になる**。呼び出し側のコメントは
+// 前から「生の値のまま渡す」と言っていたのに、ここが落としていた。
+//
+// **綴りで来なかったものは、ここへ届く前に既に落ちている。** JSON の数値は
+// `JSON.parse` の時点で丸まるので、この関数では復元できない——直せるのは
+// **文字列として記録されていた経路だけ**である（A1111 のテキスト記録など）。
 function normalizeSeed(value, fallback = 0) {
+    if (typeof value === 'string' || typeof value === 'bigint') {
+        const text = String(value).trim();
+        // 綴りのまま返すのは「数にすると変わってしまうもの」だけ。
+        // 収まるものまで綴りで返すと、下流の `Number.isFinite` 判定や
+        // 比較の形が場所ごとに変わる。
+        if (/^[0-9]+$/.test(text) && !Number.isSafeInteger(Number(text))) return text;
+    }
     const seed = Number(value);
     if (!Number.isFinite(seed) || seed < 0) return fallback;
     return Math.trunc(seed);
+}
+
+/**
+ * seed へ足す。**綴りで持っている seed を文字連結にしない。**
+ *
+ * `normalizeSeed` が綴りを返しうるので、`+ 1` をそのまま書くと
+ * `"18446744073709551615" + 1` = `"184467440737095516151"` になる。
+ */
+function offsetSeed(seed, delta) {
+    if (typeof seed === 'string') return String(BigInt(seed) + BigInt(delta));
+    return seed + delta;
 }
 
 /**
@@ -2384,7 +2577,7 @@ function standardPrompt(recipe, warnings, options = {}) {
         const upscalerName = hiresUpscalerName(recipe, warnings);
         const hiresSamplerInputs = {
             ...prompt['5'].inputs,
-            seed: normalizeSeed(gen.seed) + 1,
+            seed: offsetSeed(normalizeSeed(gen.seed), 1),
             steps: firstRecordedNumber(gen.hires_steps) ?? steps,
             cfg: firstRecordedNumber(gen.hires_cfg_scale) ?? cfg,
             // **null を 0 に化けさせない。**
@@ -2413,7 +2606,7 @@ function standardPrompt(recipe, warnings, options = {}) {
         // lanczos だけの拡大なら絵は出る（元とは少し違う＝「近似」）。
         const installedUpscalers = catalogChoices(options?.objectInfo, 'UpscaleModelLoader', 'model_name');
         const resolvedUpscaler = usesPixelHiresUpscaler(upscalerName)
-            ? resolveInstalledUpscaler(upscalerName, installedUpscalers)
+            ? resolveInstalledUpscaler(upscalerName, installedUpscalers, options?.knownModelCatalog)
             : null;
         if (usesPixelHiresUpscaler(upscalerName) && !resolvedUpscaler) {
             warnings.push(t('core.recipeWorkflowBuilder.upscalerMissing', { name: upscalerName }));
@@ -2662,6 +2855,18 @@ function isHiresSampler(prompt, node, inputs) {
     for (const value of Object.values(inputs || {})) {
         if (Array.isArray(value) && value.length) queue.push(String(value[0]));
     }
+    // **拡大や VAEEncode を見ただけで2段目と決めない**（`I-20260830-09`）。
+    //
+    // 元は上流に拡大 or `VAEEncode` を見つけた時点で真を返していた。だが
+    // `LoadImage → VAEEncode → KSampler` は**ごく普通の img2img** で、
+    // サンプラーは1本しかない。それを2段目と読むと、下で seed に +1 されて
+    // **記録どおりの seed を指定したのに別の絵が出る**（しかも警告は1本も出ない）。
+    //
+    // 2段目であることの本体は「**前の段が在る**」——つまり上流に別の
+    // サンプラーが居ることである。拡大と `VAEEncode` はその代理でしかない。
+    // 両方を要求する。
+    let sawStage = false;
+    let sawSampler = false;
     while (queue.length) {
         const id = queue.shift();
         if (visited.has(id)) continue;
@@ -2669,7 +2874,11 @@ function isHiresSampler(prompt, node, inputs) {
         const upstream = prompt?.[id];
         if (!upstream) continue;
         const normalized = normalizedClassType(upstream.class_type);
-        if (UPSCALE_CLASS_PATTERN.test(normalized) || normalized === 'vaeencode') return true;
+        if (UPSCALE_CLASS_PATTERN.test(normalized) || normalized === 'vaeencode') sawStage = true;
+        // **呼び手と同じ字で数える**（呼び手は `/KSampler/i` で回している）。
+        // ここだけ別の綴りにすると、片方が数えた節をもう片方が数えない。
+        if (/KSampler/i.test(String(upstream.class_type || ''))) sawSampler = true;
+        if (sawStage && sawSampler) return true;
         // 白紙 latent まで遡れたらそこで打ち切る（1段目の証拠）。
         if (isEmptyLatentClass(upstream.class_type)) continue;
         for (const value of Object.values(upstream.inputs || {})) {
@@ -2790,8 +2999,15 @@ function patchGenerationParameters(prompt, recipe, warnings, source) {
                 // **記録が無ければグラフの seed を残す。** `Number(null)`=0 を
                 // 「記録されている」と読むと、**埋め込みグラフの正しい seed を 0 で潰す。**
                 // 渡すのは生の値のまま（2^53 を超える seed は Number にすると精度が落ちる）。
-                const sourceSeed = firstRecordedNumber(gen.seed) === null ? inputs.seed : gen.seed;
-                inputs.seed = normalizeSeed(sourceSeed) + (isHiresPass ? 1 : 0);
+                const recordedSeed = firstRecordedNumber(gen.seed) !== null;
+                const sourceSeed = recordedSeed ? gen.seed : inputs.seed;
+                // **グラフの seed を残すときは足さない**（`I-20260830-09`）。
+                //
+                // 記録が無ければ上で `inputs.seed`（グラフが持っていた値）を採る。
+                // それに更に +1 すると、hires 再構成が既に +1 して置いた2段目へ
+                // **二重に足す**ことになる（記録どおりを狙って +2 になる）。
+                // 足すのは「記録された seed を基準に2段目を作る」ときだけ。
+                inputs.seed = offsetSeed(normalizeSeed(sourceSeed), recordedSeed && isHiresPass ? 1 : 0);
             }
             const requestedSteps = isHiresPass && firstRecordedNumber(gen.hires_steps) !== null
                 ? gen.hires_steps : gen.steps;
@@ -2809,6 +3025,19 @@ function patchGenerationParameters(prompt, recipe, warnings, source) {
                 if (samplerUsesEmptyLatent(prompt, inputs)) {
                     // 白紙 latent 始まりへ denoise<1 を入れると平坦になる。ここは死守。
                     inputs.denoise = 1;
+                    // **落としたことは言う**（`I-20260830-18`）。
+                    //
+                    // 詳細画面の控えには「Denoising Strength 0.38」と出ているのに
+                    // 実際は 1 で走る記録が**実測190件中11件**あり、うち2件は
+                    // 警告も一切出ていなかった。**値を変えるのではなく、
+                    // 変えなかったことを言う**——1 が正しいので直すのは無言のほうである。
+                    //
+                    // 2段目には `:2983` で記録値が正しく載るので、ここだけに限る。
+                    const droppedDenoise = firstRecordedNumber(gen.denoising_strength, stack?.denoise);
+                    if (!isHiresPass && droppedDenoise !== null && droppedDenoise < 1) {
+                        warnings.push(t('core.recipeWorkflowBuilder.denoiseOnEmptyLatent',
+                            { p1: droppedDenoise }));
+                    }
                 } else {
                     // resource-stack グラフの denoise は既に読んでいたのに、
                     // 警告文にしか使われず KSampler へ届いていなかった（実測15件）。
@@ -3082,7 +3311,7 @@ function dropUnavailableLoras(prompt, objectInfo, warnings) {
     }
     if (dropped.length > 0 && Array.isArray(warnings)) {
         warnings.push(
-            t('core.recipeWorkflowBuilder.37', { p1: dropped.length, p2: dropped.join('、') })
+            t('core.recipeWorkflowBuilder.37', { p1: dropped.length, p2: dropped.join(t('core.sep.list')) })
         );
     }
     return dropped;
@@ -3141,7 +3370,11 @@ function expandCarriedLoras(prompt, objectInfo, warnings) {
     });
     if (!carriers.length) return false;
 
-    let nextId = nextNodeId(prompt);
+    // **数として持つ。** `nextNodeId` は綴りを返すので、そのまま `+= 1` すると
+    // **文字の連結**になり id が 9 → 91 → 911 と伸びる（`I-20260831-45`）。
+    // 今は `nextNodeId` が max+1 を返すので衝突しないが、**採番の正しさを
+    // 別の関数へ預けたままにしない**——ここが自分で数え上げられる形にする。
+    let nextId = Number(nextNodeId(prompt));
     for (const [carrierId, carrier] of carriers) {
         const entries = carriedLoraEntries(carrier);
         let modelRef = carrier.inputs?.model;
@@ -3207,6 +3440,17 @@ function looksLikeLoraCarrier(node) {
     return holds && Array.isArray(inputs.model) && Array.isArray(inputs.clip);
 }
 
+/**
+ * 数として読めれば**その値**（`0` も含む）、読めなければ `fallback`。
+ *
+ * `Number(x) || fallback` と書くと **`0` が偽値として弾かれる**ので使わない。
+ */
+function finiteOr(raw, fallback) {
+    if (raw === undefined || raw === null || String(raw).trim() === '') return fallback;
+    const value = Number(raw);
+    return Number.isFinite(value) ? value : fallback;
+}
+
 /** 運搬ノードが持っている1本ずつ（名前・model の強さ・clip の強さ）。 */
 function carriedLoraEntries(node) {
     const inputs = node?.inputs || {};
@@ -3227,8 +3471,15 @@ function carriedLoraEntries(node) {
     const text = typeof inputs.text === 'string' ? inputs.text : '';
     return [...text.matchAll(/<lora:([^:>]+)(?::([^:>]*))?(?::([^>]*))?>/gi)].map(match => ({
         name: String(match[1] || ''),
-        model: Number(match[2] ?? 1) || 1,
-        clip: Number(match[3] ?? match[2] ?? 1) || 1,
+        // **`|| 1` にしない**（2026-08-31・監査 I-20260831-05）。
+        // `Number("0") || 1` は **1** になるので、**作者が切っていた LoRA が
+        // 全開で当たる**。しかも `expandCarriedLoras` の警告は「順番も強さも
+        // 同じなので絵は変わりません」と言うので、変わったことに気づけない。
+        // 同じファイルの `extractPromptLoras` は `Number.isFinite` で 0 を保って
+        // おり、**1ファイル内で規則が割れていた**。そちらへ揃える。
+        // **0 と「書いていない」は別**——書いていなければ A1111 の既定どおり 1。
+        model: finiteOr(match[2], 1),
+        clip: finiteOr(match[3], finiteOr(match[2], 1)),
     })).filter(entry => entry.name);
 }
 
@@ -3801,6 +4052,30 @@ export function pruneNodesNotFeedingOutput(prompt, objectInfo) {
  * `PrimitiveStringMultiline` のように、線の入力が無く文字の入力が1つだけの
  * ノードを対象にする。2つ以上あるものは、どれが出力の値か決められない。
  */
+/**
+ * `inputcount` を本数として読む。**読めなければ `null`。**
+ *
+ * リンク（`[id, slot]`）で来ることがあり、その形を `Number()` に通すと
+ * `NaN` になる（`I-20260831-49`）。繋がっている先が定数の1本入力なら読む。
+ */
+function readableCount(value, prompt) {
+    if (Array.isArray(value)) {
+        const constant = constantNumberOf(prompt?.[String(value[0])]);
+        return constant !== null && constant > 0 ? Math.trunc(constant) : null;
+    }
+    const count = Number(value);
+    return Number.isFinite(count) && count > 0 ? Math.trunc(count) : null;
+}
+
+/** `constantStringOf` の数版。1本だけ持つ定数ノードから値を取る。 */
+function constantNumberOf(node) {
+    const entries = Object.entries(node?.inputs || {}).filter(([key]) => !key.startsWith('_'));
+    if (entries.some(([, value]) => Array.isArray(value))) return null;
+    const numbers = entries.filter(([, value]) => typeof value === 'number' && Number.isFinite(value));
+    if (numbers.length !== 1) return null;
+    return numbers[0][1];
+}
+
 function constantStringOf(node) {
     const entries = Object.entries(node?.inputs || {}).filter(([key]) => !key.startsWith('_'));
     if (entries.some(([, value]) => Array.isArray(value))) return null;
@@ -3840,13 +4115,19 @@ export function inlineJoinStringMulti(prompt, objectInfo) {
         const inputs = node?.inputs || {};
         if (inputs.return_list === true) continue;
 
-        const count = Number(inputs.inputcount);
-        const wanted = Number.isFinite(count) && count > 0 ? count : 0;
+        // **本数が読めないなら畳まない**（`I-20260831-49`）。
+        //
+        // `inputcount` がリンクで来ると `Number()` は `NaN` を返し、以前は
+        // `wanted = 0` → `Math.max(0, 1)` で **`string_1` だけを畳んでいた**。
+        // 例外もログも出ないまま本文が欠ける。リンクで受ける形は ComfyUI では
+        // 普通なので、上の宣言どおり「読めないものが在れば触らない」へ倒す。
+        const wanted = readableCount(inputs.inputcount, prompt);
+        if (wanted === null) continue;
         const delimiter = typeof inputs.delimiter === 'string' ? inputs.delimiter : '';
 
         const parts = [];
         let readable = true;
-        for (let index = 1; index <= Math.max(wanted, 1); index += 1) {
+        for (let index = 1; index <= wanted; index += 1) {
             const value = inputs[`string_${index}`];
             if (value === undefined || value === null) continue;
             if (typeof value === 'string') { parts.push(value); continue; }
@@ -3890,7 +4171,7 @@ function substituteMissingNodes(prompt, objectInfo, warnings) {
         const expanded = expandPowerLoraLoader(prompt, objectInfo);
         if (expanded.converted > 0) {
             warnings.push(t('core.recipeWorkflowBuilder.powerLora', {
-                count: expanded.converted, list: expanded.loras.join('、'),
+                count: expanded.converted, list: expanded.loras.join(t('core.sep.list')),
             }));
         }
     }
@@ -3980,8 +4261,8 @@ function validateOrRepairEmbeddedPrompt(prompt, recipe, objectInfo, warnings) {
     const problems = embeddedGraphProblems(prompt, objectInfo, roots);
     if (problems.missingNodes.length > 0 || problems.missingInputs.length > 0) {
         const details = [
-            problems.missingNodes.length ? t('core.recipeWorkflowBuilder.46', { p1: problems.missingNodes.join('、') }) : '',
-            problems.missingInputs.length ? t('core.recipeWorkflowBuilder.47', { p1: problems.missingInputs.join('、') }) : '',
+            problems.missingNodes.length ? t('core.recipeWorkflowBuilder.46', { p1: problems.missingNodes.join(t('core.sep.list')) }) : '',
+            problems.missingInputs.length ? t('core.recipeWorkflowBuilder.47', { p1: problems.missingInputs.join(t('core.sep.list')) }) : '',
         ].filter(Boolean).join(' / ');
         if (!canBuildStandardRecipe(recipe)) {
             const error = new Error(t('core.recipeWorkflowBuilder.48', { p1: details }));
@@ -4003,7 +4284,7 @@ function validateOrRepairEmbeddedPrompt(prompt, recipe, objectInfo, warnings) {
          */
         const packs = packsFor(problems.missingNodes);
         if (packs.length) {
-            warnings.push(t('core.recipeWorkflowBuilder.packs', { list: packs.join('、') }));
+            warnings.push(t('core.recipeWorkflowBuilder.packs', { list: packs.join(t('core.sep.list')) }));
         }
         // **この関数が持っているのは `objectInfo` だけ。** `options` は無い
         // ——`options` と書いて 21件が `options is not defined` で落ちた（実測 2026-08-21）。
@@ -4573,7 +4854,10 @@ function applyRecordedNoiseSource(prompt, recipe, objectInfo, warnings, source) 
 
     // 同じ供給元は1つの Settings を共有する（段が増えても分岐させない）。
     const byModelRef = new Map();
-    let nextId = 800;
+    // **決め打ちにしない**（I-20260831-03）。今は `source === 'embedded'` で
+    // 早期に戻るので手元の実データでは衝突しないが、**到達しない理由が
+    // 「番号が安全だから」ではない**——組み立ての経路が1つ増えれば当たる。
+    let nextId = Number(nextNodeId(prompt));
     let applied = 0;
     for (const [, node] of samplers) {
         const modelRef = node.inputs?.model;
@@ -4626,7 +4910,15 @@ function insertAdetailerStages(prompt, recipe, warnings, objectInfo, resolvedSam
         return;
     }
 
-    let nextId = 700;
+    // **決め打ちにしない**（2026-08-31・監査 I-20260831-03）。
+    // ComfyUI のノードIDは単調増加で再利用されないので、少し使い込んだ
+    // ワークフローでは700台が普通に在る（実測: 手元の出力411枚のうち47枚＝11.4%）。
+    // 衝突すると `prompt[id] = {...}` が**既存の節を丸ごと差し替える**——
+    // 実測では CheckpointLoaderSimple と正のプロンプトが化け、KSampler.model は
+    // 元のIDを指したままなので MODEL の口へ BBOX_DETECTOR が流れた。
+    // しかも警告は出ず、画面には「段を復元しました」と成功だけが出る。
+    // このファイルの他の採番はすべて `nextNodeId(prompt)` を通している。
+    let nextId = Number(nextNodeId(prompt));
     let current = imageRef;
     const applied = [];
     const skipped = [];
@@ -4784,8 +5076,8 @@ function optimizeSingleBatchSlice(prompt, warnings) {
                 if (!sameReference(value, [sliceId, 0])) continue;
                 node.inputs[key] = [...sourceRef];
                 if (/KSampler/i.test(node.class_type || '')) {
-                    if (Number.isFinite(Number(node.inputs.seed))) node.inputs.seed = normalizeSeed(node.inputs.seed) + batchIndex;
-                    if (Number.isFinite(Number(node.inputs.noise_seed))) node.inputs.noise_seed = normalizeSeed(node.inputs.noise_seed) + batchIndex;
+                    if (Number.isFinite(Number(node.inputs.seed))) node.inputs.seed = offsetSeed(normalizeSeed(node.inputs.seed), batchIndex);
+                    if (Number.isFinite(Number(node.inputs.noise_seed))) node.inputs.noise_seed = offsetSeed(normalizeSeed(node.inputs.noise_seed), batchIndex);
                 }
             }
         }
@@ -4988,7 +5280,8 @@ export function buildRecipeWorkflow(recipe, options = {}) {
             .trim();
         prompt = standardPrompt(effectiveRecipe, warnings, options);
         if (isFluxRecipe(effectiveRecipe) || requiresStructuredA1111(rawA1111Parameters)) {
-            const detected = features.length ? `（${features.join('、')}）` : '';
+            const detected = features.length
+                ? t('ui.count', { p1: features.join(t('core.sep.list')) }) : '';
             warnings.push(t('core.recipeWorkflowBuilder.75', { p1: detected }));
         } else {
             // Clean, complete A1111 metadata can use ComfyUI's native importer.
@@ -5074,22 +5367,28 @@ export function buildRecipeWorkflow(recipe, options = {}) {
     // （そうしないと VRAM に載らない）。ところが実測では、この形は環境によって
     // **事実上止まる**——`/interrupt` が効かず、再起動でしか消えない。
     // どちらへ倒しても外れる場面が在るので、**黙って投げない**。
+    // **縮めて出せるなら、そうする**（2026-08-25 利用者の指示）。
+    // 記録どおりの寸法では復号できない機械が在り、そこでは**絵が1枚も出ない**。
+    // 小さくても出るほうが、出ないより使える——ただし**小さいことは必ず言う。**
+    //
+    // **分割復号の有無で囲わない**（`I-20260830-08`）。囲っていたので、素の
+    // `VAEDecode` を持つ埋め込みグラフは何メガピクセルでも縮まなかった。上限は
+    // 上限として単独で効かせ、分割が残るかどうかはその後で見る。
+    capReplayPixels(prompt, options?.maxReplayPixels, warnings);
+
     const tiledDecode = Object.values(prompt)
         .find(node => String(node?.class_type || '') === 'VAEDecodeTiled');
     if (tiledDecode) {
-        // **縮めて出せるなら、そうする**（2026-08-25 利用者の指示）。
-        // 記録どおりの寸法では復号できない機械が在り、そこでは**絵が1枚も出ない**。
-        // 小さくても出るほうが、出ないより使える——ただし**小さいことは必ず言う。**
-        const shrunk = capReplayPixels(prompt, options?.maxReplayPixels, warnings);
-        if (!shrunk) {
-            // **数字は書かない。** 節の中の `width`/`height` から見積もっていたが、
-            // 切り替えを決めた画素数とは**別物**で、実測 1 メガピクセルと出た記録が
-            // タイル分割になっていた（2026-08-25）。**当てにならない数字を添えるより、
-            // 形と打ち手だけを言う。**
-            warnings.push(t(cameTiled
-                ? 'core.recipeWorkflowBuilder.tiledDecodeFromRecord'
-                : 'core.recipeWorkflowBuilder.tiledDecode'));
-        }
+        // ここへ来るのは**縮めてもなお分割が要る**場合（上限を上げている、
+        // あるいは上限を入れていない）。
+        //
+        // **数字は書かない。** 節の中の `width`/`height` から見積もっていたが、
+        // 切り替えを決めた画素数とは**別物**で、実測 1 メガピクセルと出た記録が
+        // タイル分割になっていた（2026-08-25）。**当てにならない数字を添えるより、
+        // 形と打ち手だけを言う。**
+        warnings.push(t(cameTiled
+            ? 'core.recipeWorkflowBuilder.tiledDecodeFromRecord'
+            : 'core.recipeWorkflowBuilder.tiledDecode'));
     }
 
     assertConditioningIsUsable(prompt);

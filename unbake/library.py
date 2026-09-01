@@ -66,7 +66,21 @@ def suffix_of(name: str) -> Optional[str]:
     return None
 
 #: 対の参照画像として認める拡張子。**先に見つかった1つを使う。**
-PREVIEW_SUFFIXES = (".webp", ".png", ".jpg", ".jpeg")
+#:
+#: **`records.sniff_image` が返しうる拡張子は、必ずここに在ること**
+#: （2026-09-01・走査10周目）。`.gif` が抜けていて、**受け取れるのに
+#: 見つけられない**状態だった——`store_preview` は先頭バイトで GIF を認めて
+#: `<stem>.gif` を書くのに、ここに無いので
+#:
+#:   * `_preview_for()` が見つけられない → 一覧は `preview: false`
+#:   * `GET /unbake/record-preview` は 404
+#:   * `records.delete_record` が**対の画像として消さない** → 孤児が残る
+#:
+#: の3つが同時に起きる。**`records.py` 自身が「収まっていないと、落とせても
+#: `_preview_for()` が見つけられない」と書いている**のに、その検査は
+#: `PREVIEW_TYPES`（落とす側）にしか当たっておらず、`sniff_image`（受け取る側）が
+#: 外れていた。関係は `tests/test_preview_suffixes_agree.py` が留める。
+PREVIEW_SUFFIXES = (".webp", ".png", ".jpg", ".jpeg", ".gif")
 
 #: 1回の走査で読むファイル数の上限。**無制限にしない**——設定を打ち間違えて
 #: ドライブの根を指したときに、起動が終わらなくなる。
@@ -121,9 +135,23 @@ class RecordLibrary:
         return not str(self._settings.get("record_output_dir", "") or "").strip()
 
     def scan(self, *, include_output: bool = True) -> "RecordLibrary":
-        """索引を作り直す。**読めなかったものを黙って捨てない。**"""
-        self._index = {}
-        self.scan_errors = []
+        """索引を作り直す。**読めなかったものを黙って捨てない。**
+
+        **組み上がるまで、今の索引を外さない**（``I-20260831-59``）。
+
+        以前は ``self._index = {}`` で**先に空にしてから**数千件を詰め直していた。
+        その間に読んだ側は「記録が無い」を見る——``GET /unbake/record`` は
+        イベントループ上から ``_index`` を引き、``POST /unbake/record-save`` と
+        ``GET /unbake/records?rescan=1`` がここを呼ぶので、
+        **同時に走る窓が構造として在った**。症状は 404・一覧の欠けで、
+        「消したはずが出る／出るはずが消える」の形になる。
+
+        手元で組んでから最後に差し替える。**GIL の下で名前の付け替えは
+        原子的**なので錠は要らない——読む側は必ず「走査前の完全な索引」か
+        「走査後の完全な索引」のどちらかを見る。
+        """
+        index: Dict[str, Dict[str, Any]] = {}
+        scan_errors: List[str] = []
         seen_files = 0
 
         roots = list(self.source_dirs())
@@ -138,16 +166,16 @@ class RecordLibrary:
                 if root == output and self.output_dir_is_default():
                     continue
                 # **「設定したのに0件」の理由が読めるようにする。**
-                self.scan_errors.append(f"{root}: フォルダが見つかりません")
+                scan_errors.append(f"{root}: フォルダが見つかりません")
                 continue
             try:
                 entries = sorted(os.scandir(root), key=lambda e: e.name)
             except OSError as error:
-                self.scan_errors.append(f"{root}: {type(error).__name__}: {error}")
+                scan_errors.append(f"{root}: {type(error).__name__}: {error}")
                 continue
             for entry in entries:
                 if seen_files >= MAX_FILES:
-                    self.scan_errors.append(
+                    scan_errors.append(
                         f"{root}: 上限 {MAX_FILES} 件で打ち切りました（設定を絞ってください）"
                     )
                     break
@@ -157,10 +185,10 @@ class RecordLibrary:
                 path = Path(entry.path)
                 record_id, summary = _summarize(path)
                 if record_id is None:
-                    self.scan_errors.append(f"{entry.name}: {summary}")
+                    scan_errors.append(f"{entry.name}: {summary}")
                     continue
                 # 同じ id が2つの元に在るときは**先に出た方を残す**（設定の並び順が優先）。
-                if record_id in self._index:
+                if record_id in index:
                     continue
                 summary["source"] = "output" if (output is not None and path.parent == output) else "folder"
                 # **書いた主体を残す。** 削除の口はこれを見て、
@@ -168,12 +196,17 @@ class RecordLibrary:
                 # 画面へ別のものとして出す（消せるかどうかではなく、**何を消すのか**が違う）。
                 summary["owner"] = "unbake" if path.name.endswith(UNBAKE_SUFFIX) else "lora-manager"
                 summary["preview"] = _preview_for(path) is not None
-                self._index[record_id] = summary
-        self.fill_base_models()
+                index[record_id] = summary
+        # **差し替える前に補う。** 補いも新しい索引の上で終わらせてから渡す
+        # ——先に差し替えると、その間だけ土台のモデルが空の行が読まれる。
+        self.fill_base_models(index=index)
+        # ここから下が**入れ替えの瞬間**。名前の付け替えだけで、要素は触らない。
+        self._index = index
+        self.scan_errors = scan_errors
         self._scanned = True
         return self
 
-    def fill_base_models(self, lookup=None) -> int:
+    def fill_base_models(self, lookup=None, index=None) -> int:
         """記録が持っていない土台のモデルを、**手元のモデルの情報から補う**。
 
         **推測はしない。** LoRA Manager がモデルの隣へ置いた
@@ -188,6 +221,8 @@ class RecordLibrary:
 
         Args:
             lookup: 名前→土台のモデルを返す関数（検査用の差し替え口）。
+            index: 補う相手の索引。**省くと今の索引**。``scan()`` は
+                まだ差し替えていない新しい索引を渡す（``I-20260831-59``）。
 
         Returns:
             補えた件数。**0 は「引けなかった」と「そもそも欠けていない」の両方**
@@ -198,7 +233,8 @@ class RecordLibrary:
 
             lookup = model_index.base_model_for
         filled = 0
-        for row in self._index.values():
+        rows = self._index if index is None else index
+        for row in rows.values():
             if str(row.get("base_model") or "").strip():
                 continue
             name = row.get("checkpoint")
@@ -351,6 +387,34 @@ class RecordLibrary:
         return added
 
 
+def _as_timestamp(value: Any, fallback: Optional[float]) -> Optional[float]:
+    """更新時刻として使える数へ寄せる。読めなければ `fallback`。
+
+    **レシピ JSON 由来の値は任意の型が来る**（2026-08-31・監査 I-20260831-29）。
+    文字列の日付・辞書・真偽値・配列を実際に見た。ここを素通しにすると
+    `summaries()` の `-(row.get("modified") or 0)` が `TypeError` を投げ、
+    **壊れた1件で `/unbake/records` が全件 500** になる。一覧はパネルの入口
+    なので、開いた瞬間に何も出ず「拡張が壊れた」に見える。
+
+    **並べ替え側だけを守らない。** それだと数でない値が画面まで流れて、
+    「日付の欄が辞書」という別の壊れ方になる。取り込みの時点で寄せる。
+
+    **捨てるのではなく寄せる。** `"1500"` のような数の文字列は実際に順番へ
+    効く値なので、読めるものは読む。`bool` は `int` の一種だが時刻ではない
+    ので落とす。
+    """
+    if isinstance(value, bool):
+        return fallback
+    if isinstance(value, (int, float)):
+        return float(value) if value else fallback
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            return fallback
+    return fallback
+
+
 def _is_api_graph(value) -> bool:
     """API 形式のグラフか。**こちらが書いた記録は `prompt` に持つ。**
 
@@ -396,6 +460,28 @@ def _gen_from_record_shape(data: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(width, int) and isinstance(height, int) and width > 0 and height > 0:
         gen["size"] = f"{width}x{height}"
     return gen
+
+
+#: `<lora:名前:強さ>` の形。`名前` は `:` と `>` 以外なら何でも受ける。
+_PROMPT_LORA = re.compile(r"<lora:([^:>]+)", re.IGNORECASE)
+
+
+def _prompt_lora_names(gen: Dict[str, Any]) -> List[str]:
+    """プロンプトに直書きされた LoRA の名前。**重複は畳む。**
+
+    正負どちらの本文も見る——実データでは負の側にも書かれている。
+    **切る前の全文へ当てる**こと（要約の `prompt` は 400字で切ってある）。
+    """
+    names: List[str] = []
+    seen = set()
+    for key in ("prompt", "negative_prompt"):
+        for match in _PROMPT_LORA.finditer(str(gen.get(key) or "")):
+            name = match.group(1).strip()
+            lowered = name.lower()
+            if name and lowered not in seen:
+                seen.add(lowered)
+                names.append(name)
+    return names
 
 
 def _summarize(path: Path) -> Tuple[Optional[str], Any]:
@@ -451,7 +537,7 @@ def _summarize(path: Path) -> Tuple[Optional[str], Any]:
         "id": record_id,
         "title": str(data.get("title") or record_id),
         "path": str(path),
-        "modified": data.get("modified") or modified,
+        "modified": _as_timestamp(data.get("modified"), modified),
         "base_model": data.get("base_model"),
         "checkpoint": checkpoint_name,
         "lora_count": len(data.get("loras") or []),
@@ -493,6 +579,19 @@ def _summarize(path: Path) -> Tuple[Optional[str], Any]:
         # **出典の画像ID。** Raindrop の一覧から「もう取り込んだか」を判断するのに要る。
         # **URL そのものは出さない**（要約に長い文字列を増やさない）。実データ346件の
         # うち340件が `civitai.(com|red)/images/<id>` の形で出典を持つ。
+        # **プロンプトに直書きされた LoRA の名前**（2026-08-31・3周目）。
+        #
+        # `usage()` は「このモデルを何件が使っているか」を数えて、削除の前に
+        # 見せる。ところが数えていたのは `loras`（構造化された並び）と
+        # `checkpoint` だけで、**`<lora:名前:強さ>` としてプロンプトへ
+        # 直に書かれた LoRA を1件も数えていなかった**——「使用0件」と出た
+        # モデルが実は使われている、という一番危ない外し方をする（消す側の口が
+        # この数を見せる）。
+        #
+        # **ここで取る。** 上の `prompt` は 400字で切ってあるので、
+        # 数える側がそれを読むと**長いプロンプトの後半が落ちる**。
+        # 切る前の全文が手に在るのはこの関数だけである。
+        "prompt_loras": _prompt_lora_names(gen),
         "civitai_image_id": _civitai_image_id(data.get("source_path")),
         # **出典の URL も返す**（2026-08-26 の実機検証で必要になった）。
         #

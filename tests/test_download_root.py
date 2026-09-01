@@ -150,7 +150,16 @@ class SafeTargetTest(unittest.TestCase):
 
 
 class WiringTest(unittest.TestCase):
-    """**鎖が繋がっているか。** どれか1本切れても「設定は在るのに効かない」になる。"""
+    """**鎖が繋がっているか。** どれか1本切れても「設定は在るのに効かない」になる。
+
+    **原文の綴りを照合しない**（2026-09-01・走査15周目）。ここは元は
+    `assertIn("key: 'download_root'", text)` と `assertIn('get_settings().get("download_root"', text)`
+    で JS と Python の**書き方そのもの**を留めていた。守りたいのは
+    「設定した根が実行器まで届くこと」なので、綴りを留めると
+    **書き方を良くした瞬間に赤くなり、鎖が切れても書き方さえ残れば緑**になる。
+    片方は関係（JS が宣言する鍵 ⊆ サーバが知っている鍵）で、
+    もう片方は**実際に呼んで受け取った引数**で見る。
+    """
 
     def test_既定値がある(self):
         from unbake.settings import KNOWN_KEYS
@@ -158,18 +167,79 @@ class WiringTest(unittest.TestCase):
         self.assertIn("download_root", KNOWN_KEYS, "保存しても次に読めない")
         self.assertEqual(KNOWN_KEYS["download_root"], "", "既定は空（今までの動き）")
 
-    def test_設定の面に欄がある(self):
+    def test_設定の面が宣言する鍵は_すべてサーバが知っている(self):
+        """**関係で見る。** どちらの綴りが変わっても、鎖が繋がっていれば緑。"""
+        import re
         from pathlib import Path
 
-        text = (Path(__file__).resolve().parents[1] / "web/panel/settingsView.js").read_text(encoding="utf-8")
-        self.assertIn("key: 'download_root'", text, "設定の面から変えられない")
+        from unbake.settings import KNOWN_KEYS
 
-    def test_落とす道が根を渡している(self):
-        from pathlib import Path
+        text = (Path(__file__).resolve().parents[1]
+                / "web/panel/settingsView.js").read_text(encoding="utf-8")
+        # 引用符はどちらでもよい（書き方は留めない）。
+        keys = set(re.findall(r"""\{\s*key:\s*['"]([a-z_]+)['"]""", text))
 
-        text = (Path(__file__).resolve().parents[1] / "unbake/routes.py").read_text(encoding="utf-8")
-        self.assertIn('get_settings().get("download_root"', text, "設定を読んでいない")
-        self.assertIn("root=", text, "実行器へ渡していない")
+        # **検出器が生きていることを先に見る。** 正規表現が当たらなくなると
+        # 空集合はどんな包含も満たすので、**何も見ていないのに緑**になる。
+        self.assertGreaterEqual(len(keys), 15,
+                                f"設定の面から鍵を1つも読めていない（{len(keys)}件）")
+        self.assertIn("download_root", keys, "設定の面から変えられない")
+
+        unknown = sorted(keys - set(KNOWN_KEYS))
+        self.assertEqual(unknown, [],
+                         f"面には出るがサーバが知らない設定がある: {unknown}"
+                         " — 保存はできても次に読めない")
+
+    def test_落とす道が根を実行器へ渡す(self):
+        """**呼んで確かめる。** 原文に `root=` と書いてあることは、
+        その値が渡ることを意味しない。"""
+        from unbake import routes
+
+        seen = {}
+
+        def fake_download_model(**kwargs):
+            seen.update(kwargs)
+            return {"ok": True, "path": "C:/x/y.safetensors", "bytes": 1}
+
+        settings = {"download_root": "D:/AI/forge/webui", "civitai_api_key": ""}
+        originals = (routes.download_model, routes.resolve_version, routes.get_settings)
+        routes.download_model = fake_download_model
+        routes.resolve_version = lambda *a, **k: {
+            "ok": True, "url": "https://example.invalid/x", "kind": "loras",
+            "filename": "y.safetensors", "bytes": 1,
+        }
+        routes.get_settings = lambda: settings
+        try:
+            routes._downloads.clear()
+            result = routes.start_download("12345")
+        finally:
+            routes.download_model, routes.resolve_version, routes.get_settings = originals
+            routes._downloads.clear()
+
+        self.assertTrue(result.get("ok"), f"落とせていない: {result}")
+        self.assertEqual(seen.get("root"), "D:/AI/forge/webui",
+                         "設定した根が実行器へ届いていない")
+
+    def test_対照_根が空なら空のまま渡る(self):
+        """**空を勝手に埋めない。** 埋めると、設定していない人の動きが変わる。"""
+        from unbake import routes
+
+        seen = {}
+        originals = (routes.download_model, routes.resolve_version, routes.get_settings)
+        routes.download_model = lambda **kwargs: (seen.update(kwargs) or {"ok": True})
+        routes.resolve_version = lambda *a, **k: {
+            "ok": True, "url": "https://example.invalid/x", "kind": "loras",
+            "filename": "y.safetensors", "bytes": 1,
+        }
+        routes.get_settings = lambda: {}
+        try:
+            routes._downloads.clear()
+            routes.start_download("12345")
+        finally:
+            routes.download_model, routes.resolve_version, routes.get_settings = originals
+            routes._downloads.clear()
+
+        self.assertEqual(seen.get("root"), "", "空の根が空で渡っていない")
 
 
 if __name__ == "__main__":  # pragma: no cover

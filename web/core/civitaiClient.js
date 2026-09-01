@@ -487,21 +487,31 @@ export function recipeFromCivitaiMeta(item, meta, versions = new Map()) {
     if (hashed.checkpoint && checkpoint && !checkpoint.hash) {
         checkpoint = { ...checkpoint, hash: hashed.checkpoint, evidence: 'hash' };
     }
-    for (const entry of hashed.loras) {
+    // **名前で当たらなかった分は、当てずっぽうで結び付けない**（`I-20260831-51`）。
+    //
+    // 以前は「名前の無い項目」を1つ取ってきて、`hashes` の並び順に上から
+    // 当てていた。**添字対応は取り違えの典型**で、外れると**別の LoRA の
+    // ハッシュが付く**——`I-20260831-24` で hash が「バイト同一の根拠」へ
+    // 格上げされたので、誤ったハッシュの害はむしろ増えている。
+    //
+    // 結び付けてよいのは**相手が1つに決まるときだけ**（名前の無い項目が1つ・
+    // 名前で当たらなかったハッシュも1つ）。決まらないなら別の項目として足す
+    // ——**重複するかもしれないが、嘘の同一性よりはよい**。
+    const unmatched = hashed.loras.filter(entry => {
         const found = loras.find(item => sameName(item?.file_name, entry.name));
-        if (found) {
-            if (!found.hash) { found.hash = entry.hash; found.evidence = 'hash'; }
+        if (!found) return true;
+        if (!found.hash) { found.hash = entry.hash; found.evidence = 'hash'; }
+        return false;
+    });
+    const nameless = loras.filter(item => !item?.file_name);
+    for (const entry of unmatched) {
+        if (unmatched.length === 1 && nameless.length === 1) {
+            nameless[0].file_name = entry.name;
+            nameless[0].hash = entry.hash;
+            nameless[0].evidence = 'hash';
             continue;
         }
-        // **名前が `hashes` にしか無い場合。** 版IDだけの項目に名前を与える。
-        const nameless = loras.find(item => !item?.file_name);
-        if (nameless) {
-            nameless.file_name = entry.name;
-            nameless.hash = entry.hash;
-            nameless.evidence = 'hash';
-        } else {
-            loras.push({ file_name: entry.name, hash: entry.hash, strength: 1, evidence: 'hash' });
-        }
+        loras.push({ file_name: entry.name, hash: entry.hash, strength: 1, evidence: 'hash' });
     }
     for (const entry of hashed.embeddings) {
         if (embeddings.some(item => sameName(item?.file_name, entry.name))) continue;

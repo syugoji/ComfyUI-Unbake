@@ -133,14 +133,27 @@ function numericValues(currentValue, delta, options = {}) {
 }
 
 /**
- * LoRA 強度の3点。
+ * LoRA 強度が取りうる範囲。**ここが唯一の出どころ。**
  *
  * **範囲を `[0, 2]` にしない。** 負の強度は誤りではなく、明るさや年齢の
  * slider LoRA は**負で使うことが正しい使い方**である（実データ346件に実在）。
  * 0 で切ると、その種類の LoRA を振る実験そのものができなくなる。
+ *
+ * **輸出するのは、同じ判断が画面側に2つ在ったから**（2026-09-01・走査15周目）。
+ * `I-20260831-07` で `sweepView.js` の下限を 0 から -2 へ直したが、
+ * **`modelsView.js` の強度つまみは 0 のままだった**——同じ「LoRA の強度」を
+ * 触る口が2つ在って、直ったのは片方だけ。実ブラウザで測ると:
+ *
+ *   min=0  / 記録 -0.50 → `input.value` は **"0"**（つまみが記録を表せない）
+ *   min=-2 / 記録 -0.50 → `input.value` は "-0.5"
+ *
+ * 数を書き写す限り、次に範囲が動いた日も同じことが起きる。
  */
+export const LORA_STRENGTH_RANGE = Object.freeze({ minimum: -2, maximum: 2 });
+
+/** LoRA 強度の3点。 */
 function loraStrengthValues(lora) {
-    return numericValues(loraStrength(lora), 0.2, { minimum: -2, maximum: 2 });
+    return numericValues(loraStrength(lora), 0.2, LORA_STRENGTH_RANGE);
 }
 
 function displayLoraName(lora, index = 0) {

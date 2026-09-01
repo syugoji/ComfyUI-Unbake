@@ -21,6 +21,12 @@ export class FakeClassList {
     }
 }
 
+/**
+ * `tabindex` が無くても焦点を取れる札（本物の既定に合わせる）。
+ * これ以外は `tabindex` を持っているときだけ焦点を取れる。
+ */
+const FOCUSABLE_TAGS = new Set(['BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'A']);
+
 export class FakeNode {
     constructor(tag, doc) {
         this.tagName = String(tag).toUpperCase();
@@ -39,10 +45,27 @@ export class FakeNode {
     get className() { return this.attributes.get('class') || ''; }
     set className(value) { this.attributes.set('class', String(value)); }
 
+    /**
+     * `id` は**属性の写し**（本物と同じ・`I-20260831-53`）。
+     *
+     * ここが素のプロパティだった間、`document.getElementById` は `node.id` を、
+     * `querySelector('#…')` は `getAttribute('id')` を見ていて、
+     * **同じ要素を別々の経路で探していた**。`.id =` で付けた器は
+     * `querySelector` から見えず、`setAttribute('id', …)` で付けた器は
+     * `getElementById` から見えない。**片方の書き方に変えた瞬間に検査が嘘になる。**
+     */
+    get id() { return this.attributes.get('id') || ''; }
+    set id(value) { this.attributes.set('id', String(value)); }
+
     setAttribute(name, value) {
         if (name === 'class') { this.className = value; return; }
         this.attributes.set(name, String(value));
-        if (name === 'value') this.rawValue = String(value);
+        // **`value` を素通しにしない**（`I-20260831-52`）。
+        //
+        // 直に `rawValue` を書くと、下の setter が持っている
+        // **SELECT の選択肢検査と range の丸めを迂回できる**——
+        // 人形の穴は今回2件とも実害だったので、入口を1つにする。
+        if (name === 'value') this.value = value;
     }
 
     /**
@@ -68,6 +91,27 @@ export class FakeNode {
                 return;
             }
         }
+        // **range は範囲で丸める**（2026-08-31・監査 I-20260831-07）。
+        // 本物の `<input type="range">` は `min`/`max` の外の値を丸めるので、
+        // 素通しにすると「画面から入れられない値」を検査だけが入れられてしまう
+        // ——下限 0 のスライダーへ負の強度を入れる検査が偽DOM上だけ通り、
+        // 実機では 0 へ潰れる差を一度も捕まえられない。
+        // **範囲の宣言が無いものは丸めない**（宣言していない物を勝手に狭めない）。
+        if (this.tagName === 'INPUT' && this.getAttribute('type') === 'range') {
+            const value = Number(next);
+            // **属性の有無で見る。** `Number(null)` は `0` になるので、
+            // `getAttribute` の結果をそのまま数にすると**宣言していない下限が
+            // 0 として効いてしまう**（この直し自体で1度踏んだ）。
+            const min = this.attributes.has('min') ? Number(this.getAttribute('min')) : NaN;
+            const max = this.attributes.has('max') ? Number(this.getAttribute('max')) : NaN;
+            if (Number.isFinite(value)) {
+                let clamped = value;
+                if (Number.isFinite(min)) clamped = Math.max(min, clamped);
+                if (Number.isFinite(max)) clamped = Math.min(max, clamped);
+                this.rawValue = String(clamped);
+                return;
+            }
+        }
         this.rawValue = String(next);
     }
 
@@ -89,7 +133,23 @@ export class FakeNode {
         }
     }
 
+    /**
+     * **外した子の親も切る**（2026-09-01・走査16周目）。
+     *
+     * 元は `this.children = []` だけで、**外された子の `parentNode` が残って**いた。
+     * `isConnected` は親を辿って本文に着くかを見るので、
+     * **一覧を描き直しても、前の描画の要素が「画面に居る」と答え続ける。**
+     *
+     * 実測（記録20件・31回描き直し）:
+     *
+     *   人形が寛容なとき: total 620 / live 620 / dead   0   ← 抜けが見えない
+     *   本物と同じとき:   total 620 / live  20 / dead 600   ← 600個が浮いている
+     *
+     * `remove()` は前から親を切っていたので、**片方だけ本物と違っていた**。
+     * この差の分だけ「外れた要素を捨てているか」を測る検査が嘘になる。
+     */
     replaceChildren(...nodes) {
+        for (const child of this.children) child.parentNode = null;
         this.children = [];
         this.append(...nodes);
     }
@@ -109,9 +169,58 @@ export class FakeNode {
         return false;
     }
 
-    /** 焦点を取る。**書き込む先は書類の `activeElement`**（本物と同じ場所）。 */
+    /**
+     * **文書へ付いているか**（本物と同じ意味）。
+     *
+     * 持たせていなかったので、**外れた箱への `focus()` が成功しているように
+     * 見えていた**——実機では焦点が litegraph のキャンバスに残っていたのに、
+     * 検査は緑だった（2026-08-30 実測）。
+     */
+    /**
+     * **親を指す名前は2つある**（`I-20260830-28`）。
+     *
+     * 本物は `parentNode`（節）と `parentElement`（要素）の両方を持つ。
+     * 人形は `parentNode` しか持っていなかったので、祖先を
+     * `parentElement` で辿る実装（重ねる出し方が宿主の器を探す所）は
+     * **必ず「見つからない」で終わり**、検査からは「何もしないのが正しい」
+     * ように見えていた。
+     */
+    get parentElement() {
+        const parent = this.parentNode;
+        return parent && parent.tagName ? parent : null;
+    }
+
+    get isConnected() {
+        const doc = this.ownerDocument;
+        for (let node = this; node; node = node.parentNode) {
+            if (doc && (node === doc.body || node === doc.head)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * 焦点を取る。**書き込む先は書類の `activeElement`**（本物と同じ場所）。
+     *
+     * **外れた箱は焦点を取れない**（本物のブラウザと同じ）。ここを無条件に
+     * 通していたので、付く前に呼ぶ実装が検査を素通りしていた。
+     */
     focus() {
+        if (!this.isConnected) return;
+        // **焦点を取れる要素でなければ何も起きない**（2026-08-31・監査 I-20260831-17）。
+        //
+        // ここを `isConnected` だけで通していたので、**面の根から `tabindex` を
+        // 消しても1,534件が緑のまま**だった（変異で確認）。焦点の移動を測る検査が
+        // 全部、実装ではなく人形の寛容さを測っていたことになる。
+        // SELECT の選択肢検証と同じ理由——**ダブルがブラウザより寛容だと、
+        // その差の分だけ検査が嘘になる。**
+        if (!this.isFocusable()) return;
         if (this.ownerDocument) this.ownerDocument.activeElement = this;
+    }
+
+    /** 本物が焦点を当てる相手か。`tabindex` を持つか、本来 focusable な札。 */
+    isFocusable() {
+        if (this.attributes.has('tabindex')) return true;
+        return FOCUSABLE_TAGS.has(this.tagName);
     }
 
     remove() {
@@ -120,13 +229,27 @@ export class FakeNode {
         this.parentNode = null;
     }
 
-    addEventListener(type, handler) {
+    /**
+     * **第3引数を捨てない**（`I-20260830-26`）。
+     *
+     * 引数リストに `options` が無かったので、`addEventListener(t, h, true)` の
+     * `true` が**黙って消えていた**。捕まえる段（capture）で受ける聞き手が
+     * 上る段（bubble）の最後に回るので、**順序が逆になる**。
+     *
+     * 実物では面の根に `contextmenu` を capture で1本張ってあり、
+     * 「開く前に、開いている品書きを畳む」を担っている。順序が逆だと
+     * **開いた直後に自分で畳んで、右クリックの品書きが1枚も出ない**。
+     */
+    addEventListener(type, handler, options) {
         if (!this.listeners.has(type)) this.listeners.set(type, []);
-        this.listeners.get(type).push(handler);
+        const capture = options === true || options?.capture === true;
+        this.listeners.get(type).push({ handler, capture });
     }
 
-    removeEventListener(type, handler) {
-        this.listeners.set(type, (this.listeners.get(type) || []).filter(item => item !== handler));
+    removeEventListener(type, handler, options) {
+        const capture = options === true || options?.capture === true;
+        this.listeners.set(type, (this.listeners.get(type) || [])
+            .filter(item => !(item.handler === handler && item.capture === capture)));
     }
 
     dispatch(type, event = {}) {
@@ -134,10 +257,18 @@ export class FakeNode {
         // ここで配ってしまうと、**押せない口を「押せる」と証言するテスト**ができる
         // （2026-08-24 実機：待機中の ⏸ が押せないのにテストは通っていた）。
         const pointerish = type === 'click' || type === 'dblclick' || type.startsWith('pointer')
-            || type.startsWith('mouse');
+            || type.startsWith('mouse')
+            // **右クリックも上っていく**（`I-20260830-26`）。
+            //
+            // `contextmenu` だけが伝播の輪から外れていた。面の根に張った
+            // 「開いている品書きを畳む」が一度も走らないので、**開いた直後に
+            // 自分で畳んで1枚も出ない**という形を、検査は緑のまま通していた。
+            // 2026-08-28 に `click` で同じ授業料を払った跡が下のコメントに在る。
+            || type === 'contextmenu';
         if (pointerish && this.disabled) return Promise.resolve([]);
         if (!pointerish) {
-            return Promise.all((this.listeners.get(type) || []).map(handler => handler(event)));
+            return Promise.all((this.listeners.get(type) || [])
+                .map(item => item.handler(event)));
         }
         /*
          * **押した先から親へ上っていく**（2026-08-28 実機で判明）。
@@ -156,12 +287,38 @@ export class FakeNode {
             ? event.stopPropagation.bind(event) : null;
         event.stopPropagation = () => { stopped = true; before?.(); };
         const running = [];
-        for (let node = this; node; node = node.parentNode) {
-            // 聞き手の中で付け外しされても崩れないように写しで回す。
-            for (const handler of [...(node.listeners.get(type) || [])]) running.push(handler(event));
-            // **止めろと言われたら、そこから上には配らない。**
+
+        // 押した先から根までの道。**捕まえる段は逆から、上る段は順に。**
+        const path = [];
+        for (let node = this; node; node = node.parentNode) path.push(node);
+
+        /*
+         * **捕まえる段（capture）**——外側から内側へ。
+         *
+         * ここを持たないと、`addEventListener(t, h, true)` で張った聞き手が
+         * **上る段の最後**に回る。実物の面は根に `contextmenu` を capture で
+         * 張って「開く前に畳む」を担っているので、順序が逆になると
+         * **開いてから畳む**＝品書きが1枚も出ない、に反転する。
+         */
+        for (const node of [...path].reverse()) {
+            for (const item of [...(node.listeners.get(type) || [])]) {
+                if (item.capture) running.push(item.handler(event));
+            }
             if (stopped) break;
         }
+
+        // **上る段（bubble）**——押した先から根へ。
+        if (!stopped) {
+            for (const node of path) {
+                // 聞き手の中で付け外しされても崩れないように写しで回す。
+                for (const item of [...(node.listeners.get(type) || [])]) {
+                    if (!item.capture) running.push(item.handler(event));
+                }
+                // **止めろと言われたら、そこから上には配らない。**
+                if (stopped) break;
+            }
+        }
+
         // **最後は書類まで届く**（本物と同じ）。面は宿主の書類の中に在るので、
         // 「面の外を押したら閉じる」を書類へ付けた側から見ると、
         // **面の中の押しも同じ聞き手に当たる**——止めていなければ。

@@ -200,6 +200,54 @@ class RecipeRevisionService:
             )
         return payload, revision_dir
 
+    def _read_active_marker(
+        self, paths: dict[str, Path], recipe_id: str
+    ) -> dict[str, Any] | None:
+        """有効な active marker だけを返す。**壊れていれば「無い」と読む。**
+
+        読み方を1つにする（``I-20260831-50``）。以前は ``get_summary`` が
+        schema と recipe_id まで見て「有効な改変版は無い」と答えるのに、
+        ``resolve_active_recipe`` は marker の有無しか見ずに
+        ``_load_revision`` へ渡していた——**同じ壊れた marker に対して、
+        片方は「無い」と言い、片方は 404 を投げる**。
+
+        入口が2つある限り、片方だけ直しても次の書き手がまた分ける。
+        """
+        marker = self._read_json(paths["active"])
+        return marker if self._marker_is_valid(marker, recipe_id) else None
+
+    @staticmethod
+    def _marker_is_valid(marker: Any, recipe_id: Any) -> bool:
+        """この active marker を「有効」と読んでよいか。**判定はこの1本だけ。**
+
+        ``I-20260831-50`` が「読み方を1つにする」ために `_read_active_marker` を
+        作ったが、**4人目の読み手が残っていた**（2026-09-01・走査6周目）——
+        `get_active_prompt_recipe_ids` は marker を自分で読み、`schema` しか
+        見ていなかった。**同じ marker について `get_summary` が
+        「有効な改変版は無い」と答える一方、そちらは「この レシピには
+        有効な改変版が在る」と数える。** `I-20260831-50` の docstring 自身が
+        「**入口が2つある限り、片方だけ直しても次の書き手がまた分ける**」と
+        書いている、その通りのことが起きていた。
+
+        判定をここへ畳んだので、読み手は marker の持ち主が判っていても
+        いなくても同じ規則を使える。
+        """
+        if not isinstance(marker, dict):
+            return False
+        if marker.get("schema") != ACTIVE_SCHEMA:
+            return False
+        # 持ち主を指定されていれば一致を要求する（指定が無ければ marker 自身の値を使う）。
+        owner = marker.get("recipe_id")
+        if not isinstance(owner, str) or not owner:
+            return False
+        if recipe_id is not None and owner != recipe_id:
+            return False
+        # **改変版を名指ししていない marker は「壊れている」側**。
+        # 名前が空のまま通すと ``_load_revision`` が失敗し、
+        # 「改変版が古い」（stale）として出る——**名指ししていない**のと
+        # **名指しした先が消えている**のは別の状態である。
+        return bool(str(marker.get("revision_id") or "").strip())
+
     async def get_summary(
         self,
         recipe_id: str,
@@ -209,12 +257,8 @@ class RecipeRevisionService:
     ) -> dict[str, Any]:
         def read() -> dict[str, Any]:
             paths = self._paths(recipe_id, recipe_json_path)
-            marker = self._read_json(paths["active"])
-            if (
-                not marker
-                or marker.get("schema") != ACTIVE_SCHEMA
-                or marker.get("recipe_id") != recipe_id
-            ):
+            marker = self._read_active_marker(paths, recipe_id)
+            if marker is None:
                 return {"active": False, "stale": False, "count": self._revision_count(paths)}
             revision_id = str(marker.get("revision_id") or "")
             try:
@@ -258,10 +302,12 @@ class RecipeRevisionService:
                     continue
                 for path in active_dir.glob("*.json"):
                     marker = self._read_json(path)
-                    if marker and marker.get("schema") == ACTIVE_SCHEMA:
-                        recipe_id = marker.get("recipe_id")
-                        if isinstance(recipe_id, str) and recipe_id:
-                            result.add(recipe_id)
+                    # **読み方を1つにする**（`I-20260831-50` の4人目・2026-09-01）。
+                    # ここだけ `schema` しか見ておらず、改変版を名指ししていない
+                    # marker を「有効」と数えていた——同じ marker を
+                    # `get_summary` は `active: False` と答える。
+                    if self._marker_is_valid(marker, None):
+                        result.add(str(marker["recipe_id"]))
             return result
 
         return await asyncio.to_thread(scan)
@@ -611,8 +657,11 @@ class RecipeRevisionService:
 
         def resolve() -> dict[str, Any]:
             paths = self._paths(recipe_id, recipe_json_path)
-            marker = self._read_json(paths["active"])
-            if not marker:
+            # **壊れた marker は「無い」と読む**（``I-20260831-50``）。
+            # ここだけ有無しか見ていなかったので、``get_summary`` が
+            # ``active: false`` と答える状態で 404 を投げていた。
+            marker = self._read_active_marker(paths, recipe_id)
+            if marker is None:
                 return copy.deepcopy(recipe)
             revision, revision_dir = self._load_revision(
                 recipe_id, recipe_json_path, str(marker.get("revision_id") or "")
@@ -649,7 +698,7 @@ class RecipeRevisionService:
     ) -> list[dict[str, Any]]:
         def read() -> list[dict[str, Any]]:
             paths = self._paths(recipe_id, recipe_json_path)
-            marker = self._read_json(paths["active"]) or {}
+            marker = self._read_active_marker(paths, recipe_id) or {}
             active_id = marker.get("revision_id")
             result = []
             if not paths["revisions"].is_dir():

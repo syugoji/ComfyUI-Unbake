@@ -79,6 +79,26 @@ function stubRunner({ planCells = 4, planThrows = null, onRun = null } = {}) {
 
 // --- 検査 ----------------------------------------------------------------
 
+test('回し方の選択肢に、訳の無い項目が出ない', async () => {
+    /*
+     * `MODE_CODES` は手書きの対応表で、`SWEEP_MODES` へ1つ足して**ここへ足し忘れる**と
+     * `t(undefined)` になり、選択肢に `[undefined]` が出る。今は4つとも行が在るので
+     * 実害は無いが、**足した本人が画面を開くまで気づけない**形なので機械に見させる。
+     */
+    const { SWEEP_MODES } = await import('../web/core/recipeSweep.js');
+    const source = await readFile(join(ROOT, 'web/panel/sweepView.js'), 'utf8');
+    const block = /const MODE_CODES = \{([\s\S]*?)\n\};/.exec(source);
+    assert.ok(block, '回し方の対応表が読めない（走査が壊れている）');
+    const mapped = [...block[1].matchAll(/^\s*([a-z_]+):/gm)].map(m => m[1]);
+    assert.ok(SWEEP_MODES.length >= 4, `回し方が ${SWEEP_MODES.length} 個しか無い`);
+    const missing = SWEEP_MODES.filter(mode => !mapped.includes(mode));
+    assert.deepEqual(missing, [],
+        '中核に在る回し方の訳が無い（選択肢に `[undefined]` が出る）');
+    // **対照**: 対応表にだけ在る幽霊も置かない。
+    const ghosts = mapped.filter(mode => !SWEEP_MODES.includes(mode));
+    assert.deepEqual(ghosts, [], '中核に無い回し方が対応表に残っている');
+});
+
 test('かけられない記録には、押せないボタンでなく理由が出る', () => {
     install();
     setLocale('en');

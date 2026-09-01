@@ -39,6 +39,7 @@ import {
     listLibraryRecords,
     listRecordOutputs,
     readLibraryRecord,
+    readOutputRaw,
     scanOutputs,
     readModelIndex,
     readUnbakeSettings,
@@ -62,20 +63,21 @@ import { environmentRequestOrNull } from './core/environment.js';
 import { outputImageUrl } from './core/outputUrl.js';
 import { forgetOutput, noteOutputs } from './core/variantIndex.js';
 import { detectManager, packsForNodes, installPacks } from './core/nodePackInstall.js';
-import { buildRecipeWorkflow } from './core/recipeWorkflowBuilder.js';
+import { buildRecipeWorkflow, generatedSizeOf } from './core/recipeWorkflowBuilder.js';
 import { applyResolvedResources } from './core/civitaiResources.js';
 import { hasVersionEvidence, toRecipeShape } from './core/recordShape.js';
 import { findVersionByFileName } from './core/civitaiModelLookup.js';
 import { applyDarkReaderLock } from './core/darkReaderLock.js';
 import { extractParamsFromBytes } from './core/extractedParams.js';
 import {
-    OUTPUT_INDEX, UNBAKE_NODE_TYPE, planRecipeWiring, recipeBundle,
+    OUTPUT_INDEX, UNBAKE_NODE_TYPE, alignBundleToGraph, planRecipeWiring, recipeBundle,
 } from './core/recipeSourceNode.js';
 import {
     fetchCivitaiImage, fetchModelVersion, recipeFromCivitaiMeta, recordFromCivitaiImage,
 } from './core/civitaiClient.js';
 import { applyVerdicts, createVerdictTable } from './core/verdictTable.js';
-import { attributeOutputs } from './core/outputAttribution.js';
+import { STAMP_KEYS, attributeOutputs } from './core/outputAttribution.js';
+import { SCAN_PAGE_LIMIT, scanAllOutputs } from './core/scanAllOutputs.js';
 import { SweepRunner } from './core/sweepRunner.js';
 import { buildBuiltinSweepTemplates, installedModelOptions } from './core/sweepAxes.js';
 import { DROP_ROUTES, UNSUPPORTED_CODES, routeDrop } from './panel/dropRouting.js';
@@ -299,6 +301,17 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
             // ここで読み出していないので**開き直すと絞り込みが外れる**。
             downloadableOnly: settings?.downloadable_only === true,
             needsNodeOnly: settings?.needs_node_only === true,
+            // **お気に入り・落とせば試せるの色帯**（`I-20260830-01`）。
+            //
+            // ここに無かったので、面は `display.extraBands` も `display.extra_bands` も
+            // 見つけられず、**保存は効いているのに開き直すたび切に戻っていた**。
+            // 設定の画面は生の設定（snake）を直接読むので**入に見えたまま**で、
+            // その場で切り替えた時だけ効く（`panel.js` の `next.extra_bands`）。
+            //
+            // **`downloadable_only` で 2026-08-28 に踏んだのと同じ形の2件目。**
+            // 単発で直すと3件目が出るので、`display_settings_mapping_test.mjs` が
+            // 「面が読む鍵に、作る側が在ること」を構造で見る。
+            extraBands: settings?.extra_bands === true,
         };
     }
 
@@ -576,7 +589,10 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
      */
     function attachRecipeSourceNode(prompt, recipe, origin = {}) {
         try {
-            const bundle = recipeBundle(recipe, {}, origin);
+            // **グラフに焼かれた値で揃えてから配線する。** 揃えないと、
+            // 選択肢の口へ生の記録の値（`"Euler a"`）が流れて、組み立て側が
+            // 寄せた正しい名前を上書きする。
+            const bundle = alignBundleToGraph(prompt, recipeBundle(recipe, {}, origin));
             const plan = planRecipeWiring(prompt, bundle);
             const graph = app.graph;
             // **`LiteGraph` はフロントの大域に在る**（実測 frontend 1.45.20）。
@@ -594,11 +610,24 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
             }
             graph.add(source);
             source.pos = leftOfGraph(graph);
-            setNodeWidget(source, 'recipe', JSON.stringify(bundle));
+            // **書けたかどうかを見る**（`I-20260831-72`）。`setNodeWidget` は
+            // 口が無ければ**何もせず false を返す**ので、widget 名が変わると
+            // **ノードは置けているのに束が空**のまま `{ok: true}` を返していた。
+            // 20行下の「繋げなかったことを黙らない」と同じ規律が、
+            // *値を書き込む側*にだけ当たっていなかった。
+            const missing = [];
+            const stamp = (name, value) => {
+                if (!setNodeWidget(source, name, value)) missing.push(name);
+            };
+            stamp('recipe', JSON.stringify(bundle));
             // **出どころも書き戻す。** 共有された JSON を開いた人が、
             // ここを差し替えれば同じグラフを自分の絵で動かし直せる。
-            if (origin?.image) setNodeWidget(source, 'image', origin.image);
-            if (origin?.url) setNodeWidget(source, 'url', origin.url);
+            if (origin?.image) stamp('image', origin.image);
+            if (origin?.url) stamp('url', origin.url);
+            if (missing.length) {
+                console.warn(t('node.recipeSource.missingWidget',
+                    { p1: missing.join(', '), p2: UNBAKE_NODE_TYPE }));
+            }
 
             let wired = 0;
             for (const step of plan) {
@@ -615,7 +644,12 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
                 console.warn(t('node.recipeSource.partialWiring',
                     { p1: wired, p2: plan.length }));
             }
-            return { ok: true, wired, planned: plan.length };
+            // **`recipe` が書けていなければ、この節は何も供給しない。**
+            // 置いたノードは消さない（消えるほうが判りにくい）。
+            return {
+                ok: !missing.includes('recipe'), wired, planned: plan.length,
+                missingWidgets: missing,
+            };
         } catch (error) {
             console.error(t('node.recipeSource.attachFailed', { p1: String(error?.message || error) }));
             return { ok: false, error: 'exception' };
@@ -709,12 +743,22 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
 
     /** `input/` に置かれた絵から読む。**抽出器は1本**（面と同じものを通す）。 */
     async function recipeFromInputImage(imageName) {
-        const query = new URLSearchParams({
-            filename: String(imageName), type: 'input', subfolder: '',
-        });
+        /*
+         * **組み立ては `core/outputUrl.js` の1本だけ**（2026-08-31・監査 I-20260831-21）。
+         *
+         * ここだけ `/view?` を手で組んでおり、**鮮度の印（`_ub`）が載っていなかった**。
+         * ComfyUI の `view` は `Cache-Control` を返さないので、URL が完全一致する
+         * 要求にはブラウザが古いバイト列を返す。`input/pic.png` を別の絵で
+         * 上書きして同じノードを押すと、**画面のグラフは新しい絵のつもりで
+         * 古い絵の seed / prompt / LoRA で組み上がる**——例外もログも出ない。
+         *
+         * `tests/output_url_single_builder_test.mjs` の検出器が `/api/view?` しか
+         * 見ていなかったのでこの行は素通りしていた。検出器も同時に広げてある。
+         */
         let extracted = null;
         try {
-            const bytes = await fetchOutputImage(`/view?${query.toString()}`);
+            const bytes = await fetchOutputImage(
+                outputImageUrl({ filename: String(imageName), subfolder: '' }, { type: 'input' }));
             extracted = extractParamsFromBytes(bytes, { url: String(imageName) });
         } catch (error) {
             console.error(t('node.recipeSource.readFailed', { p1: String(error?.message || error) }));
@@ -928,7 +972,22 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
         },
         // **お気に入りはこちら側に持つ。** 記録は上流が書いた `.recipe.json` で、
         // こちらは読むだけと決めてある（上流の印は尊重して、消す道は作らない）。
-        favoritesIo: { write: (patch) => writeUnbakeSettings(patch) },
+        /**
+         * **お気に入りも、設定と同じ口から書く**（`I-20260830-11`）。
+         *
+         * ここは `writeUnbakeSettings` を直に呼んでおり、`settingsIo.write` の
+         * 後始末——控えの更新（`Object.assign(displaySettings, fresh)`）と
+         * 開いている面すべてへの配り直し——を**通らなかった**。その結果:
+         *
+         *   1. サイドバーで ★ を付ける → サーバには入るが、共有の控えは古いまま
+         *   2. 全画面を開く → 古い控えを読むので ★ が消え、外したはずの上流の印が復活
+         *   3. 全画面で1つ ★ を付ける → **その面の名簿全体**が送られ、
+         *      1 の変更がサーバから消える
+         *
+         * 押した本人の画面では正常に見え、エラーも記録も出ない。名簿は実測128件規模。
+         * **書き手が1本なら、この形は構造として起きない。**
+         */
+        favoritesIo: { write: (patch) => shared.settingsIo.write(patch) },
         ingest,
         makeSweepRunner,
         /** 出た絵を1枚消す（2026-08-25 利用者の指示）。**猶予は面が持つ。** */
@@ -979,15 +1038,18 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
          * **投入はしない。** 組み立てだけで、絵は1枚も出ない。
          */
         async canBuild(recipe) {
-            if (!recipe) return { ok: false, error: null };
+            if (!recipe) return { ok: false, error: null, size: null };
             try {
                 const inputs = await collectAnalysisInputs();
-                buildRecipeWorkflow(recipe, {
+                const built = buildRecipeWorkflow(recipe, {
                     objectInfo: inputs.objectInfo, embeddings: inputs.embeddings,
                 });
-                return { ok: true, error: null };
+                // **組んだ結果を捨てない**（`I-20260830-02`）。
+                // 詳細画面は記録の報告値を出すが、実際に描かれる寸法はここで決まる。
+                // 既に組んでいるので、読むだけなら追加の費用はかからない。
+                return { ok: true, error: null, size: generatedSizeOf(built?.prompt) };
             } catch (error) {
-                return { ok: false, error: error?.message || String(error) };
+                return { ok: false, error: error?.message || String(error), size: null };
             }
         },
         onCaptureSweepCell,
@@ -1111,6 +1173,20 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
                 if (patch && (patch.disable_dark_reader !== undefined || patch.disableDarkReader !== undefined)) {
                     applyDarkReaderLock(
                         (patch.disable_dark_reader ?? patch.disableDarkReader) !== false, documentRef);
+                }
+                /*
+                 * **重ねる出し方も、その場で当て直す**（`I-20260830-28`）。
+                 *
+                 * `installSidebarOverlay` は入切と幅を**呼ばれた時点で閉じ込める**
+                 * ので、`applyDisplay` では届かない。当て直さないと、設定画面で
+                 * 「重ねて出す」を切っても重なったまま・幅に数字を入れても
+                 * 変わらないまま——値は保存されるので**次に起動すると効いており**、
+                 * 利用者は自分の操作ミスを疑うことになる。案内文（`app.help`）は
+                 * 逆に即時に効くと約束している。
+                 */
+                if (patch && (patch.sidebar_overlay !== undefined || patch.sidebarOverlay !== undefined
+                    || patch.sidebar_width !== undefined || patch.sidebarWidth !== undefined)) {
+                    reoverlaySidebar?.();
                 }
                 for (const panel of openPanels) panel.applyDisplay?.(patch);
                 return payload;
@@ -1262,25 +1338,38 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
         if (variantIndex) return variantIndex;
         if (variantPromise) return variantPromise;
         variantPromise = (async () => {
-            const outputs = [];
-            let offset = 0;
-            // **1回に 500 件取る**（2026-08-29 実測）。サーバ側の上限がそこで、
-            // 200 件だと出力 4,848 枚で **25往復**になっていた。10往復へ減る。
+            // **周回は `core/scanAllOutputs.js` が持つ**（`I-20260830-14`）。
             //
-            //     直列 limit=200 … 25往復 / 1,299ms
-            //     直列 limit=500 … 10往復 /   770ms   ← これ
+            // ここに閉じ込めていたので**外から検査できず**、欠陥が2つ埋まっていた
+            // ——読めた件数でページを送っていた（落ちた枚数ぶん同じ絵を二度数える）、
+            // 0件を「終わり」と読んでいた（1ページ全滅で残り全部を切り捨て）。
             //
-            // **1ページを重くしたのではない。** 返す中身は同じで、往復の回数だけが減る
-            // （実測でも転送量は 23.1 MiB のまま変わらない）。
-            for (let page = 0; page < 60; page += 1) {
-                const result = await scanOutputs({ offset, limit: 500 });
-                if (!result.reachable) break;
-                const batch = result.outputs || [];
-                outputs.push(...batch);
-                offset += batch.length;
-                if (batch.length === 0 || offset >= (result.total || 0)) break;
+            // 印だけを取る理由は下の `STAMP_KEYS` の注記のとおり。
+            const scanned = await scanAllOutputs(scanOutputs, {
+                keys: [...STAMP_KEYS], limit: SCAN_PAGE_LIMIT,
+            });
+            // **届かなかった回を「絵が0枚」として持たない**（2026-08-31・走査3周目）。
+            //
+            // `scanAllOutputs` は `reachable` と `stoppedBy`
+            //（`end` / `unreachable` / `no-progress`）を**わざわざ計算して返す**のに、
+            // ここは `.outputs` しか取っていなかった。1ページ目で繋がらなかった回は
+            // 空配列で返るので、**本当に0枚だった場合と見分けが付かない**まま
+            // 索引を組み直し、「N枚を紐付けた（総数0）」と出していた。
+            // すぐ上の注記が「0件を『終わり』と読んでいた」と書いている当の失敗と同じ形。
+            //
+            // **答えを持たないほうがよい。** 組み直さずに戻れば、次に開いたとき
+            // もう一度取りに行く——嘘の0を控えると、そこから抜ける道が無い。
+            if (!scanned.reachable || scanned.stoppedBy === 'unreachable') {
+                console.warn('[Unbake] output scan could not reach the server;'
+                    + ' keeping the previous index instead of recording 0 pictures');
+                return;
             }
-            const { byRecord, tally } = attributeOutputs(outputs, sharedRecords);
+            const outputs = scanned.outputs;
+            // **`prompt` を取っていないことを判定側へ伝える。** 伝えないと、
+            // 推定が**走っていない**ことが「推定したが当たらなかった」に見える。
+            const { byRecord, tally } = attributeOutputs(outputs, sharedRecords, {
+                promptsLoaded: false,
+            });
             // **内訳を必ず出す。** 「N枚を紐付けた」だけだと、
             // そのうち何枚が推定なのかが読めない。
             // **名乗りを印と混ぜない**（2026-08-27）。強さが違うので、
@@ -1292,6 +1381,9 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
                 named: tally.named,
                 inferred: tally.inferred,
             }));
+            // **推定を回していないことを、回した結果と混ぜない。**
+            // `inferred 0` とだけ出すと「推定したが当たらなかった」に読める。
+            if (tally.deferred > 0) logAll(t('variants.tallyDeferred', { p1: tally.deferred }));
             variantIndex = byRecord;
             return byRecord;
         })();
@@ -1403,6 +1495,57 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
         return value;
     }
 
+    /** `prompt` を足し終えた記録。**同じ記録で2回引かない。** */
+    /**
+     * **どの絵まで聞いたか**（2026-08-31・監査 I-20260831-20）。
+     *
+     * 元は記録 id の `Set` で、一度入れると以後まるごと帰っていた。
+     * 索引は**後から増える**（再現・Sweep が足す絵は `raw` を持たない）ので、
+     * 新しい絵の条件が**永久に読まれず**、そのカードだけ
+     * 「差を読めませんでした」のまま固まっていた——読み込み直すまで直らない。
+     *
+     * **Set を外すだけでは駄目。** これは往復削減に実際に効いている
+     * （`prompt` を持たない画像に対して、開き直すたびの再取得を抑える）。
+     * 欠陥の本体は「id 単位で覆っているのに索引は id 単位で後から増える」ことなので、
+     * **覚える単位を絵にする**。同じ絵は二度聞かず、新しい絵は聞く。
+     *
+     * @type {Map<string, Set<string>>} 記録 id → 聞いた絵の鍵
+     */
+    const promptsAsked = new Map();
+
+    /**
+     * 開いた記録の絵へ、`prompt` を**その記録のぶんだけ**足す（`I-20260829-01`）。
+     *
+     * 起動時の走査は印だけを取るので、ここまで `prompt` は手元に無い。
+     * 画面の「何が違うか」（`variantsView` の `conditionsFromPrompt`）はこれで出る。
+     *
+     * **索引を組み直さない。** 索引は `note` / `forget` で1枚ずつ書き換えられて
+     * おり、組み直すとその書き換えが消える——**消した絵が戻る**という、
+     * 2026-08-29 に直したばかりの不具合がそのまま再発する。
+     * ここは**手元の配列の中身へ `raw` を足すだけ**にする。
+     *
+     * **取れなくても黙って進む。** 足せなければ「何が違うか」が出ないだけで、
+     * 絵の一覧そのものは出る。
+     */
+    async function fillVariantPrompts(id, outputs) {
+        if (!id || !outputs?.length) return;
+        let asked = promptsAsked.get(id);
+        if (!asked) { asked = new Set(); promptsAsked.set(id, asked); }
+        const keyOf = item => `${item.subfolder || ''}/${item.filename}`;
+        // **まだ聞いていない絵で、条件を持たないものだけ**を聞く。
+        const missing = outputs.filter(item =>
+            item?.filename && !item?.raw?.prompt && !asked.has(keyOf(item)));
+        if (!missing.length) return;
+        // **聞いた印は返事より先に付ける。** 持っていない絵を毎回聞き直さない
+        // （元の `Set` が担っていた往復削減は、ここで同じだけ効く）。
+        for (const item of missing) asked.add(keyOf(item));
+        const { raw } = await readOutputRaw(missing, ['prompt']);
+        for (const item of missing) {
+            const found = raw?.[keyOf(item)];
+            if (found?.prompt) item.raw = { ...(item.raw || {}), prompt: found.prompt };
+        }
+    }
+
     async function loadVariants(record) {
         const index = await ensureVariantIndex();
         const id = String(record?.libraryId ?? record?.id ?? '');
@@ -1410,7 +1553,9 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
         if (!recipe && record?.libraryId) {
             try { recipe = await readLibraryRecord(record.libraryId); } catch { recipe = null; }
         }
-        return { outputs: index.get(id) || [], recipe };
+        const outputs = index.get(id) || [];
+        try { await fillVariantPrompts(id, outputs); } catch { /* 出ないだけ */ }
+        return { outputs, recipe };
     }
 
     /** 開いている面。**判定が進むたびに全部へ流す**（器ごとに数が違うと困る）。 */
@@ -1518,6 +1663,17 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
      * 記録も、作り直した面が自分で取り直す。
      */
     let rebuildSidebar = null;
+    /**
+     * 重ねる出し方を当て直す（`I-20260830-28`）。
+     *
+     * `installSidebarOverlay` は `enabled` と `width` を**呼ばれた時点で
+     * 閉じ込める**ので、設定を書き換えても当て直さない限り古い値のまま動く。
+     * 元は組み直しと言語変更の2箇所からしか呼んでおらず、**設定画面から
+     * 触った時だけ効かない**という形になっていた——掴み手でドラッグすると
+     * 効くので、利用者は自分の操作ミスを疑う。しかも「重ねて出す」を切る道は
+     * 設定画面**だけ**なので、切りたい人に回避路が無い。
+     */
+    let reoverlaySidebar = null;
 
     /**
      * 最後に開いた全画面。**「開いているか」はこれで判断しない**
@@ -1702,6 +1858,9 @@ export function registerUnbake(app, { documentRef = globalThis.document } = {}) 
                             },
                         });
                     };
+                    // **外からも当て直せるようにする。** 設定画面はここへ届かない
+                    // 位置に在るので、掴み手からしか効かない状態だった。
+                    reoverlaySidebar = reoverlay;
                     rebuildSidebar = () => {
                         // **古い面を先に畳む。** 畳まないと、画面から外れた面が
                         // `openPanels` に残って判定の書き込み先であり続ける

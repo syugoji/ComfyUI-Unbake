@@ -19,7 +19,8 @@
 
 import { t } from '../i18n/index.js';
 import {
-    buildBuiltinSweepTemplates, formatAxisValues, installedModelOptions, parseAxisValues,
+    buildBuiltinSweepTemplates, formatAxisValues, installedModelOptions,
+    LORA_STRENGTH_RANGE, parseAxisValues,
 } from '../core/sweepAxes.js';
 import { summarizeSweep, sweepableRecord } from '../core/sweepRunner.js';
 import { expandSweepTemplate, SWEEP_MODES } from '../core/recipeSweep.js';
@@ -260,10 +261,44 @@ export function createSweepView({
     const missingPreviews = new Set();
     let previewFetchTimer = null;
 
+    /**
+     * **上限に当たったら、次の束まで待つ**（2026-08-31・走査3周目）。
+     *
+     * サーバは 429 のとき `rateLimited` と `retryAfter` を載せて返す
+     * （`unbake/model_previews.py`）。ところがここは `if (!item?.ok) continue;`
+     * で**理由を見ずに全部落として**いたので、
+     *
+     *   - 上限に当たった名前が**待ち行列から消える**（次に描き直すまで戻らない）
+     *   - 描き直した瞬間に**同じ勢いでまた叩く**（待っていない）
+     *
+     * という形になっていた。**中核がわざわざ渡している事実を、唯一の消費者が
+     * 捨てていた**——`I-20260830-16`（`unknownTotals`）と同じ型である。
+     */
+    let previewBackoffUntil = 0;
+
     function requestPreview(kind, name, image) {
         if (!name || missingPreviews.has(name)) return;
         missingPreviews.add(name);
+        drainPreviews(kind, name, image);
+    }
+
+    /**
+     * 待ち行列を12件ずつ捌く。**空になるまで自分で次を組む**（2026-09-01・走査14周目）。
+     *
+     * 元はここが `requestPreview` の中にしか無く、**次を組む所がどこにも無かった**。
+     * `requestPreview` は既に行列に居る名前で早退する（`missingPreviews.has(name)`）ので、
+     * 一度溜まった13件目から先は**二度と取りに行かれない**——見本が無いことは
+     * 一度しか判らない（`error` は一度きり）ので、外から突く手も無い。
+     *
+     * **上限に当たったぶんを行列へ戻す仕掛けも、同じ理由で効いていなかった。**
+     * 走査3周目に「捨てると次に描き直すまで戻らない」として戻す側を足したが、
+     * **戻した先を誰も捌かない**ので、捨てるのと結果が変わらない
+     * ——直したつもりの片側だけが入っていた形。
+     */
+    function drainPreviews(kind, name, image) {
         if (previewFetchTimer) globalThis.clearTimeout?.(previewFetchTimer);
+        // 待てと言われている間は、その分だけ後ろへ倒す。
+        const wait = Math.max(400, previewBackoffUntil - Date.now());
         previewFetchTimer = globalThis.setTimeout?.(async () => {
             previewFetchTimer = null;
             const names = [...missingPreviews].slice(0, 12);
@@ -282,11 +317,45 @@ export function createSweepView({
             } catch {
                 return;   // 取れなくても名前だけで並ぶ（画面は壊れない）
             }
+            // **上限に当たった名前は待ち行列へ戻す。** 捨てると、次に
+            // 描き直すまで二度と取りに行かない（画面からは戻す手段が無い）。
+            const limited = (result?.items || []).filter(item => item?.rateLimited);
+            if (limited.length) {
+                for (const item of limited) missingPreviews.add(item.name);
+                const seconds = Math.max(
+                    ...limited.map(item => Number(item.retryAfter) || 0), 0);
+                previewBackoffUntil = Date.now() + (seconds > 0 ? seconds * 1000 : 30_000);
+                console.warn(
+                    `[Unbake] Civitai asked us to slow down; retrying ${limited.length}`
+                    + ` preview(s) in ${Math.round((previewBackoffUntil - Date.now()) / 1000)}s`);
+            }
             for (const item of result?.items || []) {
                 if (!item?.ok) continue;
                 // **取れたぶんだけ描き直す。** 同じ URL では再取得されないので、
                 // 印を付けて取り直させる。
-                const card = box.querySelector?.(`[data-model="${cssEscape(item.name)}"]`);
+                /*
+                 * **`root` を引く**（2026-09-01・走査14周目）。
+                 *
+                 * ここは `box` と書いてあったが、**その名前はこの関数のどこからも
+                 * 見えない**——`box` は `modelPicker()` と `numberPicker()` の中で
+                 * `const` 宣言されている別物で、`requestPreview` の scope には無い。
+                 * つまりこの行は毎回 `ReferenceError` を投げていた。
+                 *
+                 * 実測（実物の面を組んで見本を1枚失敗させた）:
+                 *
+                 *   送った名前: [ 'charB.safetensors' ]
+                 *   ★ 未処理の拒否: ReferenceError - box is not defined
+                 *
+                 * **問い合わせは成立していて、返事も届いている。** 落ちるのは
+                 * その返事を絵へ当てる最後の一歩なので、外から見ると
+                 * 「取りに行っているのに、いつまでも見本が出ない」になる
+                 * ——`await` の中の投げなので**画面にも記録にも何も出ない**。
+                 *
+                 * `root` はこの面の根なので、どの器の札も引ける（見本の要求は
+                 * 器をまたいで溜まる）。偽の DOM は `querySelector` を持たないが、
+                 * その時は下の `item.name === name` の逃げ道が拾う。
+                 */
+                const card = root.querySelector?.(`[data-model="${cssEscape(item.name)}"]`);
                 const target = card?.querySelector?.('img') || (item.name === name ? image : null);
                 if (!target) continue;
                 target.setAttribute('src',
@@ -294,7 +363,12 @@ export function createSweepView({
                     + `&name=${encodeURIComponent(item.name)}&v=${names.length}`);
                 card?.removeAttribute?.('data-preview');
             }
-        }, 400);
+            // **残りが在れば、自分で次の束を組む。** ここが無いと13件目から先と、
+            // 上限で戻したぶんが行列に居座ったまま誰にも捌かれない。
+            // 待ち幅は `previewBackoffUntil` を見るので、待てと言われている間は
+            // その分だけ後ろへ倒れる（叩き続けない）。
+            if (missingPreviews.size) drainPreviews(kind, name, image);
+        }, wait);
     }
 
     /** `querySelector` へ入れる名前を安全にする（区切りや記号が入る）。 */
@@ -400,7 +474,18 @@ export function createSweepView({
      * ——強度を 1 刻みで動かしても意味が無いし、Steps を 0.05 刻みで動かすのは苦行。
      */
     const NUMBER_RANGES = {
-        lora_strength: { min: 0, max: 2, step: 0.05, digits: 2 },
+        // **下限は負**（2026-08-31・監査 I-20260831-07）。理由は
+        // `LORA_STRENGTH_RANGE` の所に書いてある——「負の強度は誤りではなく、
+        // 明るさや年齢の slider LoRA は負で使うことが正しい使い方である」。
+        // ここだけ 0 で切っていたので、**中核が出した候補を画面が入れられなかった**。
+        //
+        // **数を書き写さず、中核から引く**（2026-09-01・走査15周目）。
+        // 写していたせいで `modelsView.js` の強度つまみが 0 のまま残っていた
+        // ——同じ「LoRA の強度」を触る口が2つ在り、直ったのは片方だけだった。
+        lora_strength: {
+            min: LORA_STRENGTH_RANGE.minimum, max: LORA_STRENGTH_RANGE.maximum,
+            step: 0.05, digits: 2,
+        },
         cfg_scale: { min: 1, max: 20, step: 0.5, digits: 1 },
         steps: { min: 1, max: 60, step: 1, digits: 0 },
     };
@@ -504,8 +589,24 @@ export function createSweepView({
             root: box,
             setDisabled(flag) {
                 slider.disabled = flag;
-                addButton.disabled = flag;
                 for (const chip of chips.children || []) chip.disabled = flag;
+                /*
+                 * **戻すときは、値から決め直す**（2026-09-01・走査14周目）。
+                 *
+                 * 元は `addButton.disabled = flag` で、**基準と同じ値でも押せる**
+                 * 状態に戻していた。押しても `key === format(baseNumber)` で
+                 * 黙って帰るので、**押せるのに何も起きない口**になる
+                 * ——この面が「押せないボタンを出さない。理由を出す。」として
+                 * 避けているものそのもの。
+                 *
+                 * しかも `syncButtons()` は**開いた直後にも走る**ので、
+                 * 実測では開いた瞬間からこうなっていた:
+                 *
+                 *   開いた直後: slider = 0.8（＝基準）／「足す」は押せる
+                 *   押した後の chip 数: 3（前: 3）＝何も増えない
+                 */
+                if (flag) addButton.disabled = true;
+                else setReadout();
             },
             read() {
                 return [
@@ -944,6 +1045,14 @@ export function createSweepView({
         readTemplate,
         get plan() { return plan; },
         get running() { return running; },
-        destroy() { root.remove(); },
+        destroy() {
+            // **見本の待ち行列を止める**（2026-09-01・走査14周目）。
+            // 捌く側が自分で次を組むようになったので、止めないと**面を閉じても
+            // 回り続ける**——上限に当たっている間は30秒ごとに叩き直す。
+            if (previewFetchTimer) globalThis.clearTimeout?.(previewFetchTimer);
+            previewFetchTimer = null;
+            missingPreviews.clear();
+            root.remove();
+        },
     };
 }

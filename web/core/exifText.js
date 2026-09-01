@@ -216,7 +216,14 @@ function looksLikePromptGraph(value) {
  *
  * **落とすのは末尾側だけ。** 条件行より前に在るものは触らない。
  */
-function trimTrailingStamp(text) {
+/**
+ * 末尾の刻印行（`… metadata: {…}` / `… metadata: […]`）を落とす。
+ *
+ * **公開しているのは PNG 経路にも同じ正規化が要るから**（2026-08-31・
+ * 監査 I-20260831-15）。ここに閉じていたので、EXIF から来た画像だけが
+ * 直っていて、PNG から来た画像は設定行が丸ごと読めないままだった。
+ */
+export function trimTrailingStamp(text) {
     const lines = String(text).split(/\r?\n/);
     let last = lines.length - 1;
     while (last > 0 && /^\s*[A-Za-z ]+metadata:\s*[[{]/.test(lines[last])) last -= 1;

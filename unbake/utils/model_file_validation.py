@@ -177,9 +177,16 @@ def compare_declared_size(actual_size: int, declared_size: Optional[int]) -> boo
 def compare_sha256(actual: object, expected: object) -> str:
     """Compare two hashes, keeping "cannot compare" distinct from "matches".
 
-    Hashing itself is left to the caller so that the codebase keeps a single
-    implementation (``py.utils.file_utils.calculate_sha256``, which is async and
-    avoids polluting the OS page cache with gigabytes of model weights).
+    Hashing itself is left to the caller.
+
+    **The old wording here was wrong twice** (2026-09-01).  It said the codebase
+    "keeps a single implementation (``py.utils.file_utils.calculate_sha256``)":
+    that module is a *fork* path and does not exist in this repository, and the
+    codebase does **not** keep a single implementation -- measured, hashing is
+    written out in ``model_previews.file_sha256``,
+    ``services/recipes/revision_service._sha256_file`` and three places inside
+    ``download.py``.  Consolidating them is a separate decision; until then this
+    docstring must not claim a guarantee that is not there.
     """
 
     expected_hash = normalize_sha256(expected)

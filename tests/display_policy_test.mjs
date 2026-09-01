@@ -306,14 +306,39 @@ test('色の変数には、素の値の後退先が在る', async () => {
     const css = await readFile(join(ROOT, 'web/panel/theme.css'), 'utf8');
     const flat = css.replace(/\/\*[\s\S]*?\*\//g, '');
 
-    // `@supports` の外で、oklch だけで定義されている変数を探す。
-    const guarded = flat.slice(flat.indexOf('@supports (color: oklch'));
-    const before = flat.slice(0, flat.indexOf('@supports (color: oklch'));
+    /*
+     * **位置で切らない**（`I-20260830-22`）。
+     *
+     * 元は「最初の `@supports (color: oklch` 以降を全部 guarded」と切っていた。
+     * 守られた宣言をその手前へ1つ足しただけで、**後続の普通の宣言まで
+     * guarded に数え**、後退先が無いと言い出す（実際そうなった）。
+     * ブロックを対応する括弧で取り出す。
+     */
+    const guardedBlocks = [];
+    for (let at = flat.indexOf('@supports'); at >= 0; at = flat.indexOf('@supports', at + 1)) {
+        const open = flat.indexOf('{', at);
+        if (open < 0) break;
+        const head = flat.slice(at, open);
+        let depth = 0;
+        let end = open;
+        for (; end < flat.length; end += 1) {
+            if (flat[end] === '{') depth += 1;
+            else if (flat[end] === '}') { depth -= 1; if (depth === 0) break; }
+        }
+        const body = flat.slice(open, end + 1);
+        if (/oklch|oklab|color-mix|\blab\(|\blch\(/.test(head)) guardedBlocks.push(body);
+    }
+    assert.ok(guardedBlocks.length > 0, '守られた宣言が1つも見つからない（検査が空振り）');
+
+    // 守られた塊を**取り除いた**残りが、素の値で定義している側。
+    let plain = flat;
+    for (const body of guardedBlocks) plain = plain.replace(body, ' ');
     const definedPlainly = new Set();
-    for (const [, name, value] of before.matchAll(/(--unbake-[a-z0-9-]+)\s*:\s*([^;]+);/g)) {
+    for (const [, name, value] of plain.matchAll(/(--unbake-[a-z0-9-]+)\s*:\s*([^;]+);/g)) {
         if (!/(oklch|oklab|color-mix|lab|lch)\(/.test(value)) definedPlainly.add(name);
     }
-    const guardedNames = [...guarded.matchAll(/(--unbake-[a-z0-9-]+)\s*:/g)].map(m => m[1]);
+    const guardedNames = guardedBlocks
+        .flatMap(body => [...body.matchAll(/(--unbake-[a-z0-9-]+)\s*:/g)].map(m => m[1]));
     const missing = guardedNames.filter(name => !definedPlainly.has(name));
     assert.deepEqual([...new Set(missing)], [],
         '後退先の無い色の変数が在る（読めない実装で宣言ごと捨てられる）');
@@ -321,7 +346,7 @@ test('色の変数には、素の値の後退先が在る', async () => {
     // **名前だけでは足りない。** 配色は5つ在り、同じ名前が塊ごとに定義される
     // ——1つの塊から後退先が落ちても、名前で見る限り気づけない（実際に
     // 変異を仕込んで素通りした）。**数で突き合わせる。**
-    const plainlyDeclared = [...before.matchAll(/(--unbake-[a-z0-9-]+)\s*:\s*([^;]+);/g)]
+    const plainlyDeclared = [...plain.matchAll(/(--unbake-[a-z0-9-]+)\s*:\s*([^;]+);/g)]
         .filter(([, name, value]) => guardedNames.includes(name)
             && !/(oklch|oklab|color-mix|lab|lch)\(/.test(value));
     assert.ok(plainlyDeclared.length >= guardedNames.length,
@@ -331,6 +356,22 @@ test('色の変数には、素の値の後退先が在る', async () => {
     // 「調べる相手が無い」まま緑になってしまう。
     assert.match(css, /@supports \(color: oklch\(0% 0 0\)\)/,
         '読める実装だけが入る塊が無い');
+    /*
+     * **囲いの外で新しい書き方を使わない**（`I-20260830-22`）。
+     *
+     * ここまでの検査は「**守られた**変数に素の後退先が在るか」しか見ていない。
+     * つまり強調色のように**最初から囲いの外で** `oklch()` を書いた場合、
+     * `guardedNames` に載らないので**一度も調べられない**——実際そうなっていて、
+     * 強調色だけ後退先が働かず、読めない実装では焦点の輪が丸ごと消えていた。
+     *
+     * 後退先の有無ではなく、**外で使ったこと自体**で落とす。
+     */
+    const unguarded = [...plain.matchAll(/(--unbake-[a-z0-9-]+)\s*:\s*([^;]+);/g)]
+        .filter(([, , value]) => /(oklch|oklab|color-mix|lab|lch)\(/.test(value))
+        .map(([, name]) => name);
+    assert.deepEqual([...new Set(unguarded)], [],
+        '@supports の外で新しい色の書き方を使っている（読めない実装では宣言ごと消える）');
+
     assert.ok(definedPlainly.size >= 10,
         `素の値で置いた変数が ${definedPlainly.size} 個しかない（後退先が痩せている）`);
 });
@@ -520,15 +561,16 @@ test('鍵ごとの自然な順を保つ（日付は新しい順、名前は A→
 /** その場で当てなくてよい鍵と、その理由。**「面が持っていない」ものだけ。** */
 const APPLY_EXEMPT = new Map([
     ['language', '面を組み直す（`onLanguageChange` → `rebuildSidebar`）。見出しは組むときに1回だけ文字を入れる'],
-    ['favoriteIds', '印は記録側に持ち、押した面がその場で描き直す'],
-    ['unfavoriteIds', '同上（上流の印を打ち消す名簿）'],
     ['sidebarOverlay', '器（宿主のサイドバー）の担当。`sidebarOverlay.js` が見る'],
     ['sidebarWidth', '同上。掴み手で変えた値がそのまま保存される'],
-    ['hiddenVerdicts', '面の中の絞り込み帯が持ち、押した時点で効く'],
-    ['favoritesOnly', '同上（★の絞り込み）'],
-    // **上の2つと同じ種類。** 面の中の絞り込み帯が持ち、押した時点で効く。
-    ['downloadableOnly', '同上（⤓ の絞り込み）'],
-    ['needsNodeOnly', '同上（⊞ の絞り込み・2026-08-28）'],
+    /*
+     * **絞り込み4つは 2026-08-31 に除外から外した**（`I-20260830-32`）。
+     *
+     * 除外の理由は「面の中の絞り込み帯が持ち、押した時点で効く」だったが、
+     * それは**押した面についてしか言っていない**。`persistFilters()` は4つを
+     * まとめて送るので、報せを受けていない面が1つ押すと相手の絞り込みを
+     * 巻き戻す（実測で再現）。★の名簿と同じ形。
+     */
     ['disableDarkReader', '文書の `<meta>` に効く錠。面ではなく `unbake.js` が保存時に当て直す'],
 ]);
 

@@ -211,17 +211,35 @@ test('extra_pnginfo に何を入れているかの記述が、実装と一致し
 });
 
 test('口の一覧を書いた表が、実際に登録する経路と食い違わない', async () => {
-    // **文書と実物のずれは、このパッケージで何度も起きている**
-    // （NOTICE の台帳・README の `extra_pnginfo`）。表を足したら検査も足す。
+    /*
+     * **文書と実物のずれは、このパッケージで何度も起きている**
+     * （NOTICE の台帳・README の `extra_pnginfo`）。表を足したら検査も足す。
+     *
+     * **現物を必ず片方に置く**（2026-08-31・`I-20260831-61`）。
+     * ここは長く「冒頭の表」と「`registered_paths()`」という**宣言同士**しか
+     * 比べておらず、`@routes.*` の現物とは一度も突き合わせていなかった。
+     * だから**両方から同時に漏れていた `/unbake/output-raw` と
+     * `/unbake/output-delete` は検査の外**に在り、消しても改名しても緑だった。
+     * **宣言だけを見る検査は、宣言が揃って間違っているときに黙る。**
+     */
     const routes = await readFile(join(ROOT, 'unbake/routes.py'), 'utf8');
+    const uniq = (list) => [...new Set(list)].sort();
+
     const declared = [...routes.matchAll(/^\s*"(\/unbake\/[a-z-]+)",$/gm)].map(m => m[1]);
     assert.ok(declared.length >= 5, `registered_paths() を拾えていない（${declared.length}）`);
 
     const documented = [...routes.matchAll(/``(?:GET|POST)\s+(\/unbake\/[a-z-]+)``/g)].map(m => m[1]);
     assert.ok(documented.length >= 5, `冒頭の表を拾えていない（${documented.length}）`);
 
-    assert.deepEqual([...new Set(documented)].sort(), [...new Set(declared)].sort(),
-        '冒頭の表と registered_paths() が食い違っている');
+    // **現物。** 飾りではなく、実際に aiohttp へ登録している行そのもの。
+    const actual = [...routes.matchAll(/@routes\.(?:get|post|put|delete)\("(\/unbake\/[a-z-]+)"\)/g)]
+        .map(m => m[1]);
+    assert.ok(actual.length >= 20,
+        `@routes.* の現物を拾えていない（${actual.length}）。当て方が壊れている`);
+
+    assert.deepEqual(uniq(documented), uniq(actual), '冒頭の表と @routes.* の現物が食い違っている');
+    assert.deepEqual(uniq(declared), uniq(actual),
+        'registered_paths() と @routes.* の現物が食い違っている');
 });
 
 // --- 瑕疵6: 孤児モジュール -------------------------------------------------

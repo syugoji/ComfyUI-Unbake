@@ -25,6 +25,9 @@ import { requireEnvironment } from './environment.js';
 import { readStored, writeStored, removeStored } from './storage.js';
 import { buildSweepPlan } from './recipeSweep.js';
 import { outputImageUrl } from './outputUrl.js';
+// **鍵は読む側と同じ物を使う**（`I-20260830-24`）。literal を書くと、
+// 読む側だけが別の字を見ている状態に戻る。
+import { SWEEP_STAMP_KEY } from './generationRecord.js';
 import { t } from '../i18n/index.js';
 
 const JOB_SCHEMA = 'unbake.sweep';
@@ -498,9 +501,9 @@ export class SweepRunner {
                     prompt: cell.workflow.prompt,
                     prompt_id: promptId,
                     extra_data: {
-                        unbake_sweep: stamp,
+                        [SWEEP_STAMP_KEY]: stamp,
                         // ComfyUI が PNG へ焼くのは `extra_pnginfo` の中身だけ。
-                        extra_pnginfo: { unbake_sweep: stamp },
+                        extra_pnginfo: { [SWEEP_STAMP_KEY]: stamp },
                     },
                 }),
             }, 'Prompt submission');
@@ -678,16 +681,41 @@ export class SweepRunner {
                     ...cell, ...previous,
                     status: 'pending', output: null, error: null,
                     recipe: cell.recipe, workflow: cell.workflow, signature: cell.signature,
+                    // **身元も今組んだ側**（I-20260831-06）。下の分岐と同じ理由で、
+                    // ここだけ揃え忘れると「片方の道でだけ × が別の升に効く」になる。
+                    id: cell.id, labels: cell.labels, baseline: cell.baseline,
                 };
             }
-            // 保存された状態を重ねる。**グラフと記録は今組んだものを使う**——
-            // 保存には入っていないし、雛形が変わっていれば signature も変わる。
+            /*
+             * 保存された状態を重ねる。**グラフと記録は今組んだものを使う**——
+             * 保存には入っていないし、雛形が変わっていれば signature も変わる。
+             *
+             * **身元も今組んだ側のものを使う**（2026-08-31・監査 I-20260831-06）。
+             * 再固定していたのは `recipe` / `workflow` / `signature` の3つだけで、
+             * `id` / `labels` / `baseline` は**保存済みの側で上書きされていた**。
+             *
+             * `storedCells` は署名で引くので、**軸の値を編集して升の並び位置が
+             * 変わると、今の升に前回の別位置の `id` が乗る**。`id` は
+             * `cell-NNN` の位置由来なので、新しく増えた升の素の id と衝突しうる。
+             * `dropCell` は先頭一致で拾うため、**× を押した升とは別の升が
+             * `skipped` になり**、押した升はそのまま投入されて GPU を使う。
+             *
+             * `baseline` も同じで、`*` の位置だけ動かした編集（値は同じ＝署名も
+             * 同じ）だと前回の基準が焼き直され、PNG へ書く `baseline` と画面の
+             * 基準バッジが宣言と食い違う。
+             *
+             * **雛形IDは内容ハッシュではない**ので、軸を編集しても保存の鍵は
+             * 変わらない——だからこの経路は実際に通る。
+             */
             return {
                 ...cell,
                 ...(previous || {}),
                 recipe: cell.recipe,
                 workflow: cell.workflow,
                 signature: cell.signature,
+                id: cell.id,
+                labels: cell.labels,
+                baseline: cell.baseline,
             };
         });
 

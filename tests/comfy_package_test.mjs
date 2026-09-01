@@ -95,6 +95,12 @@ test('サイドバーのボタンから製品名にたどり着ける（どの�
     for (const locale of locales) {
         assert.match(CATALOGS[locale]['app.tooltip'], /Unbake/,
             `${locale} のツールチップに製品名が入っていない＝その言語で名前が画面に出ない`);
+        // **パレットの項目名も同じ**（`I-20260830-20`）。日本語だけ「全画面」で、
+        // 案内が指す「Unbake を全画面で開く」が**パレットに存在しなかった**
+        // ——その案内はサイドバー登録が失敗した時、つまりパレットが唯一の退避路の
+        // 場面に出る。
+        assert.match(CATALOGS[locale]['app.openFullscreen'], /Unbake/,
+            `${locale} のパレット項目名に製品名が入っていない＝その言語で引けない`);
     }
 });
 

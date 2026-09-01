@@ -5,7 +5,7 @@
 # 後から別のライセンスを足せる唯一の担保になる。
 """出力画像に埋め込まれたレシピ参照の索引。
 
-``py/utils/recipe_pnginfo.py`` が書いた参照を出力フォルダから拾い集め、
+``unbake/utils/recipe_pnginfo.py`` が書いた参照を出力フォルダから拾い集め、
 「このレシピで生成した画像」を引けるようにする。
 
 ## 差分走査にしている理由
@@ -26,18 +26,45 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ..utils.recipe_pnginfo import (
     read_recipe_reference_from_image,
     read_sweep_reference_from_image,
+    read_trial_reference_from_image,
 )
 
 logger = logging.getLogger(__name__)
 
 # 参照を書けるのは PNG のテキストチャンクだけ（書き込み側と対）。
 SUPPORTED_SUFFIXES = (".png",)
+
+
+def _record_id_of(marks: Optional[Dict[str, Any]]) -> str:
+    """焼いた印から記録の id を取る。**印の種類を問わない。**
+
+    sweep も trial も `record_id` を持つ（`recipe_pnginfo` が形を揃えている）。
+    **引く所と数える所で同じ1本を使う**——周回7で数える側だけが取り残された
+    のと同じことを、印が増えるたびに繰り返さないため。
+    """
+    return str((marks or {}).get("record_id") or "")
+
+
+def _has_reference(entry: Tuple[float, Optional[str], Optional[Dict[str, Any]]]) -> bool:
+    """この控えは「参照を持っている」か。**数える所と引く所で規則を1つにする。**
+
+    `get_outputs` は 2026-08-26 に **Sweep の印も照合に使う**ようになった
+    （それまで「Unbake 自身が出した絵は Unbake の口から1枚も引けなかった」）。
+    ところが**件数を数える2箇所は `recipe_id` しか見ていなかった**
+    （2026-09-01・走査7周目）——引ける絵が `indexed` に入らないので、
+    「索引が空だ」と読める数を返す。**引ける物の数と、引ける物の定義を分けない。**
+    """
+    _mtime, recipe_id, marks = entry
+    if recipe_id:
+        return True
+    return bool(_record_id_of(marks))
 
 
 def _default_output_dir() -> str:
@@ -66,6 +93,19 @@ class RecipeOutputIndex:
             str, Tuple[float, Optional[str], Optional[Dict[str, Any]]]
         ] = {}
         self._last_scan_at: Optional[float] = None
+        # **鍵を2本に分ける**（2026-08-31・監査 I-20260831-14）。
+        #
+        # `routes.py` の `/unbake/outputs` は `asyncio.to_thread` でここを
+        # スレッドプールへ流すので、**2本同時に走るのが普通**である。
+        # 素の dict を書きながら回すと `RuntimeError: dictionary changed size
+        # during iteration` で 500 になっていた。
+        #
+        # `_entries_lock` … 索引の差し替えと読み出しだけを守る。**短く持つ。**
+        # `_scan_lock`    … 走査どうしを直列化する。**長く持つが、索引は塞がない**
+        #                   ——走査は遅い I/O を含むので、これを `_entries_lock` で
+        #                   兼ねると読む側が丸ごと待たされる。
+        self._entries_lock = threading.Lock()
+        self._scan_lock = threading.Lock()
 
     # -- 走査 ---------------------------------------------------------
 
@@ -89,37 +129,59 @@ class RecipeOutputIndex:
             self._logger.debug("Output directory not available: %r", root)
             return {"scanned": 0, "read": 0, "indexed": 0, "removed": 0, "elapsed_ms": 0}
 
-        seen: set[str] = set()
-        read_count = 0
+        # **走査どうしは直列化する**（I-20260831-14）。並べて走らせると、
+        # 後から始まった方が古い写しを元に組んだ索引で先の結果を上書きし、
+        # その間に増えた絵を次の走査まで取りこぼす。
+        with self._scan_lock:
+            # **古い索引は写しの参照だけ取り、以後1バイトも書き換えない。**
+            # ここで書き換えると、読む側が回している最中の dict を触ることになる。
+            with self._entries_lock:
+                previous = self._entries
 
-        for path in self._iter_image_paths(root):
-            seen.add(path)
-            try:
-                mtime = os.path.getmtime(path)
-            except OSError:
-                # 走査中に消えた。次回に拾う。
-                continue
+            seen: set[str] = set()
+            read_count = 0
+            # **新しい索引は手元で組む。** 走査は遅い I/O を含むので、
+            # この間ずっと鍵を持つわけにはいかない。
+            fresh: Dict[str, Tuple[float, Optional[str], Optional[Dict[str, Any]]]] = {}
 
-            cached = self._entries.get(path)
-            if cached is not None and cached[0] == mtime:
-                continue
+            for path in self._iter_image_paths(root):
+                seen.add(path)
+                try:
+                    mtime = os.path.getmtime(path)
+                except OSError:
+                    # 走査中に消えた。次回に拾う。
+                    continue
 
-            reference = read_recipe_reference_from_image(path)
-            sweep = read_sweep_reference_from_image(path)
-            read_count += 1
-            self._entries[path] = (
-                mtime,
-                reference.get("recipe_id") if reference else None,
-                sweep,
-            )
+                cached = previous.get(path)
+                if cached is not None and cached[0] == mtime:
+                    # **差分走査の意味を落とさない。** 開き直さずに写しを持ち越す。
+                    fresh[path] = cached
+                    continue
 
-        # 消えたファイルを索引から落とす。
-        removed = [path for path in self._entries if path not in seen]
-        for path in removed:
-            self._entries.pop(path, None)
+                reference = read_recipe_reference_from_image(path)
+                # **試行の印も読む**（2026-09-01・走査9周目）。
+                # 周回8で生の走査の側は直したが、**索引の側は試行を知らないまま**
+                # だった——`GET /unbake/outputs?id=…` はこちらを使うので、
+                # 記録を開いても試行の絵が1枚も出なかった。
+                sweep = (read_sweep_reference_from_image(path)
+                         or read_trial_reference_from_image(path))
+                read_count += 1
+                fresh[path] = (
+                    mtime,
+                    reference.get("recipe_id") if reference else None,
+                    sweep,
+                )
 
-        self._last_scan_at = time.time()
-        indexed = sum(1 for _mtime, rid, _sweep in self._entries.values() if rid)
+            # 消えたファイルは `fresh` に入らないので、落とす操作は要らない。
+            # 数だけ、古い写しと突き合わせて数える。
+            removed = [path for path in previous if path not in seen]
+
+            # **差し替えは一瞬。** 読む側はこの前か後のどちらかを見る。
+            with self._entries_lock:
+                self._entries = fresh
+                self._last_scan_at = time.time()
+
+        indexed = sum(1 for entry in fresh.values() if _has_reference(entry))
         elapsed_ms = int((time.monotonic() - started) * 1000)
         self._logger.debug(
             "Recipe output index refreshed: %d files, %d read, %d with references (%d ms)",
@@ -154,7 +216,12 @@ class RecipeOutputIndex:
         root = (self._output_dir_getter() or "").strip()
         wanted = str(recipe_id)
         results = []
-        for path, (mtime, rid, sweep) in self._entries.items():
+        # **回す前に写しを1回取る**（I-20260831-14）。この下は
+        # `os.path.getsize` で1件ずつ disk を叩くので、その間ずっと鍵を
+        # 持つわけにはいかない。写しなら、走査が差し替えても壊れない。
+        with self._entries_lock:
+            snapshot = list(self._entries.items())
+        for path, (mtime, rid, sweep) in snapshot:
             # **Sweep の印も照合に使う**（2026-08-26 実機で判明）。
             #
             # ここは `recipe_id`（LoRA Manager が焼く参照）としか比べていなかった。
@@ -166,7 +233,7 @@ class RecipeOutputIndex:
             # 実測: `civitai_137684933_00002_.png` は
             # `unbake_sweep = {..., "record_id": "137684933"}` を持つのに、
             # `/unbake/outputs?id=137684933` は 0 件を返した。
-            if rid != wanted and str((sweep or {}).get("record_id") or "") != wanted:
+            if rid != wanted and _record_id_of(sweep) != wanted:
                 continue
             try:
                 size = os.path.getsize(path)
@@ -196,11 +263,15 @@ class RecipeOutputIndex:
         return results
 
     def get_status(self) -> Dict[str, Any]:
-        return {
-            "tracked": len(self._entries),
-            "indexed": sum(1 for _mtime, rid, _sweep in self._entries.values() if rid),
-            "last_scan_at": self._last_scan_at,
-        }
+        # 2つの数を**同じ索引から**数える（I-20260831-14）。鍵の外で数えると、
+        # 途中で差し替わって `tracked` と `indexed` が別の索引の値になる。
+        with self._entries_lock:
+            entries = self._entries
+            return {
+                "tracked": len(entries),
+                "indexed": sum(1 for entry in entries.values() if _has_reference(entry)),
+                "last_scan_at": self._last_scan_at,
+            }
 
 
 _instance: Optional[RecipeOutputIndex] = None

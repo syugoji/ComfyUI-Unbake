@@ -45,6 +45,8 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .utils.model_file_names import model_lookup_key
+
 try:  # ComfyUI 本体が提供する。
     import folder_paths  # type: ignore
 except ImportError:  # pragma: no cover - ComfyUI の外で読まれたとき
@@ -96,26 +98,20 @@ def _walk(root: Path, depth: int = 0):
             yield Path(entry.path)
 
 
-#: 名前を引くときに落とす拡張子。**`.fp16` のような「名前の一部」は落とさない**
-#: ——実データに ``re-mixmain.fp16`` という checkpoint 名が在り、
-#: 「点より後ろを切る」と別のモデルの鍵になってしまう。
-MODEL_SUFFIXES = (".safetensors", ".ckpt", ".sft", ".pt", ".pth", ".gguf", ".bin")
-
-
 def name_key(value: Any) -> str:
     """モデル名を引くための鍵。**フォルダと拡張子を落として小文字にする。**
 
     記録側は ``Illustrious\\anime\\waiIllustriousSDXL_v150.safetensors`` のように
     フォルダ込みで持ち、metadata 側は ``file_name: "waiIllustriousSDXL_v150"`` と
     拡張子なしで持つ——**どちらかに寄せないと、在るのに引けない。**
+
+    **規則は `utils/model_file_names` が1本で持つ**（``I-20260831-69``）。
+    ここには同じ規則が手で書かれており、``.pt2`` / ``.pkl`` / ``.onnx`` を
+    落とせなかった——この索引は ``/unbake/model-index`` で画面へ渡り、
+    向こうは正の一覧で寄せるので、**まさにこの docstring が言う
+    「在るのに引けない」**が起きていた。
     """
-    text = str(value or "").strip().replace("\\", "/").split("/")[-1]
-    lowered = text.lower()
-    for suffix in MODEL_SUFFIXES:
-        if lowered.endswith(suffix):
-            text = text[: -len(suffix)]
-            break
-    return text.strip().lower()
+    return model_lookup_key(value)
 
 
 def _read(path: Path) -> Optional[Dict[str, Any]]:

@@ -29,9 +29,9 @@ from __future__ import annotations
 import json
 import logging
 import urllib.error
-import urllib.parse
 import urllib.request
 from typing import Any, Dict, Optional
+from .utils.url_host import host_of
 
 logger = logging.getLogger(__name__)
 
@@ -59,10 +59,12 @@ def _get_json(url: str, timeout: int = 30) -> Optional[Dict[str, Any]]:
 
 
 def _host_of(url: str) -> str:
-    try:
-        return urllib.parse.urlparse(str(url)).netloc.lower()
-    except ValueError:
-        return ""
+    """URL の宛先。**判定は `utils/url_host` の1本**（`I-20260831-73`）。
+
+    ここに手で書き直さないこと——同じ名前で中身の違うものが4本在り、
+    13通りの URL のうち**7通りで答えが割れて**いた。
+    """
+    return host_of(url)
 
 
 def pick_download_url(file_entry: Dict[str, Any], allowed_hosts) -> Optional[str]:

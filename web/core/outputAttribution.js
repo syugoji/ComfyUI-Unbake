@@ -121,6 +121,22 @@ export const MIN_AGREEMENT = 0.7;
 const CHECKPOINT_INDEX = MATCH_KEYS.indexOf('checkpoint');
 
 /**
+ * **記録が LoRA を持つのに、絵が1本も使っていないなら別の絵**（`I-20260830-31`）。
+ *
+ * 空は「未知」として飛ばす作りなので、**7項目のうち一番強い `loras` を落としたまま
+ * 「6項目を比べて100%一致」**と主張していた。実データで `inferred` は
+ * 4,275枚中3,065枚（72%）＝主流の経路である。しかも**正解の記録が同居すると
+ * 同点になり**、合っている絵まで「どの記録のものでもない」へ落ちる。
+ *
+ * **向きは片方だけ。** 絵の側はグラフを歩いて数えているので `[]` は
+ * 「確かに0本」だが、**記録の側の `[]` は当てにならない**——一覧が持つ要約は
+ * LoRA を持たないことがあり（`libraryRowToRecord` は無ければ `[]` を入れる）、
+ * そちらを「確かに0本」と読むと**薄い記録が軒並み帰属できなくなる**。
+ * だから塞ぐのは「記録は持つ・絵は持たない」だけにする。
+ */
+const LORAS_INDEX = MATCH_KEYS.indexOf('loras');
+
+/**
  * **絵は自分の持ち主を名乗っている**（2026-08-27 実機の報告・`civitai_77742180`）。
  *
  * 出す絵の名前は `filename_prefix` で決まり、その値は**再現した記録の
@@ -189,12 +205,33 @@ export function namedRecordId(filename, byName) {
 }
 
 /** 焼かれた印から記録の id を取る。**どの印かで鍵の名前が違う。** */
+/**
+ * 印の在りか。**ここが唯一の表。**
+ *
+ * 起動時の走査はこの鍵だけを取りに行く（`I-20260829-01`）。表を2箇所に持つと、
+ * 印を1つ足したときに**走査だけが取り落として、帰属が黙って減る**
+ * ——減ったことは画面のどこにも出ない。だから走査側は `STAMP_KEYS` を読む。
+ */
+const STAMP_SOURCES = Object.freeze([
+    ['unbake_sweep', ['record_id', 'recipe_id']],
+    // **試行の印も表に入れる**（2026-09-01・走査8周目）。
+    // `recipeTrialRunner` は `extra_pnginfo: { unbake_trial: stamp }` を焼いており、
+    // その注記は「**これが無いと、出た画像を Unbake へ落とし直したときに
+    // 『どの試行の何番目か』が失われる**」と書いている。ところが実測で
+    // **`unbake_trial` の読み手は repo 全体で0件**だった——この表にも
+    // `outputs.RAW_KEYS` にも無いので、焼いた印は誰にも読まれずに捨てられていた。
+    // `outputs.py` が名指しする失敗（JS が `unbake_*` で書き、Python が
+    // `lora_manager_*` で読もうとして「焼いた3枚が1枚も読めなかった」）の3度目。
+    ['unbake_trial', ['record_id']],
+    ['lora_manager_recipe', ['recipe_id', 'record_id']],
+    ['lora_manager_sweep', ['recipe_id', 'record_id']],
+]);
+
+/** 印の鍵だけ。**走査へ渡す値はここから作る。** */
+export const STAMP_KEYS = Object.freeze(STAMP_SOURCES.map(([key]) => key));
+
 export function stampedRecordId(raw) {
-    for (const [key, idKeys] of [
-        ['unbake_sweep', ['record_id', 'recipe_id']],
-        ['lora_manager_recipe', ['recipe_id', 'record_id']],
-        ['lora_manager_sweep', ['recipe_id', 'record_id']],
-    ]) {
+    for (const [key, idKeys] of STAMP_SOURCES) {
         const text = raw?.[key];
         if (!text) continue;
         let payload = text;
@@ -267,7 +304,7 @@ export function indexRecords(records) {
  *            agreement: number, compared: number, tied: number}}
  */
 export function attributeOutput(output, indexed, {
-    minAgreement = MIN_AGREEMENT, minCompared = MIN_COMPARED,
+    minAgreement = MIN_AGREEMENT, minCompared = MIN_COMPARED, promptsLoaded = true,
 } = {}) {
     const stamped = stampedRecordId(output?.raw);
     if (stamped) {
@@ -289,6 +326,14 @@ export function attributeOutput(output, indexed, {
         // **名乗っているのに持ち主が居ない。** 記録を消した後の絵がこれ。
         // ここで指紋へ落とすと、**消した記録の絵が似た記録へ移る**。
         return { recordId: null, evidence: 'none', agreement: 0, compared: 0, tied: 0 };
+    }
+    // **`prompt` を取っていないことを「無かった」と読ませない**（`I-20260829-01`）。
+    //
+    // 起動時の走査は印だけを取るので、ここへ来た絵の `prompt` は**手元に無いだけ**で
+    // 「持っていない」わけではない。`none` に混ぜると、推定が**走っていない**ことが
+    // 「推定したが当たらなかった」に見える——未記録を 0 と読む形そのもの。
+    if (promptsLoaded === false && !output?.raw?.prompt) {
+        return { recordId: null, evidence: 'deferred', agreement: 0, compared: 0, tied: 0 };
     }
     const conditions = conditionsFromPrompt(output?.raw?.prompt);
     if (!conditions) {
@@ -317,6 +362,21 @@ export function attributeOutput(output, indexed, {
             const left = entry.row[CHECKPOINT_INDEX];
             const right = row[CHECKPOINT_INDEX];
             if (left && right && left !== right) continue;
+        }
+        /*
+         * **記録が LoRA を持つのに、絵が1本も使っていないなら別の絵。**
+         *
+         * `entry.row` は記録の側、`row` は絵の側（実行されたグラフを歩いて
+         * 数えている）。絵の側の空は**確かに0本**なので、記録が3本持っている
+         * なら、その絵はその記録から出ていない。
+         *
+         * 一致率で落とせない: 7項目中6項目が合えば 0.857 で、閾値 0.70 を
+         * 普通に超える。**強い手掛かりは、率へ薄めずに単独で効かせる。**
+         */
+        if (LORAS_INDEX >= 0) {
+            const recorded = entry.row[LORAS_INDEX];
+            const drawn = row[LORAS_INDEX];
+            if (recorded && !drawn) continue;
         }
         const ratio = agreed / compared;
         if (ratio > best) {
@@ -347,11 +407,16 @@ export function attributeOutput(output, indexed, {
  * @returns {{byRecord: Map<string, object[]>, tally: object}}
  */
 export function attributeOutputs(outputs, records, options = {}) {
+    // 走査で `prompt` を取ったかどうかを、1枚ごとの判定へそのまま渡す。
     const indexed = indexRecords(records);
     const byRecord = new Map();
     // **`named` を数に足す**（2026-08-27）。足さないと `tally[evidence] += 1` が
     // `undefined + 1` になり、**内訳が NaN になって画面から消える**。
-    const tally = { total: 0, stamped: 0, named: 0, inferred: 0, none: 0, unreadable: 0 };
+    // **`deferred` を必ず持つ。** 無い鍵へ `tally[evidence] += 1` すると
+    // `undefined + 1` で NaN になり、**内訳が画面から消える**（一度踏んでいる）。
+    const tally = {
+        total: 0, stamped: 0, named: 0, inferred: 0, none: 0, unreadable: 0, deferred: 0,
+    };
     for (const output of outputs || []) {
         tally.total += 1;
         const result = attributeOutput(output, indexed, options);

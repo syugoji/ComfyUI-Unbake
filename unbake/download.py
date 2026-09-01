@@ -39,20 +39,57 @@ import shutil
 import tempfile
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
 from typing import Any, Callable, Dict, Optional, Sequence, Tuple
-
-logger = logging.getLogger(__name__)
+from .utils.url_host import host_of, same_host
 
 #: 落として良い置き場。**ここに無い種別は受けない。**
+#:
+#: **記録器は1つ**（2026-09-01・走査11周目）。同じ名前の `logger` と `LOG` が
+#: 並んでおり、`logger` は**一度も使われていなかった**。
 LOG = logging.getLogger(__name__)
 
 ALLOWED_KINDS = ("loras", "checkpoints", "embeddings", "vae", "controlnet",
                  "upscale_models", "diffusion_models", "hypernetworks")
 
-#: 受け取ってよい拡張子。**実行できる形式を落とさない。**
-ALLOWED_SUFFIXES = (".safetensors", ".sft", ".ckpt", ".pt", ".pth", ".bin")
+#: 受け取ってよい拡張子。**「安全な形式」ではなく「こちらが扱える形式」**
+#: （``I-20260831-70``・2026-09-01 決定）。**名前を寄せる規則とは別の規則**
+#: （``I-20260831-69``）。
+#:
+#: 出典は **ComfyUI の ``folder_paths.supported_pt_extensions``**——実機 0.27.0 で
+#: ``{.ckpt .pt .pt2 .bin .pth .safetensors .pkl .sft}`` の8種。ここはその写しで、
+#: **狭めない**。以前は ``.pt2`` / ``.pkl`` が落ちており、しかも注記が
+#: 「実行できる形式を落とさない」と**安全の一覧のように書いてあった**ので、
+#: 次に足す人がどちらの規則で判断すればよいか決められなかった。
+#:
+#: **安全の一覧としては成立しない。** ①``unbake`` は読み込まない——読むのは
+#: ComfyUI で、その ComfyUI が pickle を全部受ける ②経路が唯一でない
+#: （ComfyUI-Manager でも手置きでも同じ物が入る）③弾いていた ``.pkl`` と
+#: 通していた ``.pt`` / ``.ckpt`` / ``.pth`` / ``.bin`` は**同じ pickle** で、
+#: 危険度で分かれていなかった。安全の一覧にしようとすると、Civitai の実測で
+#: **正当な需要の 4.3%** を切る（全期間DL上位100モデル・1,481版のうち
+#: ``.pt`` 55 / ``.ckpt`` 7。embeddings は今も ``.pt`` が普通）。
+#:
+#: **それでもこの一覧は仕事をしている。** 弾いているものの大半は
+#: モデルですらない——今月DL上位100モデル・1,306版のうち ``.zip`` 193 /
+#: ``.json`` 52 / ``.txt`` 1。判定しているのは「安全か」ではなく
+#: 「**モデルの容れ物か**」である。
+#:
+#: **``.gguf`` は入れない**（同じ決定）。ComfyUI 本体の集合に無く、
+#: ``ComfyUI-GGUF`` は ``unet_gguf`` / ``clip_gguf`` という**別のキー**へ登録する
+#: （置き場のフォルダは ``diffusion_models`` / ``text_encoders`` と同じ、キーだけが違う）。
+#: だから通すだけでは ``models.installed()``——``folder_paths.get_filename_list(kind)``
+#: ——に出ず、**「落とせるのに一覧に出ない」**を作る（``I-20260831-75`` と同じ形）。
+#: 通すときは①kind の対応づけ ②``classify_model_payload`` へ GGUF の先頭4バイト
+#: （``b"GGUF"``。無いと ``PAYLOAD_UNKNOWN`` で**HTMLエラーページ検査が効かない**）
+#: ——が**同時に**要る。需要の実測は 新着198版で0件 / 今月DL上位1,306版で17件
+#: (1.3%) / 全期間1,481版で2件 (0.14%)、手元の ``models/`` 454ファイルで0件。
+#:
+#: ``utils/model_file_names.MODEL_FILE_EXTENSIONS`` の**部分集合**であること
+#: （``onnx`` / ``gguf`` は入らない）を
+#: ``tests/model_name_rule_is_single_test.mjs`` が留める。
+ALLOWED_SUFFIXES = (".safetensors", ".sft", ".ckpt", ".pt", ".pt2",
+                    ".pth", ".bin", ".pkl")
 
 #: 申告された大きさとのずれを許す幅。**`sizeKB` は KB なので、
 #: バイトへ直す切り捨てで最大 1024 バイトずれる**（それより大きなずれは
@@ -61,6 +98,11 @@ SIZE_SLACK = 1024
 
 #: 1回に落としてよい上限。**桁を間違えたリンクで数百GBを引かないため。**
 MAX_BYTES = 64 * 1024 * 1024 * 1024
+
+# 途中まで引いたものの拡張子。**名前は1箇所で決める**（2026-08-31・
+# 監査 I-20260831-26）。容量の判定と再開の読み込みが別々に綴っていると、
+# 片方だけ直したときに黙って食い違う。
+PART_SUFFIX = ".unbake-part"
 
 #: 読み込みの単位。
 CHUNK = 1024 * 1024
@@ -84,6 +126,11 @@ class DownloadError(Exception):
       ``corrupt``   … 落ちたが中身が合わない
       ``space``     … 置き場が足りない／大きすぎる
       ``setup``     … こちらの設定・環境の問題
+      ``unsupported`` … こちらが扱えない形式（**設定では直せない**）
+
+    **``unsupported`` を ``setup`` と混ぜない**（``I-20260831-70``）。
+    混ぜていた間、``.gguf`` を頼んだ人には「こちらの設定の問題です」と出ていた
+    ——**設定では直せない**ので、この文言は嘘である。
     """
 
     def __init__(self, message, code="unknown"):
@@ -92,11 +139,12 @@ class DownloadError(Exception):
 
 
 def _host_of(url: str) -> str:
-    """URL のホスト。**読めない値は空**（比べる側が「別のホスト」と扱う）。"""
-    try:
-        return urllib.parse.urlparse(str(url)).netloc.lower()
-    except ValueError:
-        return ""
+    """URL の宛先。**判定は `utils/url_host` の1本**（`I-20260831-73`）。
+
+    ここに手で書き直さないこと——同じ名前で中身の違うものが4本在り、
+    13通りの URL のうち**7通りで答えが割れて**いた。
+    """
+    return host_of(url)
 
 
 #: 鍵を出してよい相手。**鍵は Civitai のもの**なので、Civitai にしか出さない。
@@ -150,7 +198,9 @@ class _DropAuthOnHostChange(urllib.request.HTTPRedirectHandler):
         new = super().redirect_request(req, fp, code, msg, headers, newurl)
         if new is None:
             return None
-        if _host_of(newurl) != _host_of(req.full_url):
+        # **`_host_of(a) != _host_of(b)` と書かない。** 両方が読めないとき
+        # 偽になり、**読めない URL への転送で鍵を持ち越す**（`I-20260831-73`）。
+        if not same_host(newurl, req.full_url):
             # `Request` は鍵を大文字小文字を無視して持つので、両方消す。
             for name in ("Authorization", "authorization"):
                 new.headers.pop(name, None)
@@ -225,8 +275,11 @@ def safe_target(kind: str, filename: str, root: str = "") -> str:
     base = os.path.basename(str(filename or "").replace("\\", "/")).strip()
     if not base or base in (".", ".."):
         raise DownloadError("the file name is empty", "setup")
-    if os.path.splitext(base)[1].lower() not in ALLOWED_SUFFIXES:
-        raise DownloadError(f"unsupported file type: {base}", "setup")
+    suffix = os.path.splitext(base)[1].lower()
+    if suffix not in ALLOWED_SUFFIXES:
+        # **`setup` と混ぜない。** 設定を見に行かせても直らない。
+        raise DownloadError(
+            f"unsupported file type: {suffix or base}", "unsupported")
     base_dir = _model_dir(kind, root)
     target = os.path.abspath(os.path.join(base_dir, base))
     # **必ず置き場の中であること。** basename を取ってあるので理屈では外れないが、
@@ -274,16 +327,54 @@ def download_model(
 
     if expected_bytes is not None and expected_bytes > MAX_BYTES:
         raise DownloadError(f"too large: {expected_bytes} bytes", "space")
+
+    # **置き場を先に作る**（2026-09-01・走査11周目）。
+    #
+    # ここは `shutil.disk_usage` が `os.makedirs` より**前**に在り、
+    # ComfyUI が知っているだけでまだ存在しない置き場（`models/hypernetworks` など）
+    # では **`FileNotFoundError` が生のまま抜けて**いた——`DownloadError` ではないので、
+    # 呼び手の「理由で分ける」仕掛けを素通りする。
+    #
+    # **回避策は既に呼び手側に在った。** `routes.start_download` は
+    # 「**枠を握ったまま落ちない**（`D-20260828-01` E3）。元は `DownloadError` しか
+    # 受けていなかった。**置き場が未作成だと `shutil.disk_usage` が
+    # `FileNotFoundError` を投げてここを素通り**し、`_downloads[key]` は永久に
+    # `running` のまま残る」と書いて `except BaseException` を足している。
+    # **真因はこちら側**で、直っていなかった（`workaround_hides_the_real_bug`）。
+    #
+    # 作るのは書く側の責任にする——`records.fetch_preview` が同じ判断を
+    # 「**書く側が置き場を作る**」として先に済ませている。
+    try:
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+    except OSError as error:
+        raise DownloadError(
+            f"cannot create {os.path.dirname(target)}: {error}", "setup") from error
+
     if expected_bytes is not None:
         free = shutil.disk_usage(os.path.dirname(target)).free
+        # **要るのは残りぶん**（2026-08-31・監査 I-20260831-26）。
+        #
+        # 既に `.part` へ落ちている分は**もうディスクを食っている**ので、
+        # `free` はその分だけ減っている。全量で判定すると
+        # 「全量 + 既に落とした分」を要求することになり、**再開が必要なときに
+        # だけ拒否される**——31.9GB を 30GB まで落として切れた場合、残りは
+        # 1.9GB なのに `free` は数GBしか無く `space` で止まる。押した人には
+        # 「容量不足」としか出ず、`.part` を手で消す（＝30GB分を捨てる）以外に
+        # 進む手が無い。**大きさの上限（`MAX_BYTES`）は全量のまま**——
+        # 置き終わったときの姿は再開かどうかに関係しない。
+        already = 0
+        try:
+            already = os.path.getsize(target + PART_SUFFIX)
+        except OSError:
+            already = 0
+        remaining = max(0, expected_bytes - already)
         # 余裕を少し見る（書き込み中に他が埋めることがある）。
-        if free < expected_bytes * 1.1:
-            raise DownloadError(f"not enough space: need {expected_bytes}, free {free}", "space")
+        if free < remaining * 1.1:
+            raise DownloadError(f"not enough space: need {remaining}, free {free}", "space")
 
     started = time.monotonic()
     digest = hashlib.sha256()
     written = 0
-    os.makedirs(os.path.dirname(target), exist_ok=True)
 
     # **途中まで引いたものを、名前で見つけられるようにする。**
     #
@@ -291,7 +382,7 @@ def download_model(
     # なった**——3.9GB の取得が途切れると最初からやり直しになる（実測で
     # チェックポイントは4GB前後、34GB のものも在る）。置き先から決まる名前にすれば、
     # 次に押したときに同じものを指せる。
-    temp_name = target + ".unbake-part"
+    temp_name = target + PART_SUFFIX
     resume_from = 0
     if os.path.exists(temp_name):
         try:

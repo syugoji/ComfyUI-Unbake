@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 /**
- * テーマ（`ui_skin`）を1つ、跡を残さず外す。
+ * テーマ（`ui_skin`）を1つ外し、**外しきれなかった跡を名指しで出す**。
  *
  * **「捨てられる」を手順書で持たない。**（2026-08-25 利用者の指示
  * 「撤去も簡単に行えるようにしてください」）
@@ -22,6 +22,19 @@
  *   1. `web/panel/skin-<名前>.css`（紙そのもの）
  *   2. `web/panel/skin.js` の `SKINS`（名簿）
  *   3. 各言語の `settings.uiSkin.<名前>`（設定画面に出す名前）
+ *
+ * **機械で外せない跡が1種類ある**（`I-20260831-44`）。
+ * `settings.uiSkin.help` の説明文は12言語すべてが**各テーマの表示名を本文に
+ * 含んで**おり、自由文なので機械が安全に切り取れない。外したまま残すと
+ * **次にテーマを足す人が古い名前を見る**——だから
+ * `planRemoval` が**残る箇所を数え上げて `leftovers` に載せる**。
+ *
+ * **「跡を残さず外す」とは、もう言わない。** 言い切ると、この道具が
+ * 実際には触らない場所があることが読む人に見えなくなる。残るものは
+ * 名指しで出し、直すのは人がやる。
+ *
+ * （説明文を項目ごとの鍵へ割り、名簿から組み立てる形にすれば機械で外せる
+ * ようになる。12言語ぶんの文を割り直す作業なので、この周では採らなかった。）
  *
  * **保存済みの設定は触らない。** 外したテーマを指したままでも、画面側が
  * `classic` へ倒すので面は消えない（`normalizeSkin`）。触りに行くと、
@@ -46,17 +59,19 @@ function eolOf(text) {
  *
  * @param {string} root パッケージの根（`ComfyUI-Unbake`）
  * @param {string} name 外すテーマ
- * @returns {{ok: boolean, reason?: string, deletes: string[], edits: {path: string, next: string, note: string}[]}}
+ * @returns {{ok: boolean, reason?: string, deletes: string[], edits: {path: string, next: string, note: string}[], leftovers: {path: string, name: string, key: string}[]}}
  */
 export function planRemoval(root, name) {
     const skin = String(name || '').trim();
-    if (!skin) return { ok: false, reason: '名前が空', deletes: [], edits: [] };
+    if (!skin) return { ok: false, reason: '名前が空', deletes: [], edits: [], leftovers: [] };
     if (PROTECTED.includes(skin)) {
-        return { ok: false, reason: `${skin} は外せない（戻り先が消える）`, deletes: [], edits: [] };
+        return { ok: false, reason: `${skin} は外せない（戻り先が消える）`, deletes: [], edits: [], leftovers: [] };
     }
 
     const deletes = [];
     const edits = [];
+    /** **外した後も残る跡**（自由文の中の表示名）。 */
+    const leftovers = [];
 
     // 1. 紙
     const sheet = path.join(root, 'web/panel', `skin-${skin}.css`);
@@ -67,7 +82,7 @@ export function planRemoval(root, name) {
     const skinJs = fs.readFileSync(skinJsPath, 'utf8');
     const listMatch = skinJs.match(/export const SKINS = \[([^\]]*)\];/);
     if (!listMatch) {
-        return { ok: false, reason: 'skin.js の名簿を読めない', deletes: [], edits: [] };
+        return { ok: false, reason: 'skin.js の名簿を読めない', deletes: [], edits: [], leftovers: [] };
     }
     const names = listMatch[1].split(',').map(part => part.trim()).filter(Boolean);
     const kept = names.filter(entry => entry.replace(/['"]/g, '') !== skin);
@@ -82,7 +97,7 @@ export function planRemoval(root, name) {
 
     // **名簿にも紙にも無いなら、外す物が無い。** 綴り違いを黙って成功にしない。
     if (!known && deletes.length === 0) {
-        return { ok: false, reason: `${skin} は名簿にも紙にも無い`, deletes: [], edits: [] };
+        return { ok: false, reason: `${skin} は名簿にも紙にも無い`, deletes: [], edits: [], leftovers: [] };
     }
 
     // 3. 訳語
@@ -96,9 +111,32 @@ export function planRemoval(root, name) {
         if (next.length !== lines.length) {
             edits.push({ path: full, next: next.join(eol), note: `${file} の訳語を外す` });
         }
+
+        // **外した名前が、残る本文にまだ書かれていないか**（`I-20260831-44`）。
+        //
+        // 表示名は自由文の中に「「テーマ3：レコード盤」は曲目表と盤の印」の
+        // ように埋まっている。機械が安全に切り取れる形ではないので、
+        // **消さずに名指しで出す**——黙って残すと「跡を残さない」が嘘になる。
+        const display = displayNameOf(text, skin);
+        if (!display) continue;
+        for (const line of next) {
+            const key = line.match(/^\s*"([^"]+)"\s*:/)?.[1];
+            if (!key || !line.includes(display)) continue;
+            leftovers.push({ path: full, name: display, key });
+        }
     }
 
-    return { ok: true, deletes, edits };
+    return { ok: true, deletes, edits, leftovers };
+}
+
+/** その言語での表示名（`"settings.uiSkin.<名前>": "…"` の値）。 */
+function displayNameOf(text, skin) {
+    const line = text.split(/\r?\n/).find(
+        entry => entry.trimStart().startsWith(`"settings.uiSkin.${skin}":`)
+    );
+    if (!line) return null;
+    const value = line.match(/:\s*"((?:[^"\\]|\\.)*)"/)?.[1];
+    return value ? value.replace(/\\(.)/g, '$1') : null;
 }
 
 /** 組み立てた変更を書き込む。 */
@@ -125,6 +163,14 @@ if (invokedDirectly) {
     const rel = (file) => path.relative(root, file).split(path.sep).join('/');
     for (const file of plan.deletes) console.log(`${apply ? '消した' : '消す'}: ${rel(file)}`);
     for (const edit of plan.edits) console.log(`${apply ? '直した' : '直す'}: ${rel(edit.path)} — ${edit.note}`);
+    // **機械で外せない跡は、必ず数えて出す**（`I-20260831-44`）。
+    if (plan.leftovers.length) {
+        console.log('');
+        console.log(`手で直すもの ${plan.leftovers.length}件（自由文に表示名が残る）:`);
+        for (const left of plan.leftovers) {
+            console.log(`  ${rel(left.path)} → "${left.key}" に「${left.name}」が残る`);
+        }
+    }
     if (apply) {
         applyPlan(plan);
         console.log('');

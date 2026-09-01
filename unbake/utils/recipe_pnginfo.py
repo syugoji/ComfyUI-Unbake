@@ -48,6 +48,21 @@ SWEEP_PNGINFO_SCHEMA = "unbake.sweep"
 LEGACY_SWEEP_PNGINFO_KEY = "lora_manager_sweep"
 LEGACY_SWEEP_PNGINFO_SCHEMA = "lora-manager.recipe-sweep-cell"
 
+#: 試行（`recipeTrialRunner`）が焼く印（2026-09-01・走査9周目）。
+#:
+#: **周回8で直した所の、直っていない兄弟だった。** あちらで
+#: `outputs.RAW_KEYS` と `web/core/outputAttribution.js` の表へ `unbake_trial` を
+#: 足したが、**帰属の経路は2本ある**:
+#:
+#:   1. 生の走査 → JS の `attributeOutputs`（周回8で直した）
+#:   2. サーバの索引 → `recipe_output_index.get_outputs(record_id)` ← **ここ**
+#:
+#: `routes.py` の `GET /unbake/outputs?id=…` は 2 を使うので、
+#: **記録を開いたときの「この記録から出た絵」に試行の分が出ないまま**だった。
+#: 片方だけ直すのがこのパッケージの繰り返す型で、今回は自分でそれをやっていた。
+TRIAL_PNGINFO_KEY = "unbake_trial"
+TRIAL_PNGINFO_SCHEMA = "unbake.trial"
+
 #: 記録の id が入っている鍵。**JS は `record_id`、フォークは `recipe_id`。**
 #:
 #: ここが3点とも食い違っていた（実測 2026-08-20）:
@@ -175,14 +190,32 @@ def extract_sweep_reference(extra_pnginfo: Optional[Dict[str, Any]]) -> Optional
             if payload.get(id_key):
                 record_id = str(payload[id_key])
                 break
-        rest = ("template_id", "job_id", "cell_id", "signature")
-        if not record_id or any(not payload.get(name) for name in rest):
+        if not record_id:
+            # **`record_id` が無ければ帰属できない。** ここだけは全部か無かでよい。
             continue
+        # **残りが欠けても捨てない**（`I-20260831-71`）。
+        #
+        # 以前は4つのどれか1つでも空なら `continue` で、**`record_id` が正しくても
+        # その画像の帰属ごと失って**いた。書き手（`sweepRunner.js` の
+        # `buildSweepStamp`）は `String(x ?? "")` なので、元の値が無ければ空文字が
+        # 入る——つまり**書き手が普通に作りうる形**を読み手が丸ごと捨てていた。
+        #
+        # 唯一の照合相手は `recipe_output_index` の `record_id` で、
+        # 残り4つは画面へ渡すだけである。**「どの実験の何番目かは判らない」と
+        # 言えるほうが、この道具の建前に合う。**
+        #
+        # ブラウザ側（`generationRecord.js`）は同じ刻印を
+        # `parseJsonLoose` で素通しにしており、**同じ絵が画面からは読めて
+        # Python からは読めない**状態だった。
+        rest = ("template_id", "job_id", "cell_id", "signature")
         return {
             "schema": schema,
             "version": payload.get("version", 1),
             "record_id": record_id,
-            **{name: str(payload[name]) for name in rest},
+            **{name: str(payload.get(name) or "") for name in rest},
+            # **欠けていることを言う。** 受け手が「揃っている」と思い込むと、
+            # 空文字のセル id で並べ替えて黙って1箇所へ潰す。
+            "complete": all(payload.get(name) for name in rest),
             "labels": payload.get("labels") if isinstance(payload.get("labels"), list) else [],
         }
     return None
@@ -219,3 +252,62 @@ def read_sweep_reference_from_image(path: str) -> Optional[Dict[str, Any]]:
         if reference is not None:
             return reference
     return None
+
+
+def extract_trial_reference(extra_pnginfo: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """試行のセル参照を取り出す。**`record_id` が無ければ帰属できない。**
+
+    返す形は sweep と揃えず、**試行固有の項目だけ**を持つ——揃えると
+    「どの実験の何番目か」と「どの試行の何本目か」が同じ顔になる。
+    共通なのは `record_id` だけで、それが照合に使う唯一の値である。
+    """
+    if not isinstance(extra_pnginfo, dict):
+        return None
+    payload = extra_pnginfo.get(TRIAL_PNGINFO_KEY)
+    if not isinstance(payload, dict) or payload.get("schema") != TRIAL_PNGINFO_SCHEMA:
+        return None
+    record_id = ""
+    for id_key in _RECORD_ID_KEYS:
+        if payload.get(id_key):
+            record_id = str(payload[id_key])
+            break
+    if not record_id:
+        return None
+    # **残りが欠けても捨てない**（`I-20260831-71` と同じ理由）。
+    rest = ("job_id", "candidate_id")
+    return {
+        "schema": TRIAL_PNGINFO_SCHEMA,
+        "version": payload.get("version", 1),
+        "record_id": record_id,
+        **{name: str(payload.get(name) or "") for name in rest},
+        "candidate_index": payload.get("candidate_index"),
+        "seed": payload.get("seed"),
+        "seed_origin": str(payload.get("seed_origin") or ""),
+        # **欠けていることを言う**（受け手が「揃っている」と思い込まないため）。
+        "complete": all(payload.get(name) for name in rest),
+    }
+
+
+def parse_trial_reference(raw: Any) -> Optional[Dict[str, Any]]:
+    """生の値から試行の参照を取り出す。"""
+    payload = raw
+    if isinstance(raw, str):
+        if not raw.strip():
+            return None
+        try:
+            payload = json.loads(raw)
+        except (ValueError, TypeError):
+            return None
+    if not isinstance(payload, dict):
+        return None
+    return extract_trial_reference({TRIAL_PNGINFO_KEY: payload})
+
+
+def read_trial_reference_from_image(path: str) -> Optional[Dict[str, Any]]:
+    try:
+        from PIL import Image
+        with Image.open(path) as img:
+            info = img.info or {}  # `.text` はファイル全体を読む（実測100倍遅い）
+    except Exception:
+        return None
+    return parse_trial_reference(info.get(TRIAL_PNGINFO_KEY))

@@ -18,9 +18,17 @@ prompt verbatim, and nodes that want to re-run on every execution report
 metadata into ``*.recipe.json`` untouched, and 2 of 346 local recipes ended
 up unreadable outside Python.
 
-The API layer already guards itself (``recipe_handlers._json_safe``), and so
-does the revision store (``revision_service._canonical``).  This module is
-the same guarantee for the recipe files themselves.
+The revision store guards itself (``revision_service._canonical``), and this
+module is the same guarantee for the recipe files themselves.
+
+**The HTTP layer did not** (2026-09-01).  This paragraph used to claim "the API
+layer already guards itself (``recipe_handlers._json_safe``)", but
+``recipe_handlers`` is a *fork* module and does not exist in this repository --
+so the sentence asserted a guarantee with nothing behind it.  Measured: all 46
+``web.json_response`` calls in ``routes.py`` used the default ``json.dumps``
+(``allow_nan=True``), and ``read_record`` reaches ``json.loads`` on the PNG
+``prompt`` chunk, which *accepts* ``NaN``.  ``routes.register_routes`` now wraps
+every response in :func:`dumps_json_strict`.
 """
 
 from __future__ import annotations

@@ -295,6 +295,27 @@ function applyAxis(recipe, axis, selected) {
     }
 }
 
+/**
+ * 運搬ノードの LoRA 名簿を、**形を問わず**読む（2026-08-31・監査 I-20260831-02）。
+ *
+ * LoRA Manager が焼くのは `{"__value__": [...]}` で、**素の配列ではない**
+ * （実測: 手元の出力411枚のうち該当18枚は全てこの形）。
+ * `Array.isArray(inputs.loras)` だけを見ていたので書き換える相手が見つからず、
+ * `assert(changed > 0)` に落ちて掃引そのものが起動しなかった——
+ * **LoRA Manager をアンインストールすると動く**、という倒錯した形になっていた。
+ *
+ * 包みは**そのまま返す**。素の配列へ均すと ComfyUI 側が受け取れない。
+ *
+ * @returns {{list: Array, wrap: (next: Array) => any}|null}
+ */
+function carriedLoraList(value) {
+    if (Array.isArray(value)) return { list: value, wrap: next => next };
+    if (Array.isArray(value?.__value__)) {
+        return { list: value.__value__, wrap: next => ({ ...value, __value__: next }) };
+    }
+    return null;
+}
+
 function patchBuiltLoraStrength(prompt, recipe, axis, selected) {
     const strength = Number(selected.value);
     const { lora } = selectedLora(recipe, axis);
@@ -317,11 +338,12 @@ function patchBuiltLoraStrength(prompt, recipe, axis, selected) {
             }
             changed += directChanged ? 1 : 0;
         }
-        if (Array.isArray(inputs.loras)) {
-            inputs.loras = inputs.loras.map((entry, index) => {
+        const carried = carriedLoraList(inputs.loras);
+        if (carried) {
+            inputs.loras = carried.wrap(carried.list.map((entry, index) => {
                 const entryName = normalizedLoraName(entry?.name || entry?.lora_name);
                 const matches = wantedNames.includes(entryName)
-                    || (inputs.loras.length === 1 && recipe.loras.length === 1 && index === 0);
+                    || (carried.list.length === 1 && recipe.loras.length === 1 && index === 0);
                 if (!matches) return entry;
                 changed += 1;
                 return {
@@ -331,7 +353,7 @@ function patchBuiltLoraStrength(prompt, recipe, axis, selected) {
                     strength_model: strength,
                     strength_clip: strength,
                 };
-            });
+            }));
         }
     }
     assert(changed > 0, `LoRA target ${axis.target ?? 0} is not present in the built workflow`);
@@ -387,8 +409,9 @@ function patchBuiltLoraSwap(prompt, recipe, axis, selected) {
                 changed += 1;
             }
         }
-        if (Array.isArray(inputs.loras)) {
-            inputs.loras = inputs.loras.map((entry) => {
+        const carried = carriedLoraList(inputs.loras);
+        if (carried) {
+            inputs.loras = carried.wrap(carried.list.map((entry) => {
                 const entryName = normalizedLoraName(entry?.name || entry?.lora_name);
                 if (!wantedNames.includes(entryName) && normalizedLoraName(nextName) !== entryName) return entry;
                 changed += 1;
@@ -397,7 +420,7 @@ function patchBuiltLoraSwap(prompt, recipe, axis, selected) {
                     ...(Object.hasOwn(entry, 'name') ? { name: nextName } : {}),
                     ...(Object.hasOwn(entry, 'lora_name') ? { lora_name: nextName } : {}),
                 };
-            });
+            }));
         }
     }
     assert(changed > 0,
@@ -477,6 +500,10 @@ function allowedInputNames(template, includeSeed) {
             allowed.add('strength');
             allowed.add('strength_model');
             allowed.add('strength_clip');
+            // **運搬ノードの名簿は `clipStrength` と綴る**（I-20260831-02）。
+            // `patchBuiltLoraStrength` は4つとも書くので、宣言も4つ揃える。
+            // 1つでも欠けると、正しい掃引が「宣言外の入力を動かした」になる。
+            allowed.add('clipStrength');
         }
         if (axis.kind === 'checkpoint') {
             allowed.add('ckpt_name');
@@ -519,13 +546,39 @@ function allowedInputNames(template, includeSeed) {
  */
 const DISPLAY_ONLY_PATH = /^[^.]+\._meta(\.|$)/;
 
+/**
+ * **配列を持つ入力**。この下だけは葉の名前で照合する。
+ *
+ * 名前で持つのは、経路の形（`.0.` が挟まる／`__value__` が挟まる）が
+ * 書き手ごとに違うため。**形で判定すると、次に別の包み方が来たとき同じ穴が開く。**
+ */
+const NESTED_INPUTS = new Set(['loras']);
+
 export function assertOnlySweepInputsChanged(baselinePrompt, candidatePrompt, template, options = {}) {
     const paths = changedPaths(baselinePrompt, candidatePrompt);
     const allowed = allowedInputNames(template, options.includeSeed === true);
     const unexpected = paths.filter(path => {
         if (DISPLAY_ONLY_PATH.test(path)) return false;
-        const match = path.match(/^[^.]+\.inputs\.([^.]+)/);
-        return !match || !allowed.has(match[1]);
+        const match = path.match(/^[^.]+\.inputs\.(.+)$/);
+        if (!match) return true;
+        const parts = match[1].split('.');
+        // 素の入力（`strength_model` など）は今までどおり先頭で照合する。
+        if (allowed.has(parts[0])) return false;
+        /*
+         * **入れ子の入力は葉で照合する**（2026-08-31・監査 I-20260831-02）。
+         *
+         * 運搬ノードの名簿は `inputs.loras.__value__.0.strength` のような
+         * 深い経路になるので、`.inputs.` の直後1片だけを見ると **`loras` と
+         * しか比べられず、正しい掃引が全件「宣言外の入力を動かした」になる**。
+         * `allowedInputNames` は `inputs.loras` の節のために強度を宣言へ
+         * 入れてあったが、**その宣言がここへ一度も届いていなかった。**
+         *
+         * **`loras` の下なら何でも通す、にはしない。** 容れ物として認めるのは
+         * `NESTED_INPUTS` に挙げたものだけで、葉の名前は素の入力と同じ表で
+         * 照合する——`lora_strength` の軸で名前を差し替えれば今までどおり弾く。
+         */
+        const leaf = parts[parts.length - 1];
+        return !(NESTED_INPUTS.has(parts[0]) && allowed.has(leaf));
     });
     if (unexpected.length) {
         throw new Error(`Sweep changed unintended graph inputs: ${unexpected.join(', ')}`);

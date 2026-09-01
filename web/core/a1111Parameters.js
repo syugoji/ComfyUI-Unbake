@@ -208,6 +208,36 @@ export function parseA1111Parameters(raw) {
  * @param {string} raw     `parameters` の生テキスト
  * @returns {object} 写した後の summary（引数は変えない）
  */
+/**
+ * `Lora hashes: "名前: ハッシュ, 名前2: ハッシュ2"` を読む
+ * （2026-08-31・監査 I-20260831-24）。
+ *
+ * **`Hashes: {…}` とは別の鍵**で、A1111 / Forge / Civitai が実際に書くのは
+ * こちら。実測: 手元の A1111 画像168枚のうち **39枚が `Lora hashes` を持ち、
+ * そのうち `Hashes` も持つものは0枚**——つまり片方しか読まないと、
+ * その39枚の LoRA 52本すべてが `hash=null` になる。
+ *
+ * ハッシュが無いと `modelResolver` はハッシュ照合の段を素通りして名前一致まで
+ * 落ちる（`modelEvidence.js` が「同名の別物を掴みうる」と警告する状態）。
+ * 12桁で来るので `shortHash` の条件を満たし、**拾えばバイト同一まで格上げできる。**
+ *
+ * @returns {Map<string, string>} 小文字の名前 → ハッシュ
+ */
+function loraHashesIn(params) {
+    const raw = String(params?.['lora hashes'] ?? '').trim().replace(/^"|"$/g, '');
+    const out = new Map();
+    if (!raw) return out;
+    for (const piece of raw.split(',')) {
+        // 名前に `:` は入りうるので、**最後の `:` で割る**。
+        const at = piece.lastIndexOf(':');
+        if (at <= 0) continue;
+        const name = piece.slice(0, at).trim().toLowerCase();
+        const hash = piece.slice(at + 1).trim();
+        if (name && hash) out.set(name, hash);
+    }
+    return out;
+}
+
 export function applyA1111ToSummary(summary, raw) {
     const out = { ...summary, loras: [...(summary?.loras || [])] };
     const parsed = parseA1111Parameters(raw);
@@ -240,6 +270,12 @@ export function applyA1111ToSummary(summary, raw) {
         for (const [key, value] of Object.entries(parsed.hashes || {})) {
             const name = key.replace(/^lora:/i, '').trim().toLowerCase();
             if (name) byName.set(name, String(value || '') || null);
+        }
+        // **`Lora hashes` も読む**（I-20260831-24）。実データでは
+        // こちらしか持たない画像のほうが多い（39枚 対 0枚）。
+        // 既に `Hashes` から拾えている分は上書きしない。
+        for (const [name, hash] of loraHashesIn(params)) {
+            if (!byName.has(name)) byName.set(name, hash);
         }
         out.loras = loraTagsIn(parsed.positive).map(item => ({
             name: item.name,
@@ -328,17 +364,36 @@ export function recipeFromA1111(raw, meta = {}) {
     if (!parsed.ok) return null;
     const params = parsed.params;
     const name = String(params.model || '').trim();
-    // **checkpoint が判らないなら組まない。** 土台の無いグラフは投入できず、
-    // 「組めた」と言った上で投入時に落ちるのが一番読みにくい。
-    if (!name) return null;
-
     const resources = normalizeResources(parsed.resources);
     const checkpointResource = resources.find(item => item.kind === 'checkpoint') || null;
+    /*
+     * **checkpoint が判らないなら組まない。** 土台の無いグラフは投入できず、
+     * 「組めた」と言った上で投入時に落ちるのが一番読みにくい。
+     *
+     * **ただし「判らない」は `Model:` が無いことではない**（2026-08-31・
+     * 監査 I-20260831-25）。Civitai の素の形は `Model:` を書かず
+     * `Civitai resources` に**版IDを持つ**。版IDをファイル名へ解決する口
+     * （`civitaiResources.applyResolvedResources`）は `checkpoint.modelVersionId`
+     * を要求するので、**ここで組まない限りその経路は一度も走らない**
+     * ——版IDが在るのに版IDで引けない、という循環になっていた。
+     *
+     * 実測: 手元の A1111 画像168枚のうち122枚が `Model:` を持たず、
+     * **そのうち97枚は版ID付きの checkpoint を持っている**。
+     * 利用者からは「Civitai が版まで書いているのに再現不可」に見える。
+     *
+     * **名前は推測で埋めない。** 判らないものは空のままにして、
+     * 版IDで引き直す段に任せる。
+     */
+    if (!name && !checkpointResource?.modelVersionId) return null;
 
     const hashes = new Map();
     for (const [key, value] of Object.entries(parsed.hashes || {})) {
         const stem = key.replace(/^lora:/i, '').trim().toLowerCase();
         if (stem) hashes.set(stem, String(value || '') || null);
+    }
+    // **`Lora hashes` も読む**（I-20260831-24）。既に在る分は上書きしない。
+    for (const [name, hash] of loraHashesIn(params)) {
+        if (!hashes.has(name)) hashes.set(name, hash);
     }
 
     const size = /^(\d+)\s*[x×]\s*(\d+)$/i.exec(String(params.size || '').trim());
@@ -346,7 +401,8 @@ export function recipeFromA1111(raw, meta = {}) {
         id: meta.id ?? null,
         title: meta.title ?? null,
         checkpoint: {
-            file_name: name,
+            // 判らないなら空のまま（版IDで引き直す段が埋める）。
+            file_name: name || null,
             modelName: checkpointResource?.modelName ?? null,
             modelVersionId: checkpointResource?.modelVersionId ?? null,
             hash: params['model hash'] || null,

@@ -125,8 +125,20 @@ test('動画しか無いモデルは、見本にしない', async () => {
         '種類を見ずに先頭を取っている');
     // 取りに行ってよい配信元を絞ってある。
     assert.match(source, /IMAGE_HOSTS = \("image\.civitai\.com",\)/);
-    // 探して無かったことを覚える（毎回問い合わせ直さない）。
-    assert.match(source, /_remember_miss\(kind, name, "no-still-image"\)/);
+    /*
+     * **「覚える」の綴りは照合しない**（2026-08-31・走査3周目）。
+     *
+     * ここは `_remember_miss(kind, name, "no-still-image")` という**綴りを
+     * そのまま**留めていた。ところが「無い」には3通り在り、そのうち
+     * **知らないホストから配られているだけ**の回まで永久に覚えていた
+     * ——直そうとした瞬間にこの行が赤くなる＝**欠陥ごと固定していた**。
+     *
+     * 覚える条件は挙動として `tests/test_pass3_round3.py` が留める。
+     * ここは「理由を1つに潰していない」ことだけを見る。
+     */
+    assert.match(source, /def still_image_miss/, '無い理由を言う口が無い');
+    assert.match(source, /if reason == "no-still-image":/,
+        '理由を見ずに覚えている（知らないホストまで永久に焼く）');
 });
 
 test('見本は原寸で集めない（400本で数百MBになる）', async () => {

@@ -53,6 +53,102 @@ test('右クリックで品書きが出る', async () => {
     assert.ok(menuItems(panel).some(text => text.includes('削除')), 'まとめて削除が無い');
 });
 
+/* -------------------------------------------------------------------------
+   **開く押しが、自分で畳んでしまわないこと**（`I-20260830-26`）
+   -------------------------------------------------------------------------
+
+   面の根には `contextmenu` を**捕まえる段**（capture）で1本張ってあり、
+   「開く前に、開いている品書きを畳む」を担っている。上る段（bubble）に
+   回ってしまうと順序が逆になり、**行が開いた品書きを根が畳む**
+   ——右クリックしても何も出ない、という完全な無反応になる。
+   例外もログも出ず、品書きは「使用モデルの削除」の唯一の入口である。
+
+   既存の検査13本はすべて行やタイルの節へ**直接** dispatch していたが、
+   偽DOM が `contextmenu` を親へ配らなかったので**根の聞き手が一度も走らず**、
+   この形は観測できなかった。 */
+
+test('開いた品書きは、同じ押しで畳まれない（根の聞き手は捕まえる段）', async () => {
+    const panel = mount([rec('1'), rec('2')]);
+    const row = rowsOf(panel)[0];
+    // **根まで上れる位置に在ること**が前提（上らなければ何も測っていない）。
+    // 押した後は描き直しで参照が外れるので、**押す前に**確かめる。
+    assert.ok(panel.root.contains(row), '前提: 行は面の根の子孫');
+    await row.dispatch('contextmenu', { clientX: 10, clientY: 20, preventDefault() {} });
+    assert.ok(menuItems(panel).length >= 1,
+        '開いた品書きが同じ押しで畳まれている（根の聞き手が上る段に回っている）');
+});
+
+const menusOf = (panel) => panel.root.allByClass('unbake-context')
+    .filter(node => node.className === 'unbake-context');
+
+test('別の行を右クリックしても、品書きは1枚だけ', async () => {
+    const panel = mount([rec('1'), rec('2')]);
+    assert.ok(rowsOf(panel).length >= 2, '前提: 行が2つ以上ある');
+    // **毎回掴み直す。** 押すと描き直しが走って前の参照は外れており、
+    // 外れた節から押しても根まで上らない＝畳む聞き手が走らない。
+    await rowsOf(panel)[0].dispatch('contextmenu', { clientX: 10, clientY: 20, preventDefault() {} });
+    await rowsOf(panel)[1].dispatch('contextmenu', { clientX: 30, clientY: 40, preventDefault() {} });
+    // **空振りしていないこと。** 器の名前を取り違えると 0 枚で緑になる。
+    assert.ok(menuItems(panel).length >= 1, '品書きが出ていない（測る相手が違う）');
+    assert.equal(menusOf(panel).length, 1,
+        `品書きが ${menusOf(panel).length} 枚出ている（前のが畳まれていない）`);
+});
+
+test('行以外の所で右クリックしたら、開いている品書きは畳む', async () => {
+    /*
+     * **根の聞き手が担っているのはここ。** 行から行への持ち替えは
+     * `openContextMenu` が自分で畳むので、そこを見ても根の聞き手は測れない
+     * （実際、根の聞き手を殺す変異が素通りした）。
+     *
+     * 畳む道が無いと、**品書きが出たまま貼り付いて他の操作を隠す。**
+     */
+    const panel = mount([rec('1'), rec('2')]);
+    await rowsOf(panel)[0].dispatch('contextmenu', { clientX: 10, clientY: 20, preventDefault() {} });
+    assert.equal(menusOf(panel).length, 1, '前提: 品書きが1枚出ている');
+
+    // 右クリックを受ける口を**持たない**節（表そのもの）。行の外を押した形。
+    const table = panel.root.allByClass('unbake-table')[0];
+    assert.ok(table && !table.listeners?.has('contextmenu'),
+        '前提: この節は右クリックの口を持たない');
+    await table.dispatch('contextmenu', { clientX: 5, clientY: 5, preventDefault() {} });
+    assert.equal(menusOf(panel).length, 0,
+        '行の外で右クリックしても品書きが畳まれない（貼り付いて他の操作を隠す）');
+});
+
+test('[人形の契約] 捕まえる段は、上る段より先に走る', async () => {
+    /*
+     * **人形を緩めれば、上の2本は緑にできる。**
+     *
+     * `addEventListener` が第3引数を捨てていた頃は、capture で張った聞き手が
+     * 上る段の最後に回っていた。人形がその性質を持っていること自体を留める。
+     */
+    const doc = fakeDocument();
+    const root = doc.createElement('div');
+    const child = doc.createElement('div');
+    root.append(child);
+    doc.body.append(root);
+
+    const order = [];
+    root.addEventListener('contextmenu', () => order.push('根:捕まえる'), true);
+    root.addEventListener('contextmenu', () => order.push('根:上る'));
+    child.addEventListener('contextmenu', () => order.push('子'));
+
+    await child.dispatch('contextmenu', {});
+    assert.deepEqual(order, ['根:捕まえる', '子', '根:上る'],
+        `配る順が本物と違う: ${JSON.stringify(order)}`);
+});
+
+test('[人形の契約] 右クリックは親へ上る', async () => {
+    const doc = fakeDocument();
+    const root = doc.createElement('div');
+    const child = doc.createElement('div');
+    root.append(child);
+    let heard = 0;
+    root.addEventListener('contextmenu', () => { heard += 1; });
+    await child.dispatch('contextmenu', {});
+    assert.equal(heard, 1, '右クリックが親へ届いていない（伝播の輪から外れている）');
+});
+
 // --- 献立の入れ替え（2026-08-26 利用者の指示）------------------------------
 
 test('外した3つは、もう出さない', async () => {

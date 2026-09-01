@@ -357,7 +357,15 @@ class FileSettings:
             raw = self._path.read_text(encoding="utf-8")
         except FileNotFoundError:
             return self
-        except OSError as error:
+        except (OSError, ValueError) as error:
+            # **`ValueError` を落とさない**（2026-08-31・監査 I-20260831-13）。
+            # `UnicodeDecodeError` は `ValueError` の一種で **`OSError` ではない**
+            # ので、ここを `OSError` だけにしていると素通りして
+            # `register_routes()` まで届き、**`/unbake/*` が1本も登録されない**。
+            # `__init__.py` の `except Exception` が飲むので ComfyUI 自体は起動し、
+            # **パネルだけが 404 で死ぬ**——しかも `get_settings()` は例外で
+            # `_settings` を代入できないため、**再起動しても永久に復旧しない**。
+            # 踏み方は「メモ帳の ANSI で保存し直して置き場に日本語を入れる」だけ。
             self.load_error = f"{type(error).__name__}: {error}"
             return self
         try:
@@ -466,6 +474,18 @@ def _coerce(key: str, value: Any) -> Any:
             # **既定へ戻す。** 読めない値を素通しすると、閾値の比較が
             # 黙って常に偽になる（文字列と数の比較）。
             return int(default)
+    if isinstance(default, float):
+        # **浮動小数の枝が無かった**（2026-08-31・監査 I-20260831-32）。
+        # 既定が float の鍵は `replay_max_megapixels` ただ1つで、どの枝にも
+        # 当たらず末尾の `return value` に落ちていた——画面のフォームは
+        # `String(input.value).trim()` を送るので、ディスクには `"8.5"` という
+        # **文字列**で残る。以後 `type=number` の欄へ当てられず空表示になり、
+        # `collect()` は空を送らない規則なので上書きもできず、
+        # **再現の上限は黙って既定へ戻り続ける**。
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return float(default)
     if key == "language":
         text = str(value or "").strip()
         # 大小の揺れだけは受ける（`ja-JP` のような表記は受けない——

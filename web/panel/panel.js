@@ -133,11 +133,23 @@ const FAIL_CODES = {
     corrupt: 'download.fail.corrupt',
     space: 'download.fail.space',
     setup: 'download.fail.setup',
+    // **「扱えない形式」を `setup` と混ぜない**（`I-20260831-70`）。
+    // 設定を見に行かせても直らないので、案内として時間を捨てさせる。
+    unsupported: 'download.fail.unsupported',
+    // **同時に落とせる数の上限**（`routes.py` の `busy`）。打つ手は「待つ」で、
+    // `unknown` へ落ちると**知っている理由を「判りません」と言う**うえ、
+    // サーバの英語がそのまま `{detail}` に出ていた。
+    busy: 'download.fail.busy',
+    // **`unexpected` は本当に判らない側**なので `unknown` で正しい。
+    // 印の一覧に載せるのは、載っていない印が黙って `unknown` へ落ちるのを
+    // 検査で見分けるため（`tests/fail_codes_are_covered_test.mjs`）。
+    unexpected: 'download.fail.unknown',
     unknown: 'download.fail.unknown',
 };
 
 /** 種類の並び。**打つ手のある側を先に出す。** */
-const FAIL_ORDER = ['forbidden', 'early_access', 'network', 'space', 'corrupt', 'setup', 'gone', 'unknown'];
+const FAIL_ORDER = ['forbidden', 'early_access', 'network', 'busy', 'space',
+    'corrupt', 'unsupported', 'setup', 'gone', 'unknown'];
 
 /**
  * 絞り込みに出す判定（2026-08-23 利用者の指示で `pending` を外した）。
@@ -235,7 +247,6 @@ const MENU_ROOM_BLOCK = 40;
 export const COMPACT_WIDTH = 520;
 
 /**
-/**
  * 最後に測れた器の幅を覚えておく鍵。
  *
  * **再起動の直後は測れないことがある。** ComfyUI はサイドバーの幅を
@@ -259,6 +270,18 @@ const LAST_WIDTH_KEY = 'unbake.panel.last_width';
  * （勝手に走ると、押していない生成が始まる）。戻す口だけを1行出す。
  */
 const REPLAY_QUEUE_KEY = 'unbake.panel.replay_queue';
+
+/**
+ * **このページで生きている面**（2026-08-31・監査 I-20260831-12）。
+ *
+ * 待ち行列の控えは文書ごとに1つの鍵なので、2枚目の面が開くと
+ * **1枚目の現役の行列を「前回の残り」として読んでしまう**。
+ * 「前回の残り」が意味を持つのは**読み込み直した後だけ**なので、
+ * 持ち主が今も生きているかで見分ける——モジュールの寿命はページ1回分で、
+ * 読み込み直せばこの集合は空から始まる。
+ */
+const LIVE_PANELS = new Set();
+let nextPanelId = 0;
 
 /**
  * 並び替えに使える軸。**設定から来た未知の値は既定へ落とす**
@@ -361,14 +384,38 @@ export function checkpointRuns(list) {
     return runs;
 }
 
+/**
+ * 器を1つ作る。
+ *
+ * **`null` / `undefined` の属性は付けない**（2026-09-01・走査16周目）。
+ *
+ * この面の兄弟9本（`detailView` / `sweepView` / `modelsView` ほか）は
+ * 全部この番人を持っていて、**このファイルだけ持っていなかった**。
+ * 呼ぶ側は `record?.verdictBlocker || null` のように「無ければ付けない」つもりで
+ * 書くが、番人が無いと `setAttribute(key, null)` が走り、
+ * **文字列の `"null"` が属性に入る。**
+ *
+ * 実測（16通りの構成 × 記録5件を描いた）:
+ *
+ *   属性へ null/undefined: 1種 — `span[data-blocker]=null`
+ *   子へ null/undefined:   0種
+ *
+ *   遮断の理由が無い記録 → `data-blocker="null"`（文字列）
+ *   理由が在る記録       → `data-blocker="downloadable"`
+ *
+ * 今の紙は `[data-blocker="downloadable"]` と**値まで指して**いるので、
+ * 画面は壊れていない。壊れるのは**有無で引いた日**（`[data-blocker]` は全部に当たる）で、
+ * そのとき原因はここではなく紙の側に在るように見える。
+ */
 function makeElement(documentRef, tag, attributes = {}, children = []) {
     const node = documentRef.createElement(tag);
     for (const [key, value] of Object.entries(attributes)) {
+        if (value === null || value === undefined) continue;
         if (key === 'class') node.className = value;
         else if (key === 'text') node.textContent = value;
         else node.setAttribute(key, value);
     }
-    for (const child of children) node.append(child);
+    for (const child of children) if (child) node.append(child);
     return node;
 }
 
@@ -514,6 +561,13 @@ export function createUnbakePanel(el, {
     if (!el || typeof el.append !== 'function') {
         throw new TypeError('createUnbakePanel: needs a container element to render into');
     }
+    /**
+     * この面の名札（I-20260831-12）。待ち行列の控えの持ち主として使う。
+     * **ページ1回分でしか意味を持たない**——読み込み直せば採番が 0 に戻り、
+     * `LIVE_PANELS` も空になるので、前回の控えは正しく「残り」として扱われる。
+     */
+    const panelId = nextPanelId++;
+    LIVE_PANELS.add(panelId);
     // 差し込み先が属する document を使う。**大域の `document` を掴まない**
     // ——器が違っても同じ関数で描けることが決定⑤の全部で、
     // 大域を掴むとテストからも別 document からも差せなくなる。
@@ -697,8 +751,18 @@ export function createUnbakePanel(el, {
     const replayQueue = [];
     /** 流し役が動いているか。**2本走らせない**（走らせると混ざる）。 */
     let replayPumping = false;
-    /** 待っている記録ごとの、いま画面に居るボタン（`busyButtons` と同じ理由）。 */
-    const heldButtons = new Map();
+    /*
+     * **待ち専用の登録簿は畳んだ**（2026-09-01・走査16周目）。
+     *
+     * `heldButtons` / `trackHeld` / `clearHeld` が在ったが、**`clearHeld` の
+     * 呼び手は1つも無く**、`heldButtons` は書かれるだけで誰も読まなかった
+     * ——実測で鍵は常に 0 件（`trackHeld` を呼ぶ枝が `busy === true` を要り、
+     * `busy` を渡す `add()` は `'queued'` の1つしか無い＝到達しない枝だった）。
+     *
+     * すぐ下の注記が「**待ちと走りで別々の登録簿を持たない**」と言っている当のことを、
+     * 消し残しが半分だけ裏切っていた。状態は `heldRecords` が持ち、
+     * 宛先は `replayButtons` が1つで持つ。
+     */
 
     /**
      * 再現のボタンを**記録ごとに覚える**。
@@ -710,10 +774,54 @@ export function createUnbakePanel(el, {
      */
     const replayButtons = new Map();
 
+    /**
+     * 再現の釦を1つ覚える。**画面から外れた分は捨てる**（2026-09-01・走査16周目）。
+     *
+     * 元は足すだけで**捨てる所がどこにも無かった**。一覧は絞り込み・並べ替え・
+     * 検索の1打ごとに描き直すので、**記録1件につき描いた回数だけ**溜まる。
+     *
+     * 実測（記録20件・31回描き直し・人形を本物と揃えたうえで）:
+     *
+     *   total 620 / **画面に居るのは 20 個だけ** / 浮いている 600 個
+     *
+     * 浮いた釦は `applyReplayState` が毎回なめるので、**姿を当てる手間も
+     * 描いた回数に比例して増える**。書庫350件を100回描けば35,000個になる。
+     */
     function trackReplay(key, button) {
         if (!key) return;
         if (!replayButtons.has(key)) replayButtons.set(key, new Set());
         replayButtons.get(key).add(button);
+    }
+
+    /**
+     * 画面から外れた釦を登録簿から落とす。**描き終えてから1回だけ呼ぶ。**
+     *
+     * **足す所でも当てる所でも間引けない。** どちらも器がまだ本文へ付く前に走るので、
+     * `isConnected` は**今作った釦にも偽を返す**——そこで捨てると、
+     * 描き直しを越えさせる仕組みごと消える（実際にそう書いて検査3本が落ちた）。
+     * 新旧を見分けられるのは**新しい方が付き終わった後**だけ。
+     *
+     * **`isConnected` が読めない環境では何もしない。** 読めないことを
+     * 「外れている」と読まない。
+     */
+    function pruneReplayButtons() {
+        /*
+         * **面ごと外れているなら、何も捨てない**（2026-09-01・走査16周目）。
+         *
+         * `isConnected` は「本文に着くか」なので、**面の根がまだ差し込まれていない間は
+         * 全部の釦が偽を返す**——そこで捨てると、登録簿が毎回空になり
+         * **順番待ちの姿が描き直しを越えられなくなる**。
+         *
+         * 実際にそう書いて、通しの検査が5本落ちた（面を本文へ付けずに組む検査が
+         * 多数派だった）。**新旧を見分けられるのは、面が本文に居るときだけ。**
+         */
+        if (root?.isConnected === false) return;
+        for (const [key, buttons] of replayButtons) {
+            for (const button of buttons) {
+                if (button?.isConnected === false) buttons.delete(button);
+            }
+            if (buttons.size === 0) replayButtons.delete(key);
+        }
     }
 
     /** その記録の全ボタンへ、いまの状態（走り／待ち／押せる）を当て直す。 */
@@ -723,18 +831,6 @@ export function createUnbakePanel(el, {
             else if (heldRecords.has(key)) { applyBusy(button, false); applyHeld(button, true, t('replay.queued')); }
             else { applyBusy(button, false); applyHeld(button, false); }
         }
-    }
-
-    function trackHeld(key, button) {
-        if (!key) return;
-        if (!heldButtons.has(key)) heldButtons.set(key, new Set());
-        heldButtons.get(key).add(button);
-    }
-
-    function clearHeld(key) {
-        heldRecords.delete(key);
-        for (const button of heldButtons.get(key) || []) applyHeld(button, false);
-        heldButtons.delete(key);
     }
 
     /** 鍵に紐づくボタンを1つ覚える（描き直しのたびに増える）。 */
@@ -859,6 +955,17 @@ export function createUnbakePanel(el, {
      */
     /** **最後に単押しされた記録。** 遅れて返った分で、後の分の絵を消さないため。 */
     let lastPressedReplay = null;
+    /**
+     * **最後に押した詳細**（2026-08-31・監査 I-20260831-23）。
+     *
+     * `openDetail` は書庫・組み立て可否・出た絵を await してから面を据えるので、
+     * **遅い1件目が後から返ると、既に出ている2件目を畳んで自分に差し替える。**
+     * 押した人からは「押しても開かない → もう1件押したら一瞬出て、関係ない方に
+     * 戻った」に見え、記録も例外も出ない。
+     * 再現の側（`lastPressedReplay`）は同じ形を既に解いてあり、詳細だけが
+     * 見張りを持っていなかった。
+     */
+    let lastPressedDetail = null;
 
     /** 並びの末尾へ入れて、流し役を起こす。 */
     function queueReplay(record, key) {
@@ -980,7 +1087,9 @@ export function createUnbakePanel(el, {
     function rememberQueue() {
         try {
             const ids = replayQueue.map(item => String(item.key)).filter(Boolean);
-            writeStored(REPLAY_QUEUE_KEY, ids);
+            // **持ち主を一緒に控える**（I-20260831-12）。素の配列で書くと、
+            // 同じページで開いた2枚目が「前回の残り」と読んで横取りする。
+            writeStored(REPLAY_QUEUE_KEY, { owner: panelId, ids });
         } catch { /* 控えられなくても行列そのものは動く */ }
     }
 
@@ -1264,7 +1373,10 @@ export function createUnbakePanel(el, {
     // 全件描くようにした時点で**その入口ごと消えていた**（実機で「見当たらない」）。
     const fullscreenButton = onRequestFullscreen ? element('button', {
         class: 'unbake-fullscreen-open', type: 'button',
-        text: '⛶', title: t('app.openFullscreen'), 'aria-label': t('app.openFullscreen'),
+        // **釦の吹き出しとパレットの項目名は別の鍵**（`I-20260830-20`）。
+        // パレットは製品名で引けないと辿り着けず、釦の脇は短いほうが読める
+        // ——同じ鍵を兼用すると、短さと名前という**相反する要求**が1つの文へ乗る。
+        text: '⛶', title: t('app.fullscreenTip'), 'aria-label': t('app.fullscreenTip'),
     }) : null;
     fullscreenButton?.addEventListener('click', () => onRequestFullscreen?.());
     const header = element('div', { class: 'unbake-header' }, [
@@ -1429,6 +1541,17 @@ export function createUnbakePanel(el, {
     const viewToggle = element('button', {
         class: 'unbake-view-toggle', type: 'button', 'aria-label': t('list.view.toggle'),
     });
+    // **札は選択肢と同じことを言う**（2026-08-31・走査3周目）。
+    //
+    // `data-size` が決めるのは `grid-template-columns: repeat(auto-fill,
+    // minmax(…420/300/215/155px…))` の**下限の幅**であって、列の本数ではない
+    //（本数は器の幅が決める）。選択肢も `list.size.*`＝「最大…最小」で、
+    // 変数も `tileSize`。**札だけが「列数」と言っていた**ので、読み上げの
+    // 利用者には別の物として届く。
+    //
+    // **鍵の名前は変えない**（`list.columns` は12言語に在り、`.auto` と対になる）。
+    // 変えたのは文言のほうで、**en / ja だけを直してある**——残る10言語は
+    // 母語話者の目が要るので `I-20260831-74` の側で扱う。
     const columnsSelect = element('select', {
         class: 'unbake-view-columns', 'aria-label': t('list.columns'),
     });
@@ -1825,9 +1948,23 @@ export function createUnbakePanel(el, {
             .map(item => ({ ...item, url: freshImageUrl(item.url, item) }));
         let index = 0;
 
+        /*
+         * **1枚で見るときは、必ず絵を描ける箱にする**（2026-08-31・監査 I-20260831-28）。
+         *
+         * `previewUrl` を持たない記録では基準側を `<div data-state="none">·</div>`
+         * にしていた（一覧の空欄と同じ正規の状態）。ところが `single` の経路は
+         * `show()` で**この箱を差し替える**ので、`setAttribute('src', …)` が
+         * **何も描かない**——属性は正しく入っているのに絵が出ず、字幕だけ出るので、
+         * 押した人には「出た絵が壊れている／消えている」に見える。
+         *
+         * `single` でないときは今までどおり `·` を出す（差し替え先は右の `<img>`
+         * なので無傷。基準側は「見本が無い」ことをそのまま示すのが正しい）。
+         */
         const baseImage = record?.previewUrl
             ? element('img', { class: 'unbake-compare-image', src: record.previewUrl, alt: '' })
-            : element('div', { class: 'unbake-compare-image', 'data-state': 'none', text: '·' });
+            : (single
+                ? element('img', { class: 'unbake-compare-image', alt: '' })
+                : element('div', { class: 'unbake-compare-image', 'data-state': 'none', text: '·' }));
         const otherImage = element('img', { class: 'unbake-compare-image', alt: '' });
         const otherCaption = element('p', { class: 'unbake-compare-caption' });
         const baseCaption = element('p', {
@@ -1920,6 +2057,9 @@ export function createUnbakePanel(el, {
      * 開いた瞬間に全部突き合わせると画面が固まる（初回だけ索引を組むので2秒）。
      */
     async function openDetail(record, { tab = null } = {}) {
+        // **押した順の見張り**（I-20260831-23）。下の await を跨いで効かせる。
+        const pressed = record?.id ?? record?.libraryId ?? record;
+        lastPressedDetail = pressed;
         let recipe = record?.recipe || null;
         if (!recipe && record?.libraryId && loadRecord) {
             try { recipe = await loadRecord(record.libraryId); } catch { recipe = null; }
@@ -1929,12 +2069,16 @@ export function createUnbakePanel(el, {
         // ——押す前から判っていたことなので、先に言う（2026-08-23 利用者の報告）。
         // 実データ350件のうち、この形は8件。
         let runBlockedReason = null;
+        // **実際に描かれる寸法**（`I-20260830-02`）。組み立ては上の `canBuild` が
+        // 既に走らせているので、読むだけで追加の費用はかからない。
+        let effectiveSize = null;
         if (recipe && typeof canBuild === 'function') {
             try {
                 const check = await canBuild(recipe);
                 if (check && check.ok === false) {
                     runBlockedReason = check.error || t('detail.run.cannot');
                 }
+                effectiveSize = check?.size || null;
             } catch {
                 // **確かめられないことを「組めない」と混ぜない。** そのときは
                 // 今までどおり押させて、失敗したらそこで理由を出す。
@@ -1954,6 +2098,10 @@ export function createUnbakePanel(el, {
         const loraAlternates = new Map();
         /** 土台のモデルの差し替え先（2つ以上で軸になる）。 */
         const checkpointAlternates = [];
+        // **遅れて返った分で、後から押した記録の面を畳まない**（I-20260831-23）。
+        // ここより前に別の記録が押されていたら、こちらは何もしない
+        // ——読み込みは無駄になるが、**畳んでから気づく方が悪い**。
+        if (lastPressedDetail !== pressed) return;
         detailView?.destroy();
         detailView = createDetailView({
             documentRef: doc,
@@ -1962,6 +2110,9 @@ export function createUnbakePanel(el, {
             outputs,
             title: displayName(record),
             openTab: tab,
+            // **記録の報告値と、実際に描かれる寸法は一致しない**（`I-20260830-02`）。
+            // 欄は記録値のまま（振る軸の入力なので変えない）で、違うときだけ添える。
+            effectiveSize,
             // **既存の面を書き直さず、そのまま差す。** どれも
             // `{documentRef, record, …, onClose}` を受けて `root` を返す形なので、
             // タブの中身として使える——**同じ物を2つ作らない**。
@@ -2429,6 +2580,24 @@ export function createUnbakePanel(el, {
         return { list, from: 'selection', hidden: selected.size - list.length };
     }
 
+    /**
+     * 選んだ分のうち、**今の絞り込みで画面に出ているものだけ**
+     * （2026-08-31・監査 I-20260831-11）。
+     *
+     * `chosenRecords()` は「選んでいなければ見えているもの全部」を返す仕様なので、
+     * **選択を前提にする操作からは直接呼べない**——何も選ばずに「選択を削除」へ
+     * 落ちてくると、画面の全件が対象になってしまう。ここで空を返して止める。
+     *
+     * これを使わずに `records.filter(… selected.has …)` と書くと、
+     * **絞り込みで隠れている分まで巻き込む**。削除は取り消せないので、
+     * 生の `selected` を引くのは表示（`data-selected`）と選び直しだけにする。
+     */
+    function selectedShownRecords() {
+        if (selected.size === 0) return [];
+        const chosen = chosenRecords();
+        return chosen.from === 'selection' ? chosen.list : [];
+    }
+
     function setSelected(id, on) {
         const key = String(id ?? '');
         if (!key) return;
@@ -2626,8 +2795,9 @@ export function createUnbakePanel(el, {
                 // **待っている姿も描き直しを越えさせる**。
                 // 越えさせないと、一覧が描き直された瞬間に
                 // **順番待ちが画面から消える**（押せるように見えて、押しても何も起きない）。
-                trackHeld(busyKey, button);
-                applyHeld(button, true, t('replay.queued'));
+                // **登録簿は1つ**（2026-09-01）——待ち専用の簿は誰も読んでいなかった。
+                trackReplay(busyKey, button);
+                applyReplayState(busyKey);
             }
             button.addEventListener('click', (event) => {
                 event?.stopPropagation?.();
@@ -2773,6 +2943,57 @@ export function createUnbakePanel(el, {
             verdictPalette = wanted === 'deuteranopia' ? 'deuteranopia' : 'default';
             root.setAttribute('data-palette', verdictPalette);
         }
+        // **★の名簿も配る**（`I-20260830-11`）。
+        //
+        // 「押した面がその場で描き直す」は押した面については正しいが、
+        // **もう一方の面については何も言っていない**。配らないと、後から開いた面が
+        // 古い名簿を持ち、次にそこで1つ押した瞬間に**古い名簿全体**を送って
+        // 相手の変更をサーバから消す。
+        const nextFavorites = next.favorite_ids ?? next.favoriteIds;
+        const nextUnfavorites = next.unfavorite_ids ?? next.unfavoriteIds;
+        if (Array.isArray(nextFavorites) || Array.isArray(nextUnfavorites)) {
+            if (Array.isArray(nextFavorites)) {
+                ourFavorites.clear();
+                for (const id of nextFavorites) ourFavorites.add(String(id));
+            }
+            if (Array.isArray(nextUnfavorites)) {
+                ourUnfavorites.clear();
+                for (const id of nextUnfavorites) ourUnfavorites.add(String(id));
+            }
+            // **ここで描き直さない。** `applyDisplay` は末尾で必ず `render()` を
+            // 呼ぶので、足すと飾りの重複になる（変異させても赤くならない行が残る）。
+        }
+        /*
+         * **絞り込みも配る**（`I-20260830-32`）。
+         *
+         * ★の名簿と**同じ形の穴**だった。「面の中の絞り込み帯が持ち、押した時点で
+         * 効く」は押した面については正しいが、**もう一方の面については何も言って
+         * いない**。しかも `persistFilters()` は4つを**まとめて**送るので、
+         * 配らないと次のようになる（実測 2026-08-31）:
+         *
+         *   1. サイドバーで ★ の絞り込みを入れる → サーバは `favorites_only: true`
+         *   2. 全画面はその報せを受けないので、古い `false` を持ったまま
+         *   3. 全画面で**別の**チップ（⤓ など）を1つ押す → 4つまとめて送るので
+         *      **`favorites_only: false` が上書きされ、1 の操作が消える**
+         *
+         * 押した本人の画面では正常に見え、エラーも記録も出ない。
+         */
+        if (next.hidden_verdicts !== undefined || next.hiddenVerdicts !== undefined) {
+            const wanted = next.hidden_verdicts ?? next.hiddenVerdicts;
+            if (Array.isArray(wanted)) {
+                hidden.clear();
+                for (const value of wanted) hidden.add(String(value));
+            }
+        }
+        if (next.favorites_only !== undefined || next.favoritesOnly !== undefined) {
+            favoritesOnly = (next.favorites_only ?? next.favoritesOnly) === true;
+        }
+        if (next.downloadable_only !== undefined || next.downloadableOnly !== undefined) {
+            downloadableOnly = (next.downloadable_only ?? next.downloadableOnly) === true;
+        }
+        if (next.needs_node_only !== undefined || next.needsNodeOnly !== undefined) {
+            needsNodeOnly = (next.needs_node_only ?? next.needsNodeOnly) === true;
+        }
         if (next.tile_size !== undefined || next.tileSize !== undefined) {
             tileSize = Math.max(0, Math.min(4, Number(next.tile_size ?? next.tileSize) || 0));
             columnsSelect.value = String(tileSize);
@@ -2839,8 +3060,20 @@ export function createUnbakePanel(el, {
      */
     function offerLeftoverQueue() {
         if (offeredLeftoverQueue) return;
-        let ids = [];
-        try { ids = readStored(REPLAY_QUEUE_KEY, []) || []; } catch { ids = []; }
+        let stored = null;
+        try { stored = readStored(REPLAY_QUEUE_KEY, null); } catch { stored = null; }
+        /*
+         * **持ち主が今も生きているなら、それは「残り」ではなく現役の行列**
+         * （I-20260831-12）。ここで claim すると、同じページで開いた2枚目が
+         * 1枚目の分を投入して**同じ絵を2回焼く**。
+         *
+         * **控えも消さない。** 消すと、1枚目が落ちたときに本当に失われる。
+         * 古い形（素の配列）は持ち主が判らないが、それは版を跨いだ控え＝
+         * 読み込み直した後なので、今までどおり「残り」として扱ってよい。
+         */
+        const owner = (stored && !Array.isArray(stored)) ? stored.owner : null;
+        if (owner !== null && owner !== panelId && LIVE_PANELS.has(owner)) return;
+        const ids = Array.isArray(stored) ? stored : (stored?.ids || []);
         if (!Array.isArray(ids) || ids.length === 0) return;
         offeredLeftoverQueue = true;
         // **今の一覧に居るものだけ。** 消された記録を戻しても押せない。
@@ -3310,14 +3543,16 @@ export function createUnbakePanel(el, {
         const items = [
             {
                 key: 'models',
-                label: `⤓ ${all ? t('download.missing.all') : t('download.missing')}（${canModel}）`,
+                label: `⤓ ${all ? t('download.missing.all') : t('download.missing')}`
+                    + t('ui.count', { p1: canModel }),
                 title: t('download.missing.help'),
                 run: () => downloadMissing(),
                 off: !downloadIo || !canModel,
             },
             {
                 key: 'nodes',
-                label: `⊞ ${all ? t('nodes.missing.all') : t('nodes.missing')}（${canNode}）`,
+                label: `⊞ ${all ? t('nodes.missing.all') : t('nodes.missing')}`
+                    + t('ui.count', { p1: canNode }),
                 title: t('nodes.missing.help'),
                 run: () => offerNodeInstall(chosen()),
                 off: !nodePackIo || !canNode,
@@ -3385,8 +3620,8 @@ export function createUnbakePanel(el, {
         }
         if (!packs.length) {
             // **推し量らない。** 地図に無いものは名前を出さずに、そう言う。
-            appendLog(t('nodes.unknownPack', { list: nodes.join('、') }));
-            showToast(t('nodes.unknownPack', { list: nodes.join('、') }));
+            appendLog(t('nodes.unknownPack', { list: nodes.join(t('core.sep.list')) }));
+            showToast(t('nodes.unknownPack', { list: nodes.join(t('core.sep.list')) }));
             goOn();
             return null;
         }
@@ -3396,19 +3631,20 @@ export function createUnbakePanel(el, {
             // **入れる側の語で終わる。** 既定のままだと「消しました」と出る。
             doneKey: 'nodes.install.queued',
             destructive: false,
-            files: packs.map(pack => ({ name: pack.title, note: pack.nodes.join('、'), bytes: null })),
+            files: packs.map(pack => ({ name: pack.title, note: pack.nodes.join(t('core.sep.list')), bytes: null })),
             // **入れるのは Manager だと書く。** 誰が何をするのかを画面で言う。
             warnings: [t('nodes.install.warning')],
             onConfirm: async () => {
                 const result = await nodePackIo.install(manager.api, packs);
                 if (result.queued.length) {
-                    appendLog(t('nodes.install.queued', { list: result.queued.join('、') }));
+                    appendLog(t('nodes.install.queued', { list: result.queued.join(t('core.sep.list')) }));
                     showToast(t('nodes.install.restart'), { sticky: true });
                 }
                 return {
                     ok: result.failed.length === 0,
                     removed: result.queued,
-                    failed: result.failed.map(item => `${item.id}（${item.detail}）`),
+                    failed: result.failed.map(
+                        item => `${item.id}` + t('ui.count', { p1: item.detail })),
                 };
             },
             onReturn: () => goOn(),
@@ -3658,7 +3894,8 @@ export function createUnbakePanel(el, {
      */
     function confirmDeleteSelected() {
         if (!recordsIo?.remove) { appendLog(t('record.delete.unavailable')); return null; }
-        const targets = records.filter(item => selected.has(String(item?.id ?? '')));
+        // **絞り込みで隠れている分は相手にしない**（I-20260831-11）。削除は取り消せない。
+        const targets = selectedShownRecords();
         if (targets.length === 0) return null;
 
         const warnings = [];
@@ -3734,7 +3971,10 @@ export function createUnbakePanel(el, {
         }
         closeContextMenu();
 
-        const count = selected.size;
+        // **件数は「実際に相手にする数」を出す**（I-20260831-11）。
+        // `selected.size` を出すと、帯が「2件は隠れています」と言っている横で
+        // 品書きだけが3件と主張し、押すと本当に3件消える、という形になっていた。
+        const count = selectedShownRecords().length;
         /*
          * **献立を絞る**（2026-08-26 利用者の指示）。
          *
@@ -3778,13 +4018,12 @@ export function createUnbakePanel(el, {
              */
             { key: 'replay', label: t('menu.replaySelected', { count }), title: t('menu.replaySelected.help'),
               run: () => {
-                  for (const item of records) {
-                      // **必ず行列へ。** 同じ拍で何件も投げると競走になる。
-                      // **取り消しにしない**（2026-08-27）。まとめての「再現」で
-                      // 並んでいる分を外すと、押した人からは「効かない」に見える。
-                      if (selected.has(String(item?.id ?? ''))) {
-                          enqueueReplay(item, { toggle: false });
-                      }
+                  // **必ず行列へ。** 同じ拍で何件も投げると競走になる。
+                  // **取り消しにしない**（2026-08-27）。まとめての「再現」で
+                  // 並んでいる分を外すと、押した人からは「効かない」に見える。
+                  // **絞り込みで隠れている分は投げない**（I-20260831-11）。
+                  for (const item of selectedShownRecords()) {
+                      enqueueReplay(item, { toggle: false });
                   }
               },
               // **▶ と同じ条件で出す。** 書庫から取り直せないと再現できないので、
@@ -3967,9 +4206,15 @@ export function createUnbakePanel(el, {
             appendLog(t('models.unavailable'));
             return null;
         }
-        const chosenIds = new Set([...selected].map(id => String(id)));
-        if (chosenIds.size === 0) { appendLog(t('models.sweep.noSelection')); return null; }
-        const targets = records.filter(record => chosenIds.has(String(record?.id ?? '')));
+        // **絞り込みで隠れている分は数えない**（I-20260831-11）。
+        // ここで数え落とすと「選んだ分の外に使い手が居ない」の判定が狂い、
+        // まだ使っているモデルを消してよい側へ入れてしまう。
+        const targets = selectedShownRecords();
+        if (targets.length === 0) { appendLog(t('models.sweep.noSelection')); return null; }
+        // 「選んだ分の外に使い手が居るか」を数える相手も、**同じ顔ぶれ**にする。
+        // ここを `selected` から作ると、隠れている分を「外の使い手」と数えて
+        // 消せるものを消さない側へ倒れる（安全側だが、件数の説明が嘘になる）。
+        const chosenIds = new Set(targets.map(record => String(record?.id ?? '')));
 
         // **候補は要約から拾う。** 書庫の `usage` も要約（`checkpoint` と `loras`）で
         // 数えているので、**同じ材料で揃える**——本体を読みに行くと、数える側と
@@ -4313,12 +4558,22 @@ export function createUnbakePanel(el, {
                     }));
                 },
             });
+            // **到達しない内訳を読ませない**（`I-20260831-55`）。
+            //
+            // `skipped.alreadyDone` は `stampedSignatures` / `wantedSignaturesOf`
+            // の両方が関数のときにしか増えないが、`web/unbake.js` は
+            // **両方 null 固定**である——そこには「**「出ている」の判断は刻印だけ。
+            // 推定で回し直しを止めると、「出したはずの絵が無い」が起きる**」という
+            // 決定が書いてある。つまり**未配線ではなく仕様**で、この数は
+            // **構造的に必ず 0**。毎回「既に絵がある0件」と読ませる意味が無い。
+            //
+            // **数え上げそのものは残す**（`batchQueue` の能力は消さない）。
+            // 刻印から署名を作れる日が来たら、渡す側を1行足すだけで戻る。
             appendLog(t('batch.done', {
                 done: result.done.length,
                 failed: result.failed.length,
                 blocked: result.skipped.blocked,
                 pending: result.skipped.pending,
-                already: result.skipped.alreadyDone,
                 trimmed: result.skipped.trimmed,
             }));
             // **並べ替えの効きを段で出す。** 足し算できない形で。
@@ -4393,7 +4648,7 @@ export function createUnbakePanel(el, {
     function downloadButtonText() {
         const shown = shownRecords();
         const waiting = shown.filter(isDownloadable).length + shown.filter(needsNode).length;
-        return `${t('download.menu')}（${waiting}）`;
+        return `${t('download.menu')}` + t('ui.count', { p1: waiting });
     }
 
     /**
@@ -4744,7 +4999,20 @@ export function createUnbakePanel(el, {
         let companions = [];
         for (const base of companionBases) {
             const status = await companionIo.status(base);
-            if (!status || status.missingCount <= 0) continue;
+            // **「読めなかった」と「0個」を混ぜない**（`I-20260830-17`）。
+            //
+            // `!status` は問い合わせが失敗した状態で、伴走が要らないことを
+            // 意味しない。同じ `continue` に落としていたので、総量は
+            // **判っている分だけ**になり、しかも「判らない分が在る」とも言わなかった。
+            if (!status) { unknown += 1; continue; }
+            // **「表に無い」も判らない側**（2026-08-31・走査3周目）。
+            //
+            // 伴走の表に載っていない系統は `missingCount: 0` で返るが、
+            // それは「要らない」ではなく「**こちらが知らない**」である。
+            // 上の `!status`（問い合わせが失敗した）と同じ扱いにする
+            // ——`I-20260830-17` で分けたのと同じ線引き。
+            if (status.known === false) { unknown += 1; continue; }
+            if (status.missingCount <= 0) continue;
             companions.push({ baseModel: base, ...status });
             bytes += status.missingBytes;
             // **大きさの判らない伴走を「0」と混ぜない。**
@@ -4829,9 +5097,23 @@ export function createUnbakePanel(el, {
             if (stopped) return;
             // **走っていないことも書く。** 空にすると「出ない」と読まれる
             // ——実際に「進捗が出ない」と報告された（2026-08-23）。
-            const done = Number(state?.bytes) || 0;
-            const total = Number(state?.totalBytes) || 0;
-            const bytes = state?.state === 'running'
+            /*
+             * **1本ぶんの数字は、走っている1本から読む**（`I-20260830-15`）。
+             *
+             * 元は `state.bytes`（`_download` が展開する1本ぶん）を
+             * `state.totalBytes`（**全体の合計**）で割っていた。既定で3本並列なので
+             * 毎回ずれる（実測「2.0GB / 12.0GB（16%）」・本当は50%）。
+             *
+             * 走っているかの判定も `state.state`（旧い1本ぶんの状態）ではなく
+             * **`running[]` が空かどうか**で見る。前者は1本目が終わった時点で
+             * `running` から外れ、残り2本が走っている最中に**表示が空文字**になっていた。
+             */
+            const inFlight = Array.isArray(state?.running) ? state.running : [];
+            const current = inFlight.find(item => item?.name === downloadAt.name)
+                ?? inFlight[0] ?? null;
+            const done = Number(current?.bytes) || 0;
+            const total = Number(current?.totalBytes) || 0;
+            const bytes = current
                 ? (total
                     ? t('download.bytes', {
                         done: sizeText(done), total: sizeText(total),
@@ -4846,13 +5128,22 @@ export function createUnbakePanel(el, {
              * 相手が居るので、**判らないときはバーを動かさず「判らない」と言う**
              * ——動かすと、進んでいない時に進んで見える。
              */
-            const running = Array.isArray(state?.running) ? state.running : [];
+            const running = inFlight;
             const doneAll = Number(state?.doneBytes) || 0;
-            const totalAll = Number(state?.totalBytes) || 0;
+            const totalAll = Number(state?.totalBytesAll) || 0;
+            // **総量の判らない相手が1本でも居れば、割合を出さない**（`I-20260830-16`）。
+            //
+            // 合計は「判っている分」だけの和なので、判らない相手が混ざると
+            // 分子が分母を超える。元は `Math.min(100, …)` で頭を押さえていたため
+            // **`670 B / 200 B（100%）` と言い切って固まって**いた
+            // （`data-unknown` も `false` のまま）。サーバはわざと
+            // `unknownTotals` で数えて渡している。**唯一の消費者がそれを捨てていた。**
+            const unknownTotals = Number(state?.unknownTotals) || 0;
             const speed = measureSpeed(doneAll);
             if (running.length) {
                 downloadPanel.style.display = '';
-                const percent = totalAll ? Math.min(100, Math.floor((doneAll / totalAll) * 100)) : null;
+                const percent = (totalAll && !unknownTotals)
+                    ? Math.min(100, Math.floor((doneAll / totalAll) * 100)) : null;
                 downloadFill.style.width = percent === null ? '0%' : `${percent}%`;
                 downloadBar.setAttribute('data-unknown', percent === null ? 'true' : 'false');
                 downloadText.textContent = t(percent === null
@@ -5345,7 +5636,7 @@ export function createUnbakePanel(el, {
             marks.push(element('span', {
                 class: 'unbake-tile-mark', 'data-mark': 'needs-node',
                 // **名前は吹き出しで言う。** 印は場所を取らない形に留める。
-                text: '⊞', title: t('tile.needsNode', { list: missingNodes.join('、') }),
+                text: '⊞', title: t('tile.needsNode', { list: missingNodes.join(t('core.sep.list')) }),
             }));
         }
         // **判定を字で出す。ただし上の段には出さない**（2026-08-22 利用者の選択）。
@@ -5667,6 +5958,10 @@ export function createUnbakePanel(el, {
         tiles.style.display = (shown.length === 0 || !asTiles) ? 'none' : '';
         controls.style.display = nothing ? 'none' : '';
 
+        // **描き終えてから、前の描画の釦を捨てる**（2026-09-01・走査16周目）。
+        // ここでなら新しい釦は本文に付いていて、古い方は外れている——
+        // 足す所や当てる所では、まだ付いていない釦まで捨ててしまう。
+        pruneReplayButtons();
     }
 
     function applyWidth(next, { remember = true } = {}) {
@@ -6112,6 +6407,9 @@ export function createUnbakePanel(el, {
         get detailView() { return detailView; },
         get confirmView() { return confirmView; },
         destroy() {
+            // **生きている面の一覧から外す**（I-20260831-12）。外さないと、
+            // 畳んだ面の行列が二度と「前回の残り」として戻せなくなる。
+            LIVE_PANELS.delete(panelId);
             closeOverlays();
             observer?.disconnect();
             for (const timer of timers) globalThis.clearTimeout?.(timer);

@@ -7,8 +7,16 @@ SPDX-License-Identifier: GPL-3.0-or-later
 **実際には死んでいた**（読み込まれるだけで、画面からは届かない）。ここが最初の
 呼び手になる。
 
-登録する経路は下のとおり。**この表と ``registered_paths()`` が食い違ったら
-検査が赤くなる**——文書と実物がずれるのは、実際にこのパッケージで何度も起きた。
+登録する経路は下のとおり。**この表と ``registered_paths()`` と、実際の
+``@routes.*`` の三者が食い違ったら検査が赤くなる**
+——文書と実物がずれるのは、実際にこのパッケージで何度も起きた。
+
+**三者にしたのは 2026-08-31**（``I-20260831-61``）。それまで検査は
+**表と ``registered_paths()`` という宣言同士**しか比べておらず、
+``@routes.*`` の現物とは一度も突き合わせていなかった。だから
+**両方から同時に漏れていた ``output-raw`` と ``output-delete`` は検査の外**に在り、
+消しても改名しても赤くならなかった。宣言だけを見る検査は、宣言が揃って
+間違っているときに黙る。
 
 =====================================  =========================================
 ``GET  /unbake/settings``              設定を読む。**秘密の値は返さない**
@@ -21,6 +29,8 @@ SPDX-License-Identifier: GPL-3.0-or-later
                                        （**種類と名前で引く**・パスは受けない）
 ``GET  /unbake/outputs``               出力画像。``?id=`` で印つきの分、
                                        無ければ**生の値**をページで返す
+``POST /unbake/output-raw``            名指しした絵だけ、生の値を返す（**500件まで**）
+``POST /unbake/output-delete``         出た絵を1枚消す（**取り消せない**）
 ``GET  /unbake/raindrop``              「あとで読む箱」の一覧（**読むだけ**）
 ``GET  /unbake/model-companions``      この系統が本体のほかに要るもの（**落とさない**）
 ``POST /unbake/download-model-companions`` 足りない伴走を落とす
@@ -51,8 +61,10 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
+import logging
 import os
 import threading
 import time
@@ -67,7 +79,8 @@ from .models import ModelError, delete as delete_model_file, plan_delete, usage 
 from .records import RecordError, delete_record, save_record
 from .model_previews import cached_miss, cached_preview, fetch_preview, still_for
 from . import originals
-from .outputs import RAW_KEYS, delete_output, get_output_scanner, recover_graph
+from .outputs import (RAW_KEYS, delete_output, get_output_scanner, read_raw_for,
+                      recover_graph)
 from .raindrop import list_bookmarks
 from .services.recipe_output_index import get_recipe_output_index
 from .environment import (
@@ -76,6 +89,9 @@ from .environment import (
     install_environment,
 )
 from .settings import FileSettings
+from .utils.json_io import dumps_json_strict
+
+logger = logging.getLogger(__name__)
 
 #: 参照画像として返してよい型。**中身の型で決める**（拡張子は名乗りにすぎない）。
 _CONTENT_TYPES = {
@@ -83,6 +99,15 @@ _CONTENT_TYPES = {
     ".png": "image/png",
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
+    # **見つけられる物は出せること**（2026-09-01・走査10周目）。
+    # `library.PREVIEW_SUFFIXES` に在って ここに無い拡張子は、
+    # ディスクに在るのに 404 になる。関係は
+    # `tests/test_preview_suffixes_agree.py` が留める。
+    ".gif": "image/gif",
+    # **見つけられる物は出せること**（2026-09-01・走査10周目）。
+    # `library.PREVIEW_SUFFIXES` に在って ここに無い拡張子は、
+    # ディスクに在るのに 404 になる。関係は
+    # `tests/test_preview_suffixes_agree.py` が留める。
 }
 
 _settings: Optional[FileSettings] = None
@@ -113,8 +138,37 @@ async def _download_file_for_environment(url, save_path, *, progress_callback=No
     **`kind` は渡さない。** 伴走の置き場は目録の `folder`（`text_encoders` /
     `ultralytics_bbox` など）で、`ALLOWED_KINDS` には無い。呼び手が
     ComfyUI の `folder_paths` で解決済みなので、その `save_path` をそのまま使う。
+
+    **進みを呼び手へ返す**（2026-09-01・走査5周目で直した）。ここは
+
+        on_progress=(lambda written, total: None) if progress_callback is None else None
+
+    と書いてあった——**条件が逆で、渡された時にだけ捨てていた。**
+    `progress_callback` は `known_model_downloader` → `UnbakeEnvironment.download_file`
+    と**3層を通って**ここへ届くのに、最後の1行で必ず消えるので、
+    **この経路の進みは生まれてから一度も出ていない。**
+
+    **そのまま繋ぐと動かない。** 呼び手の `progress_callback` は
+    `Callable[..., Awaitable[None]]`＝**async** で、`download_model` の
+    `on_progress` は **worker スレッドから同期で呼ばれる**。素直に渡すと
+    「待たれないコルーチン」を作るだけで、やはり進みは出ない（しかも黙る）。
+    ループを先に掴んでおいて、スレッドから投げ返す。
     """
     import asyncio
+
+    loop = asyncio.get_running_loop()
+
+    def on_progress(written: int, total: Optional[int]) -> None:
+        if progress_callback is None:
+            return
+        try:
+            result = progress_callback(written, total)
+            if asyncio.iscoroutine(result):
+                # **待たない。** 進みの報せが遅れても取得は続ける。
+                asyncio.run_coroutine_threadsafe(result, loop)
+        except Exception:
+            # **観測側の失敗で本体を止めない**（進みが出なくなるだけにする）。
+            logger.debug("companion download progress callback failed", exc_info=True)
 
     def run():
         return download_model(
@@ -123,9 +177,7 @@ async def _download_file_for_environment(url, save_path, *, progress_callback=No
             filename=os.path.basename(str(save_path)),
             api_key=str(get_settings().get("civitai_api_key", "") or ""),
             target=str(save_path),
-            on_progress=(
-                (lambda written, total: None) if progress_callback is None else None
-            ),
+            on_progress=on_progress,
         )
 
     try:
@@ -245,8 +297,28 @@ def _preview_size(record: Dict[str, Any]) -> Optional[Dict[str, int]]:
 
     ここは補いなので、開けない・壊れている・Pillow が無い、のどれでも
     **記録の取得そのものを失敗させない**（寸法が無いのは今まで通り）。
+
+    **Unbake 自身が書いた記録も見る**（``I-20260830-29``）。
+
+    元は ``file_path`` か ``preview_path`` しか見ていなかった。ところが
+    ``preview_path`` は**この repo に書き手が1つも無い幽霊の鍵**で、Unbake が
+    書く ``.unbake.json`` は ``file_path`` を持たない——つまり**自分で作った
+    記録には辿れる手掛かりがゼロ**だった。材料はディスクに在る（同じ名前の
+    画像が隣に在り、``/unbake/record-preview`` はそれを返している）のに、
+    読む経路だけが繋がっていなかった。
+
+    結果、寸法の無いレシピは ``resolveTargetSize()`` が手掛かりを全部外して
+    **1024x1024 の正方形**へ落ちる。判定は「再現性・高」のまま**縦横比の違う
+    別の絵**が出る（``correctTransposedSize()`` も所有記録では永久に発火しない）。
+
+    索引に在る記録の対しか返さない ``Library.preview_path`` へ落とす——
+    画面から届くのは id だけなので、``../`` を組み立てる余地はここにも無い。
     """
-    path = record.get("file_path") or record.get("preview_path")
+    path = record.get("file_path")
+    if not isinstance(path, str) or not path:
+        record_id = record.get("id")
+        found = get_library().preview_path(str(record_id)) if record_id else None
+        path = str(found) if found else None
     if not isinstance(path, str) or not path:
         return None
     try:
@@ -273,22 +345,29 @@ def scan_outputs(*, offset: int = 0, limit: int = 200, keys: Optional[List[str]]
     return get_output_scanner().page(offset=offset, limit=limit, keys=selected)
 
 
-#: 進行中のダウンロード。**同時に1つだけ。**
+#: 版ID → いま引いているもの。**これが唯一の控えである。**
 #:
-#: 束にしない（手順21）。実測で同じモデルを待つ記録は最大2件しか無く、
-#: 束ねても待ち時間はほぼ変わらないのに、「どれが落ちてどれが落ちなかったか」を
-#: 人が追えなくなる。
-_download: Dict[str, Any] = {"state": "idle"}
-
-#: 版ID → いま引いているもの。**1本ずつという前提をここで外す。**
+#: 元は `_download` という**最後に始めた1本**を指す大域が別に在り、
+#: 「もう1本走っている」の判定に使っていた。**4GB前後のチェックポイントを
+#: 何本も待つと1本ずつでは実用にならない**（実測で1件 3.9GB）ので並列にしたが、
+#: **`_download` はそのまま残り、応答の一番上へ展開され続けていた。**
 #:
-#: 元は `_download` 1つで「もう1本走っている」を拒んでいた。**4GB前後の
-#: チェックポイントを何本も待つと、1本ずつでは実用にならない**（実測で
-#: 1件 3.9GB）。Civitai は接続ごとに絞ることがあるので、本数を増やすと
-#: 合計は素直に速くなる。
+#: **これは実際に1度、利用者に見える形で壊れている**（`I-20260830-15`）——
+#: 1本ぶんの `bytes` を全体の合計 `totalBytes` で割って「2.0GB / 12.0GB（16%）」
+#: と出し（本当は50%）、走行判定も `state`（旧い1本ぶん）を見ていたので
+#: **1本目が終わった時点で、残り2本の最中に表示が空文字**になっていた。
+#:
+#: そのときは**読む側**（`web/panel/panel.js`）を直して逃げた。
+#: **作る側を直したのは 2026-08-31**（`I-20260831-66`）——`_download` を消し、
+#: 応答には**艦隊ぜんぶの数字しか載せない**。1本ぶんの数字が要るなら
+#: `running[]` の中から選ぶ。同じ階層に尺度の違う2つを並べない。
 #:
 #: **上限を置く。** 無制限に開くと、こちらの回線も相手の側も痛める。
 #: 上流（改造版 LoRA Manager）も semaphore で抑えている。
+#:
+#: **ここに載るのは `start_download` が始めた分だけ。** 伴走モデル
+#: （`POST /unbake/download-model-companions`）は `known_model_downloader` を
+#: 通るので**ここへ載らず、進みも中断も届かない**（`I-20260901-12`）。
 _downloads: Dict[str, Dict[str, Any]] = {}
 
 #: 同時に引く本数の上限。**設定にしない**——押した人が増やせる数字にすると、
@@ -372,6 +451,11 @@ def download_state() -> Dict[str, Any]:
     **3本走っていても1本ぶんしか見えず**、しかもその1本が終わっていると
     「何も走っていない」に見える——「何バイト落ちたのか判らない」の正体。
 
+    **1本ぶんの数字を、この階層へ載せない**（``I-20260831-66``）。
+    `_download` の中身をここへ展開していたので、`state` / `bytes` /
+    `totalBytes` が**どれか1本の話**なのに全体の話に見えていた。
+    1本ぶんが要るなら ``running[]`` から選ぶこと。
+
     **判らない総量を 0 と混ぜない。** `Content-Length` を返さない相手が
     居るので、総量の判らない本数を別に数えて返す。
     """
@@ -388,7 +472,6 @@ def download_state() -> Dict[str, Any]:
         else:
             unknown += 1
     return {
-        **dict(_download),
         "running": [
             {
                 "versionId": item.get("versionId"),
@@ -399,8 +482,21 @@ def download_state() -> Dict[str, Any]:
             for item in running
         ],
         "runningCount": len(running),
+        # **走っていないことも、旗ではなく数で言う。** `state: "idle"` のような
+        # 1語を戻すと、それが「艦隊の状態」なのか「どれか1本の状態」なのかが
+        # また読み手に判らなくなる（`I-20260831-66` で消したのはその形）。
         "doneBytes": done_bytes,
-        "totalBytes": total_bytes or None,
+        # **合計には別の名前を付けたままにする**（`I-20260830-15`）。
+        #
+        # ここは `totalBytes` だったが、当時この階層には `_download` が展開する
+        # **1本ぶんの `totalBytes`** も並んでいた。尺度の違う2つが同じ名前で
+        # 並ぶと必ず取り違える——実際、トーストが**1本ぶんの済みバイトを
+        # 全体の合計で割って**いた（「2.0GB / 12.0GB（16%）」・本当は50%）。
+        #
+        # **衝突の相手は `I-20260831-66` で消した**（`_download` そのものを
+        # 外した）が、名前は戻さない。`totalBytes` は `running[]` の各項が
+        # 1本ぶんとして持っており、**同じ綴りを2つの尺度で使わない**。
+        "totalBytesAll": total_bytes or None,
         "unknownTotals": unknown,
     }
 
@@ -415,7 +511,6 @@ def start_download(version_id: str, *, kind: Optional[str] = None,
     （JS 側にも同じ問い合わせが在るが、あちらは表示のため。
     ここは「何を落としてよいか」を決める境界なので、書き込む側で持つ。）
     """
-    global _download
     key = str(version_id)
     with _downloads_lock:
         # **同じ版を2本走らせない。** 同じ `.part` を2つが書くと、
@@ -445,13 +540,12 @@ def start_download(version_id: str, *, kind: Optional[str] = None,
             "error": resolved.get("error"),
             # **種類を落とさない。** 画面はこれで分類する（文言は訳されると当たらない）。
             "code": resolved.get("code", "unknown"),
-            "state": _download,
         }
 
     settings = get_settings()
     api_key = str(settings.get("civitai_api_key", "") or "")
 
-    _download = {
+    mine = {
         "state": "running",
         "versionId": str(version_id),
         "kind": resolved["kind"],
@@ -460,11 +554,10 @@ def start_download(version_id: str, *, kind: Optional[str] = None,
         "totalBytes": resolved.get("bytes"),
         "canceled": False,
     }
-    # **版ごとの控えも同じ実体にする。** 別の辞書にすると、中断の印が
-    # 片方にしか立たず「押したのに止まらない」になる。
+    # **控えは版ごとの1箇所だけ。** 同じ実体を別の大域からも指していたのが
+    # `I-20260831-66` の元だった。中断の印はこの実体に立てる。
     with _downloads_lock:
-        _downloads[key] = _download
-    mine = _download
+        _downloads[key] = mine
 
     def progress(written: int, total: Optional[int]) -> None:
         mine["bytes"] = written
@@ -483,8 +576,7 @@ def start_download(version_id: str, *, kind: Optional[str] = None,
             # **落とす先の根を渡す**（2026-08-28）。選べるのは ComfyUI が
             # 知っている置き場の中だけで、合う物が無ければ既定へ戻る。
             root=str(get_settings().get("download_root", "") or ""),
-            # **自分の実体を見る。** `_download` は最後に別の辞書へ差し替わるので、
-            # そちらを見ると中断の印を取り落とす。
+            # **自分の実体を見る。** 中断の印はこの1本の控えに立つ。
             should_cancel=lambda: bool(mine.get("canceled")),
         )
     except DownloadError as error:
@@ -493,10 +585,10 @@ def start_download(version_id: str, *, kind: Optional[str] = None,
         # 途中まで書いた `.part` は `download_model` が消している。
         code = getattr(error, "code", "unknown")
         state = "canceled" if code == "canceled" else "failed"
-        _download = {**mine, "state": state, "error": str(error), "code": code}
+        finished = {**mine, "state": state, "error": str(error), "code": code}
         with _downloads_lock:
-            _downloads[key] = _download
-        return {"ok": False, "error": str(error), "code": code, "state": dict(_download)}
+            _downloads[key] = finished
+        return {"ok": False, "error": str(error), "code": code, "state": dict(finished)}
     except BaseException as error:
         # **枠を握ったまま落ちない**（`D-20260828-01` E3）。
         #
@@ -509,16 +601,16 @@ def start_download(version_id: str, *, kind: Optional[str] = None,
         #
         # `BaseException` で受けるのは、`KeyboardInterrupt` や
         # `SystemExit` でも枠を返す必要があるため。**握り潰さずに投げ直す。**
-        _download = {**mine, "state": "failed", "error": str(error) or type(error).__name__,
-                     "code": "unexpected"}
         with _downloads_lock:
-            _downloads[key] = _download
+            _downloads[key] = {**mine, "state": "failed",
+                               "error": str(error) or type(error).__name__,
+                               "code": "unexpected"}
         raise
 
-    _download = {**mine, "state": "done", **result}
+    finished = {**mine, "state": "done", **result}
     with _downloads_lock:
-        _downloads[key] = _download
-    return {"ok": True, **result, "state": dict(_download)}
+        _downloads[key] = finished
+    return {"ok": True, **result, "state": dict(finished)}
 
 
 def cancel_download(version_id: Optional[str] = None) -> Dict[str, Any]:
@@ -526,8 +618,13 @@ def cancel_download(version_id: Optional[str] = None) -> Dict[str, Any]:
 
     画面の「止める」は1つしか無いので、既定は全部にする——**1本だけ止まって
     残りが走り続ける**と、押した人からは止まっていないように見える。
+
+    **印を立てるのは走っている控えだけ**（``I-20260831-66``）。以前はここで
+    `_download["canceled"] = True` も書いていたが、`_download` が指すのは
+    **最後に状態が変わった1本**なので、直前に1本終わっていると
+    **終わった控えに「中断された」と書く**ことになっていた。下の輪で
+    走っているものへは正しく立つので、あの行は余計でしかなかった。
     """
-    _download["canceled"] = True
     stopped = []
     with _downloads_lock:
         for key, item in _downloads.items():
@@ -536,7 +633,7 @@ def cancel_download(version_id: Optional[str] = None) -> Dict[str, Any]:
             if item.get("state") == "running":
                 item["canceled"] = True
                 stopped.append(key)
-    return {**dict(_download), "canceled": True, "stopped": stopped}
+    return {"ok": True, "canceled": True, "stopped": stopped}
 
 
 def raindrop_bookmarks(
@@ -636,6 +733,89 @@ def record_outputs(record_id: str, *, refresh: bool = True) -> Dict[str, Any]:
     return {"outputs": outputs, "total": len(outputs)}
 
 
+def companion_download_result(entry: Any, outcome: Dict[str, Any]) -> Dict[str, Any]:
+    """伴走モデル1本の取得結果を、画面が読む形へ直す。
+
+    このファイルの決めごとどおり、**HTTP から切り離してある**——
+    `POST /unbake/download-model-companions` はこれを呼ぶだけ。
+
+    **大きさが台帳と違うことを捨てない**（2026-09-01・走査7周目）。
+    `known_model_downloader._size_warning` は「落とした物の大きさが台帳と
+    5% 以上ずれている」を計算して `size_warning` に載せる——**中身が違う物を
+    掴んだかもしれない**という唯一の合図で、削除はせず警告に留める設計になっている。
+    ところが**ここが落としていた**ので、repo 全体で読み手が0件だった
+    （サーバの `logger.warning` にしか残らず、画面からは見えない）。
+    伴走モデルは数GBなので、掴み直しの判断材料がここしか無い。
+    `tests/produced_signal_is_consumed_test.mjs` が留めている型そのもの
+    （作る側は正しく、唯一の受け手が捨てる）。
+    """
+    return {
+        "key": entry.key,
+        "filename": entry.filename,
+        "ok": bool(outcome.get("success")),
+        "skipped": bool(outcome.get("skipped")),
+        "reason": outcome.get("reason"),
+        "error": outcome.get("error"),
+        "pageUrl": outcome.get("page_url"),
+        "sizeWarning": outcome.get("size_warning"),
+        "bytes": outcome.get("size_bytes"),
+        "expectedBytes": outcome.get("expected_size_bytes"),
+    }
+
+
+def civitai_version_view(version_id: str, *, kind: Optional[str] = None) -> Dict[str, Any]:
+    """版IDから、**本当のファイル名と SHA256** を引いた応答本文（落とさない）。
+
+    このファイルの決めごとどおり、**HTTP から切り離してある**——
+    `GET /unbake/civitai-version` はこれを呼ぶだけ。切り離す前は口の中で
+    組み立てていたので、**応答の形を検査から一度も当てられなかった**
+    （実際に `code` が抜けていたのを誰も捕まえなかった・2026-09-01）。
+
+    **取れなかったことを「存在しない」と混ぜない。** 理由は `ok: False` と
+    `code` で返し、HTTP は 200 のまま（呼び手が「引けなかった1件」として数える）。
+    """
+    version_id = str(version_id or "").strip()
+    if not version_id.isdigit():
+        return {"ok": False, "error": "id must be a number", "code": "setup"}
+
+    api_key = str(get_settings().get("civitai_api_key", "") or "")
+    resolved = resolve_version(version_id, kind=kind or None, api_key=api_key)
+    if not resolved.get("ok"):
+        # **種類も返す**（2026-09-01・走査5周目）。ここは `error`（英語の文）だけを
+        # 返していたが、**読み手は既に `code` を見ていた**——`web/unbake.js` の
+        # `if (body?.code === 'rate_limited')` は「**上限に当たったことは言う。
+        # 黙ると『版が消えた』と読まれる**」という注記つきで書かれているのに、
+        # **作る側が一度も載せていなかったので、この分岐は生まれてから一度も
+        # 発火していない。** 上限に当たった版は黙って「引けなかった1件」へ落ち、
+        # 注記が防ごうとしていた誤読がそのまま起きていた。
+        #
+        # 同じ解決器の `code` を `start_download` は「**種類を落とさない。**
+        # 画面はこれで分類する（文言は訳されると当たらない）」と明記して
+        # 保持している——**同じ値の扱いが口ごとに割れていた。**
+        #
+        # `tests/produced_signal_is_consumed_test.mjs` では捕まらない。
+        # あれが見るのは「**作る側が載せた鍵に読み手が居るか**」で、ここは
+        # **読み手が居る鍵を作る側が載せていない**という逆向きだから。
+        return {
+            "ok": False,
+            "error": resolved.get("error"),
+            "code": resolved.get("code", "unknown"),
+            # 待てば通るものは、あと何秒かを渡す（`resolve_version` が計算済み）。
+            "retryAfter": resolved.get("retryAfter"),
+        }
+    return {
+        "ok": True,
+        "versionId": version_id,
+        "filename": resolved.get("filename"),
+        "kind": resolved.get("kind"),
+        "sha256": resolved.get("sha256"),
+        "bytes": resolved.get("bytes"),
+        "name": resolved.get("name"),
+        "modelName": resolved.get("modelName"),
+        "baseModel": resolved.get("baseModel"),
+    }
+
+
 # -- ComfyUI への登録 ----------------------------------------------------
 
 
@@ -657,23 +837,51 @@ def register_routes() -> bool:
     if routes is None:
         return False
 
+    def json_response(payload, status=200):
+        """**`NaN` / `Infinity` を本文へ出さない**（2026-09-01・走査9周目）。
+
+        `web.json_response` の既定は `json.dumps`＝`allow_nan=True` なので、
+        **非有限の float がそのまま `NaN` として本文へ出る**。JSON にその
+        literal は無いので、ブラウザの `JSON.parse` は
+        `Unexpected token 'N'` で落ちる——**記録が1件も開けなくなる。**
+
+        **絵空事ではない。** `unbake/utils/json_io.py` が実測を書いている:
+        毎回実行し直したいノード（WAS Node Suite のテキスト系・`WidgetToString`）は
+        `IS_CHANGED` を `float('nan')` で返し、その値が画像のメタデータから
+        `*.recipe.json` へそのまま渡って、**手元の346件中2件が Python の外から
+        読めなくなっていた**。`read_record` は `recover_graph` で PNG の
+        `prompt` チャンクを `json.loads` するので（**`json.loads` は `NaN` を
+        受ける**）、同じ値がこの口からも出る。
+
+        しかも `json_io.py` は「**The API layer already guards itself
+        (`recipe_handlers._json_safe`)**」と書いていたが、
+        **`recipe_handlers` はこのリポジトリに無い**（フォークの名前）——
+        つまり**守られていると書いてあるだけで、守る物が無かった**。
+        書き込み側（`records.py` / `settings.py` ほか）は
+        `dump_json_strict` を通しているので、抜けていたのは HTTP の口だけ。
+        """
+        return web.json_response(payload, status=status, dumps=dumps_json_strict)
+
     # **環境を据えるのはここ**（`D-20260828-01` E2）。据える場所がどこにも無く、
     # 伴走モデルの取得が**全件 500** を返していた。口を登録する側と同じ場所で
     # 据えれば、口が在るのに環境が無い、という組み合わせが起こらない。
     install_default_environment()
 
+    # **ディスクを触る口は `to_thread` を通す**（`I-20260831-60`）。
+    # `READ.md` の守りごと5がそう宣言しているのに、25の口のうち14が
+    # 通っていなかった。守る機械は `tests/test_event_loop_handlers.py`。
     @routes.get("/unbake/settings")
     async def _get_settings(_request):
-        return web.json_response(read_settings())
+        return json_response(await asyncio.to_thread(read_settings))
 
     @routes.post("/unbake/settings")
     async def _post_settings(request):
         try:
             payload = await request.json()
         except (ValueError, json.JSONDecodeError):
-            return web.json_response({"ok": False, "error": "invalid JSON"}, status=400)
-        result = write_settings(payload)
-        return web.json_response(result, status=200 if result.get("ok") else 400)
+            return json_response({"ok": False, "error": "invalid JSON"}, status=400)
+        result = await asyncio.to_thread(write_settings, payload)
+        return json_response(result, status=200 if result.get("ok") else 400)
 
     @routes.get("/unbake/records")
     async def _get_records(request):
@@ -690,7 +898,7 @@ def register_routes() -> bool:
         # `MAX_FILES=20000` に近い環境では数十秒——その間 ComfyUI の
         # `/prompt` も進捗の WebSocket もキュー表示も**全部返らない。**
         # このファイルは既に7箇所で `to_thread` を使っている。同じ形にする。
-        return web.json_response(await asyncio.to_thread(
+        return json_response(await asyncio.to_thread(
             list_records,
             offset=_int("offset", 0),
             limit=max(1, min(1000, _int("limit", 200))),
@@ -700,10 +908,13 @@ def register_routes() -> bool:
     @routes.get("/unbake/record")
     async def _get_record(request):
         record_id = request.query.get("id", "")
-        record = read_record(record_id)
+        # **ここが一番重い**（`I-20260831-60`）。未走査なら `_ensure()` が
+        # 全件走査へ落ち、`routes.py` 自身が「初回は 5〜6秒」と測っている。
+        # ほかに `recover_graph` の PNG チャンク読みと `PIL.Image.open` も通る。
+        record = await asyncio.to_thread(read_record, record_id)
         if record is None:
-            return web.json_response({"error": "not found", "id": record_id}, status=404)
-        return web.json_response(record)
+            return json_response({"error": "not found", "id": record_id}, status=404)
+        return json_response(record)
 
     @routes.get("/unbake/outputs")
     async def _get_outputs(request):
@@ -718,7 +929,7 @@ def register_routes() -> bool:
             #（実測 4,851枚で初回 2,891ms・差分でも 187ms）。ここの既定も
             # `!= "0"` ＝ True だったので、**呼べば必ず全件 stat していた。**
             # 更新が要る呼び手（再現の直後・Sweep の開始時）は `refresh=1` を付ける。
-            return web.json_response(await asyncio.to_thread(
+            return json_response(await asyncio.to_thread(
                 record_outputs,
                 record_id,
                 refresh=request.query.get("refresh") == "1",
@@ -732,46 +943,78 @@ def register_routes() -> bool:
 
         raw_keys = [key for key in request.query.get("keys", "").split(",") if key]
         # **実測で一番重い口。** 出力 4,851枚で約45秒、その間すべての HTTP が返らない。
-        return web.json_response(await asyncio.to_thread(
+        return json_response(await asyncio.to_thread(
             scan_outputs,
             offset=_int("offset", 0),
             limit=max(1, _int("limit", 200)),
             keys=raw_keys or None,
         ))
 
+    @routes.post("/unbake/output-raw")
+    async def _post_output_raw(request):
+        """**名指しした絵だけ**、生の値を返す（`I-20260829-01`）。
+
+        起動時の走査は印だけを取る（`prompt` は転送の 97% を占めるのに、実データで
+        帰属を1件も増やしていなかった）。画面の「何が違うか」は `prompt` から出るので、
+        **記録を開いた時に、その記録の絵のぶんだけ**ここで読む。
+
+        **どの絵が要るかは画面が決める。** サーバ側の帰属（印での照合）に頼ると、
+        名前で帰属した絵が漏れる——帰属の規則は JS 側の1本が持っている。
+
+        読む場所は出力フォルダの中だけ（`read_raw_for` が実際のパスで確かめる）。
+        """
+        import asyncio
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return json_response({"error": "bad json"}, status=400)
+        items = payload.get("items")
+        if not isinstance(items, list):
+            return json_response({"error": "items must be a list"}, status=400)
+        # **上限を置く。** 1回の求めで走査全体ぶんを開かせない。
+        if len(items) > 500:
+            return json_response({"error": "too many items", "limit": 500}, status=400)
+        keys = payload.get("keys")
+        keys = [key for key in keys if isinstance(key, str)] if isinstance(keys, list) else None
+        found = await asyncio.to_thread(read_raw_for, items, keys)
+        return json_response({"raw": found, "keys": list(keys or RAW_KEYS)})
+
     @routes.post("/unbake/record-save")
     async def _post_record_save(request):
         try:
             payload = await request.json()
         except (ValueError, json.JSONDecodeError):
-            return web.json_response({"ok": False, "error": "invalid JSON"}, status=400)
+            return json_response({"ok": False, "error": "invalid JSON"}, status=400)
         recipe = payload.get("record") if isinstance(payload, dict) else None
         if not isinstance(recipe, dict):
-            return web.json_response({"ok": False, "error": "no record"}, status=400)
+            return json_response({"ok": False, "error": "no record"}, status=400)
         try:
-            result = save_one_record(
+            # 書き込みに加えて `library.scan()` の全件走査が走る（`I-20260831-60`）。
+            result = await asyncio.to_thread(
+                save_one_record,
                 recipe, payload.get("previewUrl"), payload.get("previewData"),
                 # **頼まれたときだけ置き換える**（2026-08-26 利用者の検証で必要になった）。
                 # 既定は今までどおり「上書きしない」。
                 replace=bool(payload.get("replace")),
             )
         except RecordError as error:
-            return web.json_response({"ok": False, "error": str(error)}, status=400)
+            return json_response({"ok": False, "error": str(error)}, status=400)
         # **「既に在る」は失敗ではない。** 呼び手が数を分けられるよう 200 で返す。
-        return web.json_response(result, status=200)
+        return json_response(result, status=200)
 
     @routes.post("/unbake/record-delete")
     async def _post_record_delete(request):
         try:
             payload = await request.json()
         except (ValueError, json.JSONDecodeError):
-            return web.json_response({"ok": False, "error": "invalid JSON"}, status=400)
+            return json_response({"ok": False, "error": "invalid JSON"}, status=400)
         record_id = str((payload or {}).get("id") or "").strip()
         try:
-            result = delete_one_record(record_id)
+            result = await asyncio.to_thread(delete_one_record, record_id)
         except RecordError as error:
-            return web.json_response({"ok": False, "error": str(error)}, status=400)
-        return web.json_response(result, status=200)
+            return json_response({"ok": False, "error": str(error)}, status=400)
+        return json_response(result, status=200)
 
     @routes.post("/unbake/output-delete")
     async def _post_output_delete(request):
@@ -783,39 +1026,43 @@ def register_routes() -> bool:
         try:
             payload = await request.json()
         except (ValueError, json.JSONDecodeError):
-            return web.json_response({"ok": False, "error": "invalid JSON"}, status=400)
+            return json_response({"ok": False, "error": "invalid JSON"}, status=400)
         body = payload or {}
-        result = delete_output(
+        result = await asyncio.to_thread(
+            delete_output,
             str(body.get("filename") or ""),
             str(body.get("subfolder") or ""),
         )
         # **断ったことを 200 で返さない。** 呼び手が成功と読む。
-        return web.json_response(result, status=200 if result.get("ok") else 400)
+        return json_response(result, status=200 if result.get("ok") else 400)
 
     @routes.get("/unbake/model-usage")
     async def _get_model_usage(request):
         name = request.query.get("name") or ""
         if not name.strip():
-            return web.json_response({"ok": False, "error": "no name"}, status=400)
-        return web.json_response({"ok": True, **model_usage(get_library(), name)}, status=200)
+            return json_response({"ok": False, "error": "no name"}, status=400)
+        # 索引を引くだけに見えるが、未走査なら `get_library()` が全件走査へ落ちる。
+        usage = await asyncio.to_thread(lambda: model_usage(get_library(), name))
+        return json_response({"ok": True, **usage}, status=200)
 
     @routes.get("/unbake/model-delete-plan")
     async def _get_model_delete_plan(request):
         kind = request.query.get("kind") or ""
         name = request.query.get("name") or ""
         try:
-            plan = plan_delete(kind, name)
+            plan = await asyncio.to_thread(plan_delete, kind, name)
         except ModelError as error:
-            return web.json_response({"ok": False, "error": str(error)}, status=400)
+            return json_response({"ok": False, "error": str(error)}, status=400)
         # **使用件数を必ず添える。** 実測で1つの checkpoint を39件が共有している。
-        return web.json_response({**plan, "usage": model_usage(get_library(), name)}, status=200)
+        usage = await asyncio.to_thread(lambda: model_usage(get_library(), name))
+        return json_response({**plan, "usage": usage}, status=200)
 
     @routes.post("/unbake/model-delete")
     async def _post_model_delete(request):
         try:
             payload = await request.json()
         except (ValueError, json.JSONDecodeError):
-            return web.json_response({"ok": False, "error": "invalid JSON"}, status=400)
+            return json_response({"ok": False, "error": "invalid JSON"}, status=400)
         kind = str((payload or {}).get("kind") or "").strip()
         name = str((payload or {}).get("name") or "").strip()
         try:
@@ -824,8 +1071,8 @@ def register_routes() -> bool:
             # 大きなファイルの unlink は待たせうるので、口そのものは塞がない。
             result = await asyncio.to_thread(delete_model_file, kind, name)
         except ModelError as error:
-            return web.json_response({"ok": False, "error": str(error)}, status=400)
-        return web.json_response(result, status=200)
+            return json_response({"ok": False, "error": str(error)}, status=400)
+        return json_response(result, status=200)
 
     @routes.get("/unbake/model-index")
     async def _get_model_index(request):
@@ -842,7 +1089,7 @@ def register_routes() -> bool:
 
         # 走査なので別スレッドで回す（口そのものは塞がない）。
         index = await asyncio.to_thread(model_index.get, refresh)
-        return web.json_response({"ok": True, **index}, status=200)
+        return json_response({"ok": True, **index}, status=200)
 
     @routes.get("/unbake/civitai-version")
     async def _get_civitai_version(request):
@@ -856,32 +1103,17 @@ def register_routes() -> bool:
         **落とす口とは分ける。** あちらは走らせると数GBを書く。こちらは読むだけで、
         `downloadUrl` も返さない——画面へ渡すと、そこが任意の場所から引く口になる。
         """
-        version_id = str(request.query.get("id", "") or "").strip()
-        if not version_id.isdigit():
-            return web.json_response({"ok": False, "error": "id must be a number"}, status=400)
-        settings = get_settings()
-        api_key = str(settings.get("civitai_api_key", "") or "")
-        import asyncio
-
+        # **中身は `civitai_version_view` が持つ**（HTTP から切り離す決めごと）。
         # 外への問い合わせなので別スレッドで回す（口そのものは塞がない）。
-        resolved = await asyncio.to_thread(
-            resolve_version, version_id, kind=request.query.get("kind") or None, api_key=api_key,
+        body = await asyncio.to_thread(
+            civitai_version_view,
+            request.query.get("id", ""),
+            kind=request.query.get("kind") or None,
         )
-        if not resolved.get("ok"):
-            # **取れなかったことを「存在しない」と混ぜない。** 200 で理由を返し、
-            # 呼び手が「引けなかった1件」として数えられるようにする。
-            return web.json_response({"ok": False, "error": resolved.get("error")}, status=200)
-        return web.json_response({
-            "ok": True,
-            "versionId": version_id,
-            "filename": resolved.get("filename"),
-            "kind": resolved.get("kind"),
-            "sha256": resolved.get("sha256"),
-            "bytes": resolved.get("bytes"),
-            "name": resolved.get("name"),
-            "modelName": resolved.get("modelName"),
-            "baseModel": resolved.get("baseModel"),
-        }, status=200)
+        # **引けなかったことは 200 で返す**（呼び手が理由で数えられるように）。
+        # 引数そのものが不正な時だけ 400。
+        status = 400 if body.get("code") == "setup" and not body.get("ok") else 200
+        return json_response(body, status=status)
 
     @routes.get("/unbake/raindrop")
     async def _get_raindrop(request):
@@ -891,24 +1123,27 @@ def register_routes() -> bool:
             except (TypeError, ValueError):
                 return fallback
 
-        result = raindrop_bookmarks(
+        # **外へ往復する。** イベントループに載せると、待つあいだ
+        # ComfyUI 全体が止まる（`I-20260831-60`）。
+        result = await asyncio.to_thread(
+            raindrop_bookmarks,
             page=_int("page", 0),
             collection=request.query.get("collection") or None,
             # **全部読むのは頼まれたときだけ。** 箱が大きいと外への往復が増える
             # ——既定を全部にすると、開くたびに待たされる。
             all_pages=str(request.query.get("all", "")).lower() in ("1", "true", "yes"),
         )
-        return web.json_response(result, status=200 if result.get("ok") else 400)
+        return json_response(result, status=200 if result.get("ok") else 400)
 
     @routes.post("/unbake/download")
     async def _post_download(request):
         try:
             payload = await request.json()
         except (ValueError, json.JSONDecodeError):
-            return web.json_response({"ok": False, "error": "invalid JSON"}, status=400)
+            return json_response({"ok": False, "error": "invalid JSON"}, status=400)
         version_id = str(payload.get("versionId") or "").strip()
         if not version_id.isdigit():
-            return web.json_response({"ok": False, "error": "versionId must be a number"}, status=400)
+            return json_response({"ok": False, "error": "versionId must be a number"}, status=400)
         # **重い。** 別スレッドで回して、口そのものは塞がない。
         import asyncio
 
@@ -916,7 +1151,7 @@ def register_routes() -> bool:
             start_download, version_id, kind=payload.get("kind") or None,
             model_id=str(payload.get("modelId") or "").strip() or None
         )
-        return web.json_response(result, status=200 if result.get("ok") else 400)
+        return json_response(result, status=200 if result.get("ok") else 400)
 
     @routes.get("/unbake/model-companions")
     async def _get_model_companions(request):
@@ -932,17 +1167,21 @@ def register_routes() -> bool:
         以前から在ったが、**この口が無いので画面から一度も届いていなかった**
         （2026-08-26 の到達性の棚卸しで判明）。
         """
-        from .services.known_model_catalog import companions_for
+        from .services.known_model_catalog import companions_for, knows_companions
         from .services.known_model_downloader import find_installed_path
 
         base_model = str(request.query.get("baseModel", "")).strip()
         if not base_model:
-            return web.json_response({"ok": False, "error": "baseModel is required"}, status=400)
+            return json_response({"ok": False, "error": "baseModel is required"}, status=400)
 
         entries = companions_for(base_model)
         companions = []
         for entry in entries:
-            installed = find_installed_path(entry.folder, entry.filename)
+            # **`find_installed_path` は置き場を `os.walk` で全走査する**
+            # （`known_model_downloader.py`）。置き場が大きい人ではここで
+            # 画面が固まる（`I-20260831-56` / `I-20260831-60`）。
+            installed = await asyncio.to_thread(
+                find_installed_path, entry.folder, entry.filename)
             companions.append({
                 "key": entry.key,
                 "filename": entry.filename,
@@ -956,9 +1195,18 @@ def register_routes() -> bool:
                 "license": entry.license,
             })
         missing = [item for item in companions if not item["installed"]]
-        return web.json_response({
+        return json_response({
             "ok": True,
             "baseModel": base_model,
+            # **「表に無い」を「何も要らない」と言わない**（2026-08-31・走査3周目）。
+            #
+            # 実測で、UNet で読む＝本体だけでは動かないと判定している 42 系統の
+            # うち **26 が伴走の表に無い**（`Wan Video` 系・`LTXV`・`Hunyuan Video`・
+            # `PixArt`・`Kolors` ほか）。表に無いと `companions_for` は空を返し、
+            # そのまま `missingCount: 0` になって、画面は**「何も要りません」**と読む。
+            # `I-20260830-17`（「読めなかった」と「0個」を混ぜない）と同じ話なので、
+            # 画面が同じ扱いへ寄せられるように旗を渡す。
+            "known": knows_companions(base_model),
             "companions": companions,
             "missingCount": len(missing),
             # **判らない大きさを 0 と混ぜない。** 混ぜると総量が実際より小さく出る。
@@ -982,27 +1230,19 @@ def register_routes() -> bool:
             payload = {}
         base_model = str((payload or {}).get("baseModel") or "").strip()
         if not base_model:
-            return web.json_response({"ok": False, "error": "baseModel is required"}, status=400)
+            return json_response({"ok": False, "error": "baseModel is required"}, status=400)
 
         results = []
         for entry in companions_for(base_model):
-            if find_installed_path(entry.folder, entry.filename):
+            if await asyncio.to_thread(find_installed_path, entry.folder, entry.filename):
                 results.append({"key": entry.key, "filename": entry.filename,
                                 "ok": True, "skipped": True, "reason": "already_installed"})
                 continue
             outcome = await download_known_model(entry.key)
-            results.append({
-                "key": entry.key,
-                "filename": entry.filename,
-                "ok": bool(outcome.get("success")),
-                "skipped": bool(outcome.get("skipped")),
-                "reason": outcome.get("reason"),
-                "error": outcome.get("error"),
-                "pageUrl": outcome.get("page_url"),
-            })
+            results.append(companion_download_result(entry, outcome))
         # **1本でも落ちなければ ok にしない。** 成功として報せると、
         # 残りに気づけないまま「動かない」に戻る。
-        return web.json_response({
+        return json_response({
             "ok": all(item["ok"] for item in results) if results else True,
             "baseModel": base_model,
             "companions": results,
@@ -1020,7 +1260,7 @@ def register_routes() -> bool:
         raw = str(request.query.get("versionIds", "")).strip()
         ids = [item for item in (part.strip() for part in raw.split(",")) if item.isdigit()]
         if not ids:
-            return web.json_response({"ok": False, "error": "versionIds must be numbers"}, status=400)
+            return json_response({"ok": False, "error": "versionIds must be numbers"}, status=400)
         # **数を切る。** 一覧のたびに何百本も外へ問い合わせない。
         ids = ids[:60]
 
@@ -1058,7 +1298,7 @@ def register_routes() -> bool:
 
         items = await asyncio.to_thread(resolve_all)
         known = [item["bytes"] for item in items if isinstance(item.get("bytes"), int)]
-        return web.json_response({
+        return json_response({
             "ok": True,
             "items": items,
             "bytes": sum(known),
@@ -1068,11 +1308,11 @@ def register_routes() -> bool:
 
     @routes.get("/unbake/download")
     async def _get_download(_request):
-        return web.json_response(download_state())
+        return json_response(download_state())
 
     @routes.post("/unbake/download-cancel")
     async def _post_download_cancel(_request):
-        return web.json_response(cancel_download())
+        return json_response(cancel_download())
 
     @routes.get("/unbake/model-preview")
     async def _get_model_preview(request):
@@ -1092,14 +1332,16 @@ def register_routes() -> bool:
         """
         kind = str(request.query.get("kind", "")).strip()
         name = str(request.query.get("name", "")).strip()
-        path = model_preview_path(kind, name)
+        path = await asyncio.to_thread(model_preview_path, kind, name)
         if path is None:
             return web.Response(status=404)
         content_type = _CONTENT_TYPES.get(path.suffix.lower())
         if content_type is None:
             return web.Response(status=404)
         try:
-            body = path.read_bytes()
+            # **何十枚も並ぶ。** 1枚ずつ丸ごと同期で読むと、その間ずっと
+            # イベントループが止まる（`I-20260831-60`）。
+            body = await asyncio.to_thread(path.read_bytes)
         except OSError:
             return web.Response(status=404)
         # **見本は変わらない。** 何十枚も並ぶので、毎回取り直させない。
@@ -1120,14 +1362,14 @@ def register_routes() -> bool:
         try:
             payload = await request.json()
         except (ValueError, json.JSONDecodeError):
-            return web.json_response({"ok": False, "error": "invalid JSON"}, status=400)
+            return json_response({"ok": False, "error": "invalid JSON"}, status=400)
         kind = str(payload.get("kind", "")).strip()
         names = payload.get("names")
         if not isinstance(names, list):
             names = [payload.get("name")]
         names = [str(item).strip() for item in names if str(item or "").strip()]
         if not names:
-            return web.json_response({"ok": False, "error": "name is required"}, status=400)
+            return json_response({"ok": False, "error": "name is required"}, status=400)
         # **数を切る。** 画面から一度に何百本も外へ問い合わせない。
         names = names[:12]
 
@@ -1155,7 +1397,7 @@ def register_routes() -> bool:
             return out
 
         items = await asyncio.to_thread(collect)
-        return web.json_response({
+        return json_response({
             "ok": True,
             "items": items,
             "fetched": sum(1 for item in items if item.get("ok") and item.get("from") == "civitai"),
@@ -1191,7 +1433,7 @@ def register_routes() -> bool:
             originals.get, record_id, source_path, api_key,
         )
         if not result.get("ok"):
-            return web.json_response({"ok": False, "error": result.get("error")}, status=404)
+            return json_response({"ok": False, "error": result.get("error")}, status=404)
         path = Path(str(result["path"]))
         content_type = _CONTENT_TYPES.get(path.suffix.lower())
         if content_type is None:
@@ -1208,14 +1450,18 @@ def register_routes() -> bool:
     async def _get_preview(request):
         # **id でしか引けない。** パスは受け取らないので、走査した記録の
         # 隣に在るファイル以外は原理的に返らない。
-        path = get_library().preview_path(request.query.get("id", ""))
+        record_id = request.query.get("id", "")
+        path = await asyncio.to_thread(lambda: get_library().preview_path(record_id))
         if path is None:
             return web.Response(status=404)
         content_type = _CONTENT_TYPES.get(path.suffix.lower())
         if content_type is None:
             return web.Response(status=404)
         try:
-            body = path.read_bytes()
+            # **一覧の升ごとに1回飛ぶ。** 兄弟の `/unbake/record-original` は
+            # 前から `to_thread` を通しており、ここだけ通っていなかった
+            # （`I-20260831-60`）。
+            body = await asyncio.to_thread(path.read_bytes)
         except OSError:
             return web.Response(status=404)
         return web.Response(body=body, content_type=content_type)
@@ -1233,6 +1479,8 @@ def registered_paths() -> List[str]:
         "/unbake/record-original",
         "/unbake/model-preview",
         "/unbake/outputs",
+        "/unbake/output-raw",
+        "/unbake/output-delete",
         "/unbake/model-companions",
         "/unbake/download-model-companions",
         "/unbake/download-plan",

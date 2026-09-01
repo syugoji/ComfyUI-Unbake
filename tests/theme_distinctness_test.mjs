@@ -118,6 +118,155 @@ test('上流の実物からも測り直す（--upstream を渡したときだけ
     assert.deepEqual(tooClose, [], '上流の実物の配色に寄っている');
 });
 
+/* =========================================================================
+   強調色は2通りに書いてある。**ずれても誰も気づかない形だった**
+   （`I-20260830-22` / 2026-08-30 実機で判明）
+   =========================================================================
+
+   各テーマは同じ色を2つの書き方で持っている:
+
+     --unbake-accent-l/c/h : 設計の意図（oklch の3値）
+     --unbake-accent       : それを sRGB で描いた姿（16進）
+
+   **画面の色を決めているのは16進のほう。** 16進は
+   `.unbake-root[data-theme="…"]`（詳細度 0,2,0）に在り、`oklch()` は
+   `@supports` の中の `.unbake-root`（0,1,0）に在るので、**名前つきの4テーマでは
+   16進が勝つ**（稼働中の ComfyUI 8288 で `getComputedStyle` を実測）。
+   つまり上の検査が上流との距離を測っている `--unbake-accent-h` は、
+   **amber では画面に出ない値**である。16進だけ書き換えても赤くならない。
+
+   **色相の値が間違っているのではない。** 5テーマすべてで、宣言どおりの
+   `oklch(l c h)` と隣の16進は**画素まで同一**だった（canvas へ塗って画素を
+   読む方式・対照として黒と白で 255 差を確認）。`paper` に見えた 11.7° の
+   ずれは、sRGB の色域外の色を16進へ丸めた結果を oklch へ逆算したときにだけ
+   現れる見かけの数字で、**実際には同じ色**である。
+
+   だから角度の許容を決め直しても意味がない。止めるべきは
+   **「2つの表記が黙ってずれること」**なので、ここで一致を留める。 */
+
+/** sRGB の伝達関数（線形 → 表示値）。 */
+function encodeSrgb(v) {
+    return v <= 0.0031308 ? 12.92 * v : 1.055 * v ** (1 / 2.4) - 0.055;
+}
+
+/**
+ * `oklch(L% C H)` を sRGB へ。**色域外はそのことを返す**（黙って丸めない）。
+ *
+ * 丸め方はブラウザと完全に同じではありえない（CSS の色域マッピングは
+ * 彩度を落としながら寄せる）。**色域内は厳密に、色域外は許容つきで**測る。
+ */
+function oklchToSrgb(L, C, H) {
+    const l0 = L / 100;
+    const a = C * Math.cos((H * Math.PI) / 180);
+    const b = C * Math.sin((H * Math.PI) / 180);
+    const l = (l0 + 0.3963377774 * a + 0.2158037573 * b) ** 3;
+    const m = (l0 - 0.1055613458 * a - 0.0638541728 * b) ** 3;
+    const s = (l0 - 0.0894841775 * a - 1.2914855480 * b) ** 3;
+    const linear = [
+        4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+        -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+        -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s,
+    ];
+    const encoded = linear.map(encodeSrgb);
+    const inGamut = encoded.every(v => v >= -0.001 && v <= 1.001);
+    const rgb = encoded.map(v => Math.round(Math.min(1, Math.max(0, v)) * 255));
+    return { rgb, inGamut };
+}
+
+const hexToRgb = (hex) => [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16));
+const toHex = (rgb) => '#' + rgb.map(v => v.toString(16).padStart(2, '0')).join('');
+
+/** 各テーマの束から `l` `c` `h` と16進を取り出す。 */
+function accentPairs() {
+    const out = [];
+    const re = /(\.unbake-root(?:\[data-theme="[a-z]+"\])?)\s*\{([\s\S]*?)\n\}/g;
+    for (const [, selector, body] of THEME.matchAll(re)) {
+        const get = (name) => new RegExp('--unbake-' + name + '\\s*:\\s*([^;]+);').exec(body)?.[1]?.trim();
+        const l = get('accent-l');
+        const c = get('accent-c');
+        const h = get('accent-h');
+        const hex = get('accent');
+        if (!l || !c || !h || !hex?.startsWith('#')) continue;
+        out.push({ selector, l: Number(String(l).replace('%', '')), c: Number(c), h: Number(h), hex });
+    }
+    return out;
+}
+
+test('[対照] 色の変換そのものが働いている', () => {
+    // **変換器が定数を返していたら、下の検査は無条件に緑になる。**
+    assert.equal(toHex(oklchToSrgb(0, 0, 0).rgb), '#000000', '黒を黒として描けていない');
+    assert.equal(toHex(oklchToSrgb(100, 0, 0).rgb), '#ffffff', '白を白として描けていない');
+    // 違う色は違う値になること（同じ物を返していないこと）。
+    const a = toHex(oklchToSrgb(71, 0.143, 255).rgb);
+    const b = toHex(oklchToSrgb(74, 0.15, 75).rgb);
+    assert.notEqual(a, b, '別々の色相が同じ値になっている（変換が死んでいる）');
+    // 色域の判定が両方の答えを返せること。
+    assert.equal(oklchToSrgb(71, 0.143, 255).inGamut, true, '収まる色を色域外と言っている');
+    assert.equal(oklchToSrgb(52, 0.16, 60).inGamut, false, '色域外の色を収まると言っている');
+});
+
+/**
+ * 1組を突き合わせる。**判定は1箇所に置く**——本番と対照が同じ道を通らないと、
+ * 許容を広げるだけで両方緑にできてしまう（実際に変異で素通りした）。
+ *
+ * 色域内は厳密に。色域外はブラウザの色域マッピングと丸め方が違いうるので
+ * 少しだけ許す（それでも色相が動けば1チャンネルあたり十数は変わる）。
+ */
+function comparePair(l, c, h, hex) {
+    const got = oklchToSrgb(l, c, h);
+    const want = hexToRgb(hex);
+    const slack = got.inGamut ? 1 : 4;
+    const diff = Math.max(...got.rgb.map((v, i) => Math.abs(v - want[i])));
+    return { ok: diff <= slack, diff, slack, inGamut: got.inGamut, drawn: toHex(got.rgb) };
+}
+
+test('強調色の2つの書き方が、同じ色を指している', () => {
+    const pairs = accentPairs();
+    // **走査が痩せたら空振りする。** 既定＋名前つき4つで5組ある。
+    assert.ok(pairs.length >= 5,
+        `強調色の組を ${pairs.length} 個しか拾えていない＝走査が壊れている`);
+
+    const wrong = [];
+    for (const p of pairs) {
+        const r = comparePair(p.l, p.c, p.h, p.hex);
+        if (!r.ok) {
+            wrong.push(`${p.selector}: oklch(${p.l}% ${p.c} ${p.h}) は ${r.drawn} に描かれるが、`
+                + `16進は ${p.hex}（差 ${r.diff} / 許容 ${r.slack}${r.inGamut ? '' : '・色域外'}）`);
+        }
+    }
+    assert.deepEqual(wrong, [],
+        '強調色の oklch と16進がずれている。**画面に出るのは16進のほう**なので、'
+        + '色相の値だけ直しても絵は変わらない');
+});
+
+test('[対照] 少しずれた16進は、通さない', () => {
+    // **許容そのものを留める。** 広げれば本番の検査は無条件に緑になるので、
+    // 「この程度のずれは落ちる」を同じ判定器で固定しておく。
+    const pairs = accentPairs();
+    const amber = pairs.find(p => p.selector.includes('amber'));
+    assert.ok(amber, '前提: amber が在る');
+    assert.equal(comparePair(amber.l, amber.c, amber.h, amber.hex).ok, true,
+        '前提: 今の組は通る');
+
+    // 青だけ 0x1b → 0x3b（32/255）動かす。**人の目にも判る程度の差**。
+    const nudged = amber.hex.slice(0, 5) + '3b';
+    const r = comparePair(amber.l, amber.c, amber.h, nudged);
+    assert.equal(r.ok, false,
+        `${amber.hex} と ${nudged} の差 ${r.diff} を通している（許容 ${r.slack} が広すぎる）`);
+});
+
+test('[対照] 別のテーマの16進とは一致しない', () => {
+    // 上の検査が「何と比べても通る」形になっていないこと。
+    const pairs = accentPairs();
+    const amber = pairs.find(p => p.selector.includes('amber'));
+    const paper = pairs.find(p => p.selector.includes('paper'));
+    assert.ok(amber && paper, '前提: amber と paper が在る');
+    const got = oklchToSrgb(amber.l, amber.c, amber.h).rgb;
+    const other = hexToRgb(paper.hex);
+    const diff = Math.max(...got.map((v, i) => Math.abs(v - other[i])));
+    assert.ok(diff > 20, `別のテーマの色と ${diff} しか違わない（比べる意味が無い）`);
+});
+
 test('記録の一覧がカード格子でなく行と表である', () => {
     // 上流はモデルの**カード格子**。記録の一覧を同じ形にすると、下流に立っている
     // ことが見えなくなるうえ、1件あたりの高さが増えて狭い器で潰れる。

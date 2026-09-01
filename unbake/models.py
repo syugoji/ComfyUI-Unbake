@@ -21,6 +21,12 @@ checkpoint       104名 → 一意  87 / 曖昧 0 / 手元に無い 17
 **名前だけでは消す相手を決められない**。ここで片方を選ぶ実装にすると、
 1件だけ静かに違うファイルが消える。だから **曖昧なら消さずに候補を返す。**
 
+**上の「曖昧 1」は古い**（2026-08-31 実測）。同じツリー（LoRA 406ファイル）で
+数え直すと **9組**だった。ただし**9組とも大きさが一致**しており、別フォルダへ
+置いた**同じ物の複製**である——「別のモデルが同じ名前で並んでいる」わけではない。
+**それでも消す相手は決められない**ので、扱いは変えない。
+（`tests/test_pass3_round3.py` が、数字と実装の食い違いを留める。）
+
 ## 置き場の外を消さない
 
 改造版 LoRA Manager の削除はパスの検証をしておらず（`model_lifecycle_service.py`）、
@@ -38,9 +44,14 @@ checkpoint       104名 → 一意  87 / 曖昧 0 / 手元に無い 17
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from .utils.model_file_names import model_lookup_key
+
+logger = logging.getLogger(__name__)
 
 try:  # ComfyUI 本体が提供する。
     import folder_paths  # type: ignore
@@ -63,6 +74,34 @@ ALLOWED_KINDS = (
     "vae",
     "controlnet",
     "upscale_models",
+    # **落とせるのに消せない、を作らない**（2026-08-31・監査 I-20260831-34）。
+    # 2026-08-26 に `civitai.py` の `KIND_OF_TYPE` へ hypernetwork を足したとき、
+    # 落とす側（`download.ALLOWED_KINDS`）だけが更新されて**ここが取り残された**。
+    # Civitai の Hypernetwork は落とせるのに、削除計画が `unsupported kind` で
+    # 400 を返し、画面は「入っていません」と出して削除ボタンを押せなくする。
+    # 上のコメントが「`download.py` と同じ並び」と書いていても守られなかったので、
+    # `tests/test_kinds_and_coercion.py` が両者を突き合わせる。
+    "hypernetworks",
+    # **落とす口は1つではない**（2026-08-31・3周目）。
+    #
+    # 上の注記も `test_kinds_and_coercion.py` も **`download.py` との一致**しか
+    # 見ていなかったが、既知モデル台帳（`services/known_model_catalog.py`）は
+    # `download.ALLOWED_KINDS` を通らない**別の落とし口**
+    # （`known_model_downloader.download_known_model` が `entry.folder` を直に使う）
+    # を持っている。実測でその置き場は `text_encoders` **10件**・
+    # `ultralytics_bbox` **1件**で、**どちらもここに無かった**——
+    # つまり数GBのテキストエンコーダを落とせるのに、
+    # `model-delete` も `model-delete-plan` も `usage` も
+    # `unsupported kind` で断る＝**画面から消せない**。
+    #
+    # `I-20260831-34`（hypernetworks）と同じ形だが、**取り残したのは
+    # 「両者の一致」を見る検査のほうだった**——宣言を2つ比べても、
+    # 3つ目の書き手は見えない。検査を「**書く側すべて ⊆ ここ**」へ広げた。
+    "text_encoders",
+    # ComfyUI 本体は知らない置き場（Impact Pack が登録する）。**それでも入れる**
+    # ——入れないと理由が `unsupported kind` になり、本当の理由
+    #（「この環境にその置き場が無い」）が画面へ届かない。
+    "ultralytics_bbox",
 )
 
 #: 本体と一緒に消す付随。**残すと孤児になる**（見本だけが置き場に残り続ける）。
@@ -83,38 +122,15 @@ COMPANION_SUFFIXES = (
 )
 
 
-#: 本体の拡張子。**これ以外は落とさない**（下の `_stem` を見よ）。
-MODEL_SUFFIXES = (
-    ".safetensors",
-    ".sft",
-    ".ckpt",
-    ".pt",
-    ".pth",
-    ".bin",
-    ".gguf",
-    ".onnx",
-)
-
-
 def _stem(name: str) -> str:
-    """比べるための形。**フォルダを落とし、本体の拡張子だけ落とし、小文字にする。**
+    """比べるための形。**規則は `utils/model_file_names` が1本で持つ。**
 
-    **`os.path.splitext` を使わない。** あれは最後の `.` から後ろを落とすので、
-    拡張子の付いていない名前が版番号のところで切れる——記録は名前しか持たない
-    ので、これは常に起きる。実データで踏んだ形:
-
-        ``ink-style_A3.1_XL``      → ``ink-style_a3``   （`.1_XL` を拡張子と誤読）
-        ``ink-style_A3.1_XL.safetensors`` → ``ink-style_a3.1_xl``
-
-    左右で茎が食い違うので、**導入済みなのに「入っていない」**になる。見本が
-    出ないだけに見えるが、同じ関数を消す口も使っている。
+    ここには同じ規則が手で書かれていた（``I-20260831-69``）。落とす拡張子の
+    一覧が正の一覧と違っており、``.pt2`` / ``.pkl`` を落とせず ``.gguf`` を
+    余分に落としていた——**同じ名前が場所によって別の鍵になる。**
+    理由（``splitext`` を使わない・``.fp16`` を落とさない）は寄せ先に書いてある。
     """
-    tail = str(name or "").replace("\\", "/").split("/")[-1].strip()
-    lowered = tail.lower()
-    for suffix in MODEL_SUFFIXES:
-        if lowered.endswith(suffix):
-            return lowered[: -len(suffix)].strip()
-    return lowered
+    return model_lookup_key(name)
 
 
 def _roots(kind: str) -> List[Path]:
@@ -145,8 +161,16 @@ def resolve(kind: str, name: str) -> Dict[str, Any]:
     """名前から実ファイルを引く。**決められないときは決めない。**
 
     Returns:
-        ``{"state": "one"|"none"|"many", "matches": [相対名...], "path": 絶対パス|None}``
-        ——``many`` は候補を返すだけで、**呼び手が選ぶまで何もしない**。
+        ``{"state": "one"|"none"|"many"|"unreadable", "matches": [相対名...],
+        "path": 絶対パス|None}``——``many`` は候補を返すだけで、
+        **呼び手が選ぶまで何もしない**。
+
+    **``one`` はパスが引けたときだけ**（2026-08-31・走査3周目）。
+    以前は ``full_path`` が ``None`` を返しても ``one`` を名乗っていた
+    ——名前は1つに決まったのに実体へ辿れない状態で、呼び手は
+    ``state != "one" or not path`` と**2つ見ないと**気づけなかった。
+    しかも ``full_path`` は例外を握り潰しており、``models.py`` は
+    ``logging`` を輸入すらしていなかったので、**理由がどこにも残らなかった**。
     """
     wanted = _stem(name)
     if not wanted:
@@ -156,7 +180,15 @@ def resolve(kind: str, name: str) -> Dict[str, Any]:
         return {"state": "none", "matches": [], "path": None}
     if len(matches) > 1:
         return {"state": "many", "matches": sorted(matches), "path": None}
-    return {"state": "one", "matches": matches, "path": full_path(kind, matches[0])}
+    path = full_path(kind, matches[0])
+    if not path:
+        # **名前は決まったが、実体へ辿れない。** 置き場の外に在る・
+        # `get_full_path` が投げた・消えた直後、のどれか。
+        # `none`（入っていません）と混ぜると、**在るのに「無い」**と出る。
+        logger.warning(
+            "%s/%s resolved to a single name but no readable path", kind, matches[0])
+        return {"state": "unreadable", "matches": matches, "path": None}
+    return {"state": "one", "matches": matches, "path": path}
 
 
 def full_path(kind: str, relative: str) -> Optional[str]:
@@ -166,7 +198,11 @@ def full_path(kind: str, relative: str) -> Optional[str]:
     resolved = None
     try:
         resolved = folder_paths.get_full_path(kind, relative)
-    except Exception:
+    except Exception as error:
+        # **握るが、黙らない**（2026-08-31・走査3周目）。
+        # ここが無言だったので、`resolve()` が `one` と言いながら
+        # パスを持たない理由が**どこにも残らなかった**。
+        logger.warning("get_full_path failed for %s/%s: %s", kind, relative, error)
         resolved = None
     if not resolved:
         return None
@@ -207,16 +243,28 @@ def usage(library, name: str) -> Dict[str, Any]:
             if _stem(row.get("checkpoint") or "") == wanted:
                 rows.append({"id": row["id"], "title": row.get("title") or row["id"], "as": "checkpoint"})
                 continue
-            for lora in row.get("loras") or []:
-                if _stem(lora.get("file_name") or "") == wanted:
-                    rows.append({"id": row["id"], "title": row.get("title") or row["id"], "as": "lora"})
-                    break
+            if any(_stem(lora.get("file_name") or "") == wanted
+                   for lora in (row.get("loras") or [])):
+                rows.append({"id": row["id"], "title": row.get("title") or row["id"], "as": "lora"})
+                continue
+            # **プロンプトに直書きされた LoRA も数える**（2026-08-31・3周目）。
+            #
+            # 構造化された `loras` にしか現れない前提だったが、`<lora:名前:強さ>`
+            # と本文へ書いただけの記録が在る。数え落とすと**使われているモデルが
+            # 「使用0件」として消せてしまう**——外れる向きが一番悪い。
+            if any(_stem(written) == wanted for written in (row.get("prompt_loras") or [])):
+                rows.append({"id": row["id"], "title": row.get("title") or row["id"],
+                             "as": "prompt-lora"})
     return {
         "name": str(name or ""),
         "count": len(rows),
         "records": rows[:50],
         "truncated": max(0, len(rows) - 50),
         # **数えた範囲。** 画面はこれをそのまま出す。
+        #
+        # 記録の `loras`（構造化）・`checkpoint`・**プロンプト直書きの
+        # `<lora:…>`** の3つを見る。手組みのワークフローも他の UI も見ていない
+        # ことは変わらない。
         "scope": "library-records-only",
     }
 
@@ -276,6 +324,9 @@ def delete(kind: str, name: str) -> Dict[str, Any]:
     found = resolve(kind, name)
     if found["state"] == "none":
         raise ModelError(f"not installed: {name}")
+    if found["state"] == "unreadable":
+        # **「無い」と混ぜない。** 在るのに辿れないので、打つ手が違う。
+        raise ModelError(f"found the name but not the file: {name}")
     if found["state"] == "many":
         # **選ばない。** 実データで1件（`DetailedEyes_V3`）が該当する。
         raise ModelError(

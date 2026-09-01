@@ -252,7 +252,22 @@ function inspectBuiltWorkflow(built, objectInfo, catalog = null) {
  * 一括で「再現不可」と出すと、**落とせば直る29件が埋もれ**、逆に記録の無い
  * 27件をユーザーが追いかけることになる。行動が変わる区別なので表に出す。
  */
-const BLOCKER_METADATA = {
+/**
+ * **`t()` を module 直下で呼ばない**（2026-09-01・走査8周目）。
+ *
+ * ここは `const BLOCKER_METADATA = { downloadable: { blockerLabel: t(...) } }` と
+ * **読み込み時に訳を確定**していた。`t()` は呼んだ時点の `current` を見るが、
+ * `setLocale()` を呼ぶのは `web/unbake.js:236`——**静的 import の module 本体は
+ * 全部その前に走る**ので、ここで捕まるのは常に既定（英語）である。
+ * 実測: import 時点 `"Waiting on models"` / `setLocale('ja')` 後 `"モデル待ち"`。
+ * つまり**日本語の利用者に英語の札が出て、言語を切り替えても追随しない**。
+ *
+ * `web/core/*.js` で module 直下の `t()` はここだけだった。関数にして、
+ * **使うたびに引く**。
+ */
+export function blockerMetadata(blocker) {
+    if (!blocker) return null;
+    return {
     downloadable: {
         blockerLabel: t('core.recipeReplayCapability.6'),
         blockerTitle: t('core.recipeReplayCapability.7'),
@@ -280,7 +295,8 @@ const BLOCKER_METADATA = {
         blockerLabel: t('core.recipeReplayCapability.16'),
         blockerTitle: t('core.recipeReplayCapability.17'),
     },
-};
+    }[blocker] || null;
+}
 
 /** 生成条件が1つでも残っているか。「記録なし」と「モデル未特定」の分かれ目。 */
 const RECORD_KEYS = ['prompt', 'steps', 'seed', 'cfg_scale', 'sampler', 'size'];
@@ -338,7 +354,7 @@ function result(level, reasons, built = null, audit = null, missing = emptyMissi
         },
     }[level];
     const blocker = classifyBlocker(level, reasons, missing, catalog, context);
-    const blockerMeta = blocker ? BLOCKER_METADATA[blocker] : null;
+    const blockerMeta = blockerMetadata(blocker);
     const headline = blockerMeta ? blockerMeta.blockerTitle : metadata.title;
     // **警告は「やったこと」であって「危うさ」ではない。** 実測（2026-08-10 /
     // 316レシピ）で98.7%が何らかの警告を持つため、件数では差がつかない。
@@ -441,7 +457,35 @@ function hashesConflict(left, right) {
     return Boolean(left && right && !left.startsWith(right) && !right.startsWith(left));
 }
 
-function loraChoices(objectInfo) {
+/**
+ * `objectInfo` から出した LoRA の選択肢の**控え**（`I-20260829-02`）。
+ *
+ * **鍵は `objectInfo` そのもの**（`WeakMap` の同一性）。中身の指紋ではない。
+ * 同じ物なら答えは同じ、別の物なら計算し直す——**陳腐化する余地が構造として無い**
+ * ので、捨て時の設計が要らない。ホストは `/object_info` を取り直すたびに
+ * 新しい物を作るので、モデルを入れた／消したときは自動で外れる。
+ *
+ * **前提**: `objectInfo` を**その場で書き換えない**こと。書き換えると古い答えが残る。
+ * 現状ホストは応答をそのまま持ち回るだけで、書き換える箇所は無い。
+ *
+ * **なぜ要るか。** ここは記録1件ごとに `objectInfo` の**全ノード型**を舐めていた。
+ * 実測（2026-08-30・実機 8188・ノード型 1,049 種）で判定は 3.05 ms/件、うち
+ * この全走査が **0.48 ms/件＝18%**。効くのは今の 0.2 秒より、**利用者が拡張を
+ * 増やすほど重くなる項を消す**ことのほう——費目が記録の数と関係ないものに
+ * 比例している状態をやめる。
+ */
+const LORA_CHOICES_BY_OBJECT_INFO = new WeakMap();
+
+export function loraChoices(objectInfo) {
+    if (!objectInfo || typeof objectInfo !== 'object') return Object.freeze([]);
+    const cached = LORA_CHOICES_BY_OBJECT_INFO.get(objectInfo);
+    if (cached) return cached;
+    const computed = computeLoraChoices(objectInfo);
+    LORA_CHOICES_BY_OBJECT_INFO.set(objectInfo, computed);
+    return computed;
+}
+
+function computeLoraChoices(objectInfo) {
     const choices = [];
     for (const [classType, info] of Object.entries(objectInfo || {})) {
         const type = String(classType).replace(/[^a-z0-9]+/gi, '').toLowerCase();
@@ -457,7 +501,9 @@ function loraChoices(objectInfo) {
                 : []);
         choices.push(...values.filter(value => typeof value === 'string'));
     }
-    return [...new Set(choices)];
+    // **凍らせて返す。** 控えた配列を呼び手が書き換えると、次の記録は
+    // 書き換えられた一覧で判定される（読むだけの値なので、書けないほうが正しい）。
+    return Object.freeze([...new Set(choices)]);
 }
 
 function reachableWorkflowNodes(prompt, objectInfo) {

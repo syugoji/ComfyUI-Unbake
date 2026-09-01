@@ -225,8 +225,12 @@ export function applyModelOverrides(record) {
 /**
  * 強度と差し替えをまとめて重ねる。**呼び手はこれ1つを呼べばよい。**
  *
- * 順番は差し替えが先。強度は鍵（版 ID かファイル名）で引くので、
+ * **順番は強度が先**（`applyModelOverrides(applyLoraOverrides(record))`）。
+ * 強度は鍵（版 ID かファイル名）で引くので、
  * **差し替えでファイル名が変わった後に引くと当たらなくなる**。
+ *
+ * （`I-20260831-48`: 長く「差し替えが先」と書いてあったが、実装は逆で、
+ * **実装のほうが正しい**——直したのは注記だけである。）
  */
 export function applyRecordOverrides(record) {
     return applyModelOverrides(applyLoraOverrides(record));

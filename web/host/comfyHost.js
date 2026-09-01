@@ -13,6 +13,7 @@
  */
 
 import { installEnvironment } from '../core/environment.js';
+import { t } from '../i18n/index.js';
 
 /** `/object_info` と埋め込み一覧のキャッシュ。**core からは見えない。** */
 let objectInfoPromise = null;
@@ -47,10 +48,38 @@ export function installComfyHost({
     // 識別子が0件であることと対にして、`tests/source_integrity_test.mjs` が
     // 両側から境界を固定する（HTTP と同じ形）。
     const resolvedStorage = storage === undefined
-        ? (globalThis.localStorage ?? null)
+        ? readGlobalStorage()
         : storage;
     installEnvironment({ request, storage: resolvedStorage });
     return { request, storage: resolvedStorage };
+}
+
+/**
+ * 大域の入れ物を**読めたら**返す。読めなければ `null`（揮発へ倒す）。
+ *
+ * **`?? null` では受けられない**（2026-08-31・監査 I-20260831-10）。
+ * `localStorage` は「無い」だけでなく **`localStorage` と書いた瞬間に投げる**
+ * ことがある——Chrome の「すべての Cookie とサイトデータをブロック」、
+ * `allow-same-origin` の無い `iframe`。投げるのは getter そのものなので、
+ * 合体演算子は例外を受け止めない。
+ *
+ * **落ちる先が悪い。** ここは `registerUnbake(app)` の中で、その
+ * `registerUnbake` は `web/unbake.js` の最上位で try 無しに呼ばれる。
+ * つまりモジュール評価ごと失敗して `registerExtension` に一度も到達せず、
+ * **タブもコマンドも出ない**——同ファイルが「静かに何も出ないのが最悪の
+ * 落ち方」と書いている、まさにその形になっていた。
+ *
+ * `web/core/storage.js` も `environment.js` も入れ物が無いときは揮発へ
+ * 倒すように作ってあるので、**ここを通しさえすれば後ろは既に守られている。**
+ */
+function readGlobalStorage() {
+    try {
+        return globalThis.localStorage ?? null;
+    } catch {
+        // **黙らない。** 保存が効かないことは利用者に見える差になる。
+        console.info(t('host.storageDenied'));
+        return null;
+    }
 }
 
 function ensureInstalled() {
@@ -181,6 +210,39 @@ export async function scanOutputs({ offset = 0, limit = 200, keys = null } = {})
         return { reachable: true, ...(await response.json()) };
     } catch {
         return { outputs: [], total: 0, reachable: false };
+    }
+}
+
+/**
+ * **名指しした絵だけ**、生の値を引く（`I-20260829-01`）。
+ *
+ * 起動時の走査は印だけを取る。`prompt` は転送の 97% を占めるのに、実データで
+ * 帰属を1件も増やしていなかった——だが「何が違うか」の表示には要る。
+ * そこで**記録を開いた時に、その記録の絵のぶんだけ**ここで引く。
+ *
+ * **どの絵が要るかは呼び手が決める。** サーバ側の帰属に任せると、名前で
+ * 帰属した絵が漏れる（帰属の規則は `core/outputAttribution.js` の1本が持つ）。
+ *
+ * @returns {{raw: Record<string, object>, reachable: boolean}}
+ *   `raw` は `"<subfolder>/<filename>"` から生の値への対応。**取れなければ空。**
+ */
+export async function readOutputRaw(items, keys = null) {
+    const list = (items || [])
+        .filter(item => item?.filename)
+        .map(item => ({ subfolder: item.subfolder || '', filename: item.filename }));
+    if (!list.length) return { raw: {}, reachable: true };
+    const doRequest = ensureInstalled();
+    try {
+        const response = await doRequest('/unbake/output-raw', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ items: list, ...(keys?.length ? { keys } : {}) }),
+        });
+        if (!response?.ok) return { raw: {}, reachable: false };
+        const body = await response.json();
+        return { reachable: true, raw: body?.raw || {} };
+    } catch {
+        return { raw: {}, reachable: false };
     }
 }
 

@@ -29,14 +29,11 @@
  *
  * 元は「振る」の面で**軸**を宣言してから回す形だったが、やりたいことは
  * たいてい**1つの値を動かすこと**で、「軸」という言い方が間に挟まっていた。
- *
- * ---
- *
- * **2026-08-22: 見るだけの面から、その場でいじれる面にした**（利用者の指示）。
- *
- * 元は「振る」の面で*軸*を宣言してから回す形だったが、やりたいことは
- * たいてい**1つの値を動かすこと**で、「軸」という言い方が間に挟まっていた。
  * **LoRA の強度は、そのモデルの行で動かす。**
+ *
+ * （この段落は**同じ文が2つ並んでいた**のを1つに畳んだ——2026-09-01・走査15周目。
+ * 片方は `*軸*` でもう片方は `**軸**` という違いしか無く、読む側には
+ * 「2回言うほど大事なのか、書き損じなのか」が判らない。）
  *
  * **値はここで持たない。** 記録ごとの上書きレイヤ（`recipeLoraOverrides`）が
  * 持っていて、そちらは版 ID で鍵を作り、`user_override` を立てて
@@ -49,7 +46,8 @@
 
 import { t } from '../i18n/index.js';
 import { sizeText } from './confirmView.js';
-import { loraTargetIdentity } from '../core/sweepAxes.js';
+import { LORA_STRENGTH_RANGE, loraTargetIdentity } from '../core/sweepAxes.js';
+import { modelLookupKey } from '../core/modelFileNames.js';
 
 /**
  * 役割の名札。**鍵を組み立てない**——`t(`models.role.${role}`)` の形で書くと、
@@ -74,22 +72,15 @@ function makeElement(documentRef, tag, attributes = {}, children = []) {
     return node;
 }
 
-/** 本体の拡張子。**これ以外は落とさない**（下の `stemOf` を見よ）。 */
-const MODEL_SUFFIXES = ['.safetensors', '.sft', '.ckpt', '.pt', '.pth', '.bin', '.gguf', '.onnx'];
-
 /**
- * 名前を比べるための形。**フォルダと本体の拡張子だけ落とす。**
+ * 名前を比べるための形。**規則は `core/modelFileNames.js` が1本で持つ。**
  *
- * **最後の `.` から後ろを落とさない。** 拡張子の付いていない名前が版番号の
- * ところで切れる（実データの `ink-style_A3.1_XL` → `ink-style_a3`）。
- * サーバ側（`unbake/models.py` の `_stem`）と同じ判断で揃えてある。
+ * ここには同じ規則が手で書かれていた（`I-20260831-69`）。「サーバ側の
+ * `_stem` と同じ判断で揃えてある」と書いてあったが、**揃っていたのは
+ * 書き方だけで、落とす拡張子の一覧は正の一覧と違って**いた。
  */
 export function stemOf(name) {
-    const tail = String(name || '').replaceAll('\\', '/').split('/').pop().trim().toLowerCase();
-    for (const suffix of MODEL_SUFFIXES) {
-        if (tail.endsWith(suffix)) return tail.slice(0, -suffix.length).trim();
-    }
-    return tail;
+    return modelLookupKey(name);
 }
 
 /**
@@ -144,7 +135,14 @@ export function modelsOf(record, recipe = null) {
     const push = (kind, name, role, raw = null, altKinds = []) => {
         const text = String(name || '').trim();
         if (!text) return;
-        const key = `${kind}:${text.toLowerCase()}`;
+        // **LoRA は茎で比べる**（2026-08-31・監査 I-20260831-19）。
+        // 一覧側は `charA.safetensors`、プロンプトのタグは `charA` なので、
+        // 素の名前で比べると**同じ LoRA が2行に割れる**（実測: 自分の出力
+        // 4,904枚のうち12枚・重複行27本）。原因は `generationRecord.js` が
+        // `inputs.lora_name`（拡張子つき）をそのまま名前にすることで、
+        // タグとは必ず食い違う。:194 の注記は元からそう書いてあったのに、
+        // `stemOf` を呼んでいなかった。
+        const key = kind === 'loras' ? `${kind}:${stemOf(text)}` : `${kind}:${text.toLowerCase()}`;
         if (seen.has(key)) return;
         seen.add(key);
         // **元の資源も持つ。** 強度は記録の側に在るので、名前だけだと読めない。
@@ -155,6 +153,16 @@ export function modelsOf(record, recipe = null) {
             // **LoRA だけの通し番号。** 上書きレイヤは版 ID が無いとき順番で鍵を作るので、
             // checkpoint を混ぜて数えると鍵がずれる。
             loraIndex: out.filter(item => item.role === 'lora').length,
+            /**
+             * **強度の上書きが再現に届くか**（2026-08-31・監査 I-20260831-19）。
+             *
+             * `applyLoraOverrides` は `record.loras` を走査するので、そこに
+             * 相手が居ない行（プロンプトにだけ在る LoRA）の上書きは
+             * **保存も読み戻しも成功したまま、再現時だけ黙って無視される**。
+             * 効かない触り口を出すくらいなら出さない——押した人には
+             * 「効かない」と「効いたが絵が変わらない」の区別が付かない。
+             */
+            overridable: role !== 'lora' ? false : !raw?.fromPrompt,
         });
     };
     const source = recipe || record || {};
@@ -358,7 +366,7 @@ export function createModelsView({
         let slider = null;
         let readout = null;
         let currentStrength = recorded;
-        if (entry.role === 'lora' && onLoraStrength) {
+        if (entry.role === 'lora' && onLoraStrength && entry.overridable !== false) {
             const stored = loraStrengthOf ? loraStrengthOf(entry.source, entry.loraIndex) : null;
             // **生の値をまず見る。** `Number(null)` は 0 で `Number.isFinite` を通るので、
             // 数へ直してから判定すると**上書きの無い LoRA が全部 0 で開く**
@@ -371,7 +379,27 @@ export function createModelsView({
             });
             slider = element('input', {
                 class: 'unbake-models-strength', type: 'range',
-                min: '0', max: '2', step: '0.05', 'aria-label': t('models.strength'),
+                /*
+                 * **下限は中核から引く**（2026-09-01・走査15周目）。
+                 *
+                 * ここは `min: '0'` だった。`I-20260831-07` が同じ誤りを
+                 * `sweepView.js` で直しているのに、**強度を触るもう1つの口である
+                 * ここは直っていなかった**——負の強度は誤りではなく、明るさや
+                 * 年齢の slider LoRA は負で使うのが正しい（実データ346件に実在）。
+                 *
+                 * 実ブラウザで測った害:
+                 *
+                 *   min=0  / 記録 -0.50 → `input.value` は **"0"**
+                 *   min=-2 / 記録 -0.50 → `input.value` は "-0.5"
+                 *
+                 * `<input type=range>` は範囲外の値を黙って丸めるので、
+                 * **つまみは 0・字は「-0.50」**という食い違った行が開く。
+                 * しかも `↺`（記録どおりへ戻す）も同じ代入なので、
+                 * **一度触ると負の値へは二度と戻せない。**
+                 */
+                min: String(LORA_STRENGTH_RANGE.minimum),
+                max: String(LORA_STRENGTH_RANGE.maximum),
+                step: '0.05', 'aria-label': t('models.strength'),
             });
             slider.value = String(currentStrength);
             // **記録の値を字でも出す。** つまみの位置だけでは「元がいくつか」が判らず、

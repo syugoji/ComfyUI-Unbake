@@ -219,6 +219,10 @@ export const KEY_SEVERITY = Object.freeze({
     // --- 中立: 絵が変わらない置き換え / 運用上の注意 -------------------------
     'core.recipeWorkflowBuilder.22': SEVERITY.NEUTRAL,       // 旧式の定数ノードを標準入力へ
     'core.recipeWorkflowBuilder.36': SEVERITY.NEUTRAL,       // 多段の1段目に最終寸法を当てない
+    // **同じ性質**（`I-20260830-18`）: 記録された値を、その段に当てはまらないので
+    // 当てなかった、という申告。白紙から描く段の denoise は 1 が正しく、
+    // 記録の 0.38 は別の文脈のメタである。**絵が変わる注記ではない。**
+    'core.recipeWorkflowBuilder.denoiseOnEmptyLatent': SEVERITY.NEUTRAL,
     'core.recipeWorkflowBuilder.40': SEVERITY.NEUTRAL,       // Preview だけ → SaveImage
     'core.recipeWorkflowBuilder.69': SEVERITY.NEUTRAL,       // 単一バッチへ最適化（同じ系列）
     'core.recipeWorkflowBuilder.cappedSize': SEVERITY.NEUTRAL,  // 比率を保って縮めた
@@ -280,12 +284,52 @@ export const KEY_SEVERITY = Object.freeze({
     'core.recipeWorkflowBuilder.81': SEVERITY.RISK,
     // タグに出ない LoRA を外した（本文が「絵は元と変わります」と言っている）。
     'core.recipeWorkflowBuilder.86': SEVERITY.RISK,
+
+    /*
+     * **ここから下は 2026-08-30 に足した13鍵**（`I-20260830-30`）。
+     *
+     * 表に無い文は `unknown` になり、`riskCount` は unknown を risk として
+     * 数えるので、**分類し忘れただけの文が「絵が変わる」に化ける**。実際
+     * `ja=0 / en=1` に割れており、既定の言語（`en`）のほうが壊れている側だった
+     * ——日本語だけを見た表（`RULES` の `/乱数源/` など）が ja を救っていたため。
+     */
+
+    // 再現manifestの一部を確定できず、**その分を除いて**再現する＝絵が変わる。
+    'core.recipeWorkflowBuilder.4': SEVERITY.RISK,
+    // 必須資源はすべて確定できたので、そのまま再現する（本文がそう言っている）。
+    'core.recipeWorkflowBuilder.5': SEVERITY.NEUTRAL,
+    // 2段目の denoise に記録値を使う＝記録どおり。
+    'core.recipeWorkflowBuilder.27': SEVERITY.NEUTRAL,
+    // スケジューラの記録が無い系統へ、実測で絵が出る側を当てる＝改善。
+    'core.recipeWorkflowBuilder.33': SEVERITY.IMPROVEMENT,
+    'core.recipeWorkflowBuilder.34': SEVERITY.IMPROVEMENT,
+    // 運び手が無いので標準の連なりへ開いた。**順番も強さも同じ**と本文が言う。
+    'core.recipeWorkflowBuilder.expandedLoras': SEVERITY.NEUTRAL,
+    // 当てる LoRA が無い運び手を外した。**絵は変わらない**と本文が言う。
+    'core.recipeWorkflowBuilder.bypassedLoraCarrier': SEVERITY.NEUTRAL,
+    // 乱数源の話。`RULES` は `/乱数源/` を改善としていたが**日本語しか当たらない**。
+    'core.recipeWorkflowBuilder.58': SEVERITY.IMPROVEMENT,
+    'core.recipeWorkflowBuilder.59': SEVERITY.IMPROVEMENT,
+    // 記録された ENSD を反映した＝記録に近づけた。
+    'core.recipeWorkflowBuilder.61': SEVERITY.IMPROVEMENT,
+    // 64（ADetailer 段の復元）に続く節。単独では出ない。
+    'core.recipeWorkflowBuilder.65': SEVERITY.IMPROVEMENT,
+    'core.recipeWorkflowBuilder.66': SEVERITY.RISK,
+    'core.recipeWorkflowBuilder.67': SEVERITY.IMPROVEMENT,
 });
 
-/** `{p1}` のような差し込み口を「何でも」に替えた形。**鍵を引き当てるためだけ**に使う。 */
-function templateToPattern(template) {
+/**
+ * `{p1}` のような差し込み口を「何でも」に替えた形。**鍵を引き当てるためだけ**に使う。
+ *
+ * `anchored` が偽なら**末尾を留めない**——1回の `warnings.push` が
+ * 「先頭の文＋任意の節」を連結して作る箇所が13ある（実測）ので、
+ * 全体一致だけでは**どの型にも当たらず永久に未分類**になる。
+ * 分割して別々の警告にすると画面の行が増えるので、**読む側を先頭一致にする**。
+ */
+function templateToPattern(template, anchored = true) {
     const escaped = String(template).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    return new RegExp(`^${escaped.replace(/\\\{[A-Za-z0-9_]+\\\}/g, '[\\s\\S]*?')}$`);
+    const body = escaped.replace(/\\\{[A-Za-z0-9_]+\\\}/g, '[\\s\\S]*?');
+    return new RegExp(`^${body}${anchored ? '$' : ''}`);
 }
 
 /**
@@ -296,19 +340,46 @@ function templateToPattern(template) {
  */
 let keyPatterns = null;
 
-function keyOf(text) {
-    if (keyPatterns === null) {
-        keyPatterns = [];
-        for (const catalog of Object.values(CATALOGS || {})) {
-            for (const [key, template] of Object.entries(catalog || {})) {
-                if (!(key in KEY_SEVERITY)) continue;
-                if (typeof template !== 'string' || !template) continue;
-                keyPatterns.push([templateToPattern(template), key]);
-            }
+function buildPatterns() {
+    keyPatterns = [];
+    for (const catalog of Object.values(CATALOGS || {})) {
+        for (const [key, template] of Object.entries(catalog || {})) {
+            if (!(key in KEY_SEVERITY)) continue;
+            if (typeof template !== 'string' || !template) continue;
+            keyPatterns.push({
+                key,
+                length: template.length,
+                exact: templateToPattern(template, true),
+                prefix: templateToPattern(template, false),
+            });
         }
     }
-    for (const [pattern, key] of keyPatterns) {
-        if (pattern.test(text)) return key;
+    /*
+     * **長い型から試す。** 短い型が長い型の頭に一致すると、先頭一致で
+     * 取り違える（`{p1}` だけの型は何にでも当たる）。
+     *
+     * **今の訳文では、この並びは効いていない**（実測 2026-08-30）: 並びを
+     * 反転して12言語×全鍵の分類を突き合わせたが**差は0件**だった——今どの型も
+     * 別の型の頭になっていない。つまり検査では留められない（等価変異になる）。
+     * それでも並べておくのは、頭が同じ型を1つ足した瞬間に静かに壊れる形だから。
+     */
+    keyPatterns.sort((a, b) => b.length - a.length);
+}
+
+function keyOf(text) {
+    if (keyPatterns === null) buildPatterns();
+    // 1. 全体一致（今までどおり）。
+    for (const item of keyPatterns) {
+        if (item.exact.test(text)) return item.key;
+    }
+    /*
+     * 2. **先頭一致。** 「先頭の文＋任意の節」を1つの警告として押している箇所が
+     *    13ある（実測 2026-08-30）。全体一致だけでは永久に未分類になり、
+     *    `riskCount` は unknown を risk として数えるので、**分類し忘れただけの
+     *    文が「絵が変わる」に化ける**。判断は先頭の文が持つ。
+     */
+    for (const item of keyPatterns) {
+        if (item.prefix.test(text)) return item.key;
     }
     return null;
 }

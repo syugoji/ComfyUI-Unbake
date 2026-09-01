@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from .civitai import API_HOSTS, _get_json, is_rate_limited
+from .utils.url_host import host_of
 
 #: 見本を置いてよい型。**中身の型で決める**（拡張子は名乗りにすぎない）。
 PREVIEW_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
@@ -108,27 +109,70 @@ def file_sha256(path: Path, chunk: int = 1 << 20) -> str:
 
 
 def _host_of(url: str) -> str:
-    text = str(url or "")
-    if "://" not in text:
-        return ""
-    return text.split("://", 1)[1].split("/", 1)[0].lower()
+    """URL の宛先。**判定は `utils/url_host` の1本**（`I-20260831-73`）。
+
+    ここに手で書き直さないこと——同じ名前で中身の違うものが4本在り、
+    13通りの URL のうち**7通りで答えが割れて**いた。
+    """
+    return host_of(url)
 
 
 def pick_still_image(version: Dict[str, Any]) -> Optional[str]:
-    """見本にできる**静止画**の URL。
+    """見本にできる**静止画**の URL。**無ければ None。**
 
     **先頭を取らない。** Civitai の見本は先頭が動画のことがあり、``<img>`` へ
-    入れても何も出ない。``type`` が ``image`` のものだけを選び、1枚も無ければ None。
+    入れても何も出ない。``type`` が ``image`` のものだけを選ぶ。
+
+    **なぜ無いのかは :func:`still_image_miss` が言う**——呼び手はそれを見て、
+    永久に覚えてよいかを決める。
     """
+    url, _reason = _pick_still(version)
+    return url
+
+
+def _pick_still(version: Dict[str, Any]) -> tuple:
+    """``(URL, 無い理由)``。片方は必ず ``None``。"""
+    saw_image = False
+    off_host = False
     for item in version.get("images") or []:
         if not isinstance(item, dict):
             continue
         if str(item.get("type", "image")).lower() != "image":
             continue
+        saw_image = True
         url = str(item.get("url") or "")
+        if not url:
+            continue
         if _host_of(url) in IMAGE_HOSTS:
-            return _thumbnail_url(url)
-    return None
+            return _thumbnail_url(url), None
+        off_host = True
+    if off_host:
+        # **こちらが読めないだけ。** 相手は静止画を持っている。
+        return None, "unknown-image-host"
+    if saw_image:
+        return None, "no-image-url"
+    return None, "no-still-image"
+
+
+def still_image_miss(version: Dict[str, Any]) -> Optional[str]:
+    """静止画が取れない理由。取れるなら ``None``。
+
+    **3つを1つに潰さない**（2026-08-31・走査3周目）。元は理由を返さず、
+    呼び手が全部を ``no-still-image`` として ``_remember_miss`` していた
+    ——``cached_miss`` は短絡するので、**一度そう覚えると画面から戻せない**。
+
+    ところが ``None`` になる道は3つ在る:
+
+    * ``no-still-image`` … 本当に動画しか無い。**覚えてよい**（相手の性質）
+    * ``no-image-url``   … 静止画は在るのに URL が空。相手の事情で変わりうる
+    * ``unknown-image-host`` … **こちらの許可一覧に無いホスト**。
+      配信元が増えただけかもしれず、**覚えると全モデルが永久に「見本なし」**になる
+
+    `D-20260828-01` E4（429 を「見本が無い」として永久に焼いた）と同じ形なので、
+    **覚えてよいのは1つ目だけ**にする。
+    """
+    _url, reason = _pick_still(version)
+    return reason
 
 
 def _thumbnail_url(url: str) -> str:
@@ -138,8 +182,20 @@ def _thumbnail_url(url: str) -> str:
     画面で使うのは 84px の枠なので、原寸を集めると**400本で数百MB**になる。
     配信側が幅の指定を受けるので、そこだけ差し替える。
     """
-    if url.endswith("/orig"):
-        return url[: -len("orig")] + "width=450"
+    # **末尾だけを見ない**（2026-08-31・3周目）。
+    #
+    # 元は `url.endswith("/orig")` だけを見ていたので、変換指定が**途中の
+    # 区画**に在る形（`…/{uuid}/orig/00001.jpeg` や `…/original=true/…`）では
+    # 一度も縮まず、**原寸を集め続ける**——この関数が在る理由そのものを
+    # 取りこぼしていた（実測で1枚 2.5〜3.6MB・400本で数百MB）。
+    #
+    # 区画として置き換える。**知らない形は触らない**——URL を組み替えて
+    # 404 を作るより、原寸を1枚落とすほうが軽い。
+    parts = url.split("/")
+    for index, part in enumerate(parts):
+        if part == "orig" or part.startswith("original="):
+            parts[index] = "width=450"
+            return "/".join(parts)
     return url
 
 
@@ -206,14 +262,34 @@ def fetch_preview(
 
     url = pick_still_image(version)
     if not url:
-        # 動画しか無いモデルはここへ来る。**次から問い合わせない。**
-        _remember_miss(kind, name, "no-still-image")
-        return {"ok": False, "error": "this model has no still image to use as a preview"}
+        reason = still_image_miss(version) or "no-still-image"
+        # **覚えてよいのは「本当に動画しか無い」ときだけ**（2026-08-31・走査3周目）。
+        #
+        # 知らないホストから配られているだけなら、それは**こちらが読めない**
+        # という話で、相手の性質ではない。覚えると `cached_miss` が短絡し、
+        # 配信元が1つ増えた日に**全部のモデルが永久に「見本なし」**になる。
+        if reason == "no-still-image":
+            _remember_miss(kind, name, reason)
+        return {"ok": False, "error": "this model has no still image to use as a preview",
+                "reason": reason}
 
     request = urllib.request.Request(url, headers={"User-Agent": "ComfyUI-Unbake"})
     open_url = opener or urllib.request.urlopen
     try:
         with open_url(request, timeout=30) as response:
+            # **飛ばされた先も確かめる**（2026-08-31・走査3周目）。
+            #
+            # 41行の注記は「**API が返した URL でも行き先は確かめる**」と
+            # 言っているのに、見ていたのは**最初の URL のホストだけ**だった。
+            # `urllib` は既定で 3xx を別ホストへも追うので、そこが抜けていると
+            # 宣言が守られていない。兄弟の `records.fetch_preview` は
+            # 前から `response.geturl()` を照合している——**同じ仕事の2本で、
+            # 宣言した側だけが守っていなかった。**
+            landed = ""
+            if hasattr(response, "geturl"):
+                landed = str(response.geturl() or "")
+            if landed and _host_of(landed) not in IMAGE_HOSTS:
+                return {"ok": False, "error": "redirected off the known hosts"}
             content_type = ""
             if hasattr(response, "headers"):
                 content_type = response.headers.get("Content-Type") or ""

@@ -25,10 +25,13 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import threading
+import time
 import urllib.error
-import urllib.parse
 import urllib.request
 from typing import Any, Dict, Optional
+from .utils.url_host import host_of
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +133,83 @@ def _is_diffusion_model(version: Dict[str, Any]) -> bool:
     return str(version.get("baseModel") or "") in DIFFUSION_MODEL_BASE_MODELS
 
 
+#: Civitai へ続けて投げるときの最小間隔（秒）。**0 にすると空けない。**
+#:
+#: **踏んでから始末するのではなく、踏まないようにする。** この下の `_get_json` は
+#: 429 を受けた**後**の始末を持っている（`RATE_LIMIT_FLAG`）が、**踏まないための
+#: 仕掛けはどこにも無かった**（2026-09-01・走査4周目の実測。`unbake/**/*.py` に
+#: 最小間隔・前回時刻・問い合わせ間の `sleep` が0件）。
+#:
+#: ところが**こちらは自分が連射することを知っている**。`model_previews.fetch_preview`
+#: の注記が「Sweep のモデル選択で by-hash を**十数件連射**すると Civitai が 429 を返し、
+#: **残り全部が「見本の無いモデル」になる**」と書いている。連射する口は実測で2つ:
+#:
+#:   ``POST /unbake/model-preview``  一度に **12件**（`routes.py` の `collect()`）
+#:   ``GET  /unbake/download-plan``  一度に **60件**（`routes.py` の `resolve_all()`）
+#:
+#: どちらも「**数を切る**」という注記つきで**上限だけ**掛けてあり、切った数は
+#: 無間隔で飛ぶ——**上限は「投げすぎない」を意味しない。** とくに `download-plan` は
+#: 「押す前に総量を知る」ための口なので、途中で 429 になると**総量が実際より小さく出る**。
+#: この口が在る理由（実測 34GB のチェックポイントの不意打ち）をそのまま裏切る。
+#:
+#: 値の根拠は同梱の ``civitai_recipe_sync/civitai_image_download.py``（MIT・単体配布）。
+#: Civitai ToS §11.4 は自動アクセスを「**適用されるレート制限の範囲内で**」に限るが、
+#: **Civitai は公開 API の上限値を公表していない**（developer.civitai.com にも
+#: requests/min の記載が無い）。守るべき数字が無い以上、保守的な間隔を置くほかない。
+#: あちらの既定と同じ1秒にし、**環境変数の名前も揃えてある**——同じ相手・同じ
+#: アカウントへの間隔を2つの名前で持つと、片方だけ直る日が来る。
+DEFAULT_MIN_REQUEST_INTERVAL_SEC = 1.0
+
+#: 間隔を上書きする環境変数。同梱スクリプトと**同じ名前**（上の注記を参照）。
+MIN_INTERVAL_ENV = "CIVITAI_MIN_INTERVAL_SEC"
+
+_RATE_LOCK = threading.Lock()
+_LAST_REQUEST_AT: Optional[float] = None
+
+
+def min_request_interval() -> float:
+    """次の問い合わせまで空ける秒数。**壊れた値は既定へ倒す**（問い合わせを止めない）。
+
+    `0` は「空けない」という**利用者の選択**なので尊重する。負の数は既定へ倒す。
+    """
+    raw = os.environ.get(MIN_INTERVAL_ENV)
+    if raw is None or not str(raw).strip():
+        return DEFAULT_MIN_REQUEST_INTERVAL_SEC
+    try:
+        value = float(str(raw).strip())
+    except (TypeError, ValueError):
+        return DEFAULT_MIN_REQUEST_INTERVAL_SEC
+    return value if value >= 0 else DEFAULT_MIN_REQUEST_INTERVAL_SEC
+
+
+def _pace() -> None:
+    """前回の問い合わせから最小間隔が経つまで待つ。
+
+    **眠りを錠の中に入れる。** 外に出すと、待っている全員が同じ「前回時刻」を読んで
+    **同じ時刻に起き、同時に発射する**——間隔を空けたつもりのものがバーストに化ける。
+    同梱の ``civitai_recipe_sync`` の `_rate_wait_for_slot()` が実際にそうなっており、
+    **そのファイル唯一の並列箇所**（`ThreadPoolExecutor(max_workers=6)`）で
+    1req/秒が6発同時になる（2026-09-01・走査4周目で読んで確かめた）。
+    ここも `asyncio.to_thread` の worker が同時に来るので、**同じ罠が在る**。
+
+    最初の1回は待たない（`_LAST_REQUEST_AT` が無い）。単発の問い合わせを遅くしない。
+    """
+    global _LAST_REQUEST_AT
+    interval = min_request_interval()
+    if interval <= 0:
+        return
+    with _RATE_LOCK:
+        now = time.monotonic()
+        if _LAST_REQUEST_AT is not None:
+            wait = interval - (now - _LAST_REQUEST_AT)
+            if wait > 0:
+                time.sleep(wait)
+                now = time.monotonic()
+        _LAST_REQUEST_AT = now
+
+
 def _get_json(url: str, api_key: str = "", timeout: int = 30) -> Optional[Dict[str, Any]]:
+    _pace()
     request = urllib.request.Request(url, headers={
         "Accept": "application/json",
         "User-Agent": "ComfyUI-Unbake",
@@ -223,10 +302,12 @@ def _primary_file(version: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 
 def _host_of(url: str) -> str:
-    try:
-        return (urllib.parse.urlparse(url).hostname or "").lower()
-    except ValueError:
-        return ""
+    """URL の宛先。**判定は `utils/url_host` の1本**（`I-20260831-73`）。
+
+    ここに手で書き直さないこと——同じ名前で中身の違うものが4本在り、
+    13通りの URL のうち**7通りで答えが割れて**いた。
+    """
+    return host_of(url)
 
 
 def resolve_version(

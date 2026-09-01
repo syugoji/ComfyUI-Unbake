@@ -23,7 +23,7 @@
  * 何も書かないより悪い。同じ検査が、名指しの実在も機械で見ている。）
  *
  * ここで扱うのは**名前の正規化**であって、中身が本当にそのモデルかの検査ではない。
- * 後者は `py/utils/model_file_validation.py`（先頭バイトの契約）で、
+ * 後者は `unbake/utils/model_file_validation.py`（先頭バイトの契約）で、
  * `.onnx` のように容器の契約を持たない拡張子を含む点が違う。
  */
 
@@ -35,7 +35,7 @@
  * 交替の左優先で `model.pt2` が `model.` + `2` へ割れる。
  */
 export const MODEL_FILE_EXTENSIONS = Object.freeze([
-    'safetensors', 'sft', 'ckpt', 'pt2', 'pt', 'pth', 'bin', 'pkl', 'onnx',
+    'safetensors', 'sft', 'ckpt', 'pt2', 'pt', 'pth', 'bin', 'pkl', 'onnx', 'gguf',
 ]);
 
 /** ComfyUI 側の集合（`onnx` を除いたもの）。テストが実測値と突き合わせる。 */
@@ -87,6 +87,21 @@ export function hashFromModelName(value) {
  * 別名照合用のキー。綴りの揺れ（`R-ESRGAN 4x+ Anime6B` 対
  * `RealESRGAN_x4plus_anime_6B.pth`）を越えるため、英数字だけを残す。
  */
+/**
+ * 索引を引くための鍵。**フォルダと本体の拡張子を落として小文字にする。**
+ *
+ * `unbake/utils/model_file_names.py` の `model_lookup_key` と同じ規則
+ * （`I-20260831-69`）。ここは長く `web/panel/modelsView.js` の `stemOf` と
+ * `models.py` / `model_index.py` に手で書かれており、**落とす拡張子の一覧が
+ * それぞれ違って**いたので境界で鍵が食い違った。
+ *
+ * **最後の `.` から後ろを落とさない**——拡張子の付いていない名前が版番号の
+ * ところで切れる（実データの `ink-style_A3.1_XL` → `ink-style_a3`）。
+ */
+export function modelLookupKey(value) {
+    return modelStem(value).trim().toLowerCase();
+}
+
 export function compactModelName(value) {
     return modelStem(value).replace(/[^a-z0-9]+/gi, '').toLowerCase();
 }

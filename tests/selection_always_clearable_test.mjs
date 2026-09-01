@@ -41,7 +41,17 @@ const rec = (id) => ({
 
 function mount(records, display = { listView: 'tiles' }) {
     const doc = fakeDocument();
-    const panel = createUnbakePanel(doc.createElement('div'), { documentRef: doc, display });
+    /*
+     * **器を文書へ付ける**（`I-20260830-21`）。
+     *
+     * 付けずに置いていたので、この見本の板は**文書に付いていない**状態だった。
+     * 本物のブラウザでは付いていない要素は `focus()` を受けないので、
+     * ここは**実機では起きない状態**で焦点の挙動を測っていたことになる
+     * （人形が本物より甘かったぶん、それが見えなかった）。
+     */
+    const host = doc.createElement('div');
+    doc.body.append(host);
+    const panel = createUnbakePanel(host, { documentRef: doc, display });
     panel.setRecords(records);
     return { doc, panel };
 }

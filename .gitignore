@@ -9,6 +9,17 @@ __pycache__/
 # Node の依存。配布物ではない。
 node_modules/
 
+# **秘匿値を書き込む設定**（2026-08-31・監査 I-20260831-08）。
+# `civitai_recipe_sync/README.md` と `config.example.json` と
+# `civitai_image_download.py` の計4箇所が「`.gitignore` 済み」と保証していたが、
+# **実際には無視されていなかった**——`git check-ignore` は「無視しない」を返し、
+# 手順どおり `cp config.example.json config.json` して値を埋めて `git add -A`
+# すると、`raindrop_token` と `civitai_api_key` がそのままコミットに入る。
+# この拡張は GitHub 配布で `custom_nodes` を fork して push する運用があるので、
+# 公開リポジトリへ載りうる。**見本（`config.example.json`）は追跡し続ける。**
+# 置き場は `CIVITAI_SYNC_CONFIG` で変えられるので、パスでなく名前で拾う。
+config.json
+
 # エディタ・OS が置くもの
 .DS_Store
 Thumbs.db

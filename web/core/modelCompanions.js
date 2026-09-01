@@ -55,6 +55,10 @@ export async function fetchCompanionStatus(baseModel, { fetchImpl = null } = {})
             if (data?.ok && Array.isArray(data.companions)) {
                 status = {
                     companions: data.companions,
+                    // **「表に無い」を運ぶ**（`I-20260831-80`）。
+                    // これが `false` のとき `missingCount: 0` は
+                    // 「要らない」ではなく「**判らない**」である。
+                    known: data.known !== false,
                     missingCount: Number(data.missingCount) || 0,
                     missingBytes: Number(data.missingBytes) || 0,
                     // **大きさの判らないものを数え落とさない。** 落とすと
@@ -67,7 +71,14 @@ export async function fetchCompanionStatus(baseModel, { fetchImpl = null } = {})
         status = null;
     }
 
-    statusCache.set(key, status);
+    // **失敗を控えに入れない**（`I-20260830-17`）。
+    //
+    // 入れると、一度でも問い合わせに失敗した系統は**ページを読み直すまで
+    // 「伴走は要らない」扱い**になる。総量が過少に出る（Krea 2 の +8.3GB、
+    // Flux の +5.4GB が消える）だけでなく、**伴走の取得そのものが黙って
+    // 行われない**。控えを捨てる口（`resetCompanionCache`）は production から
+    // 一度も呼ばれていないので、**自力では回復しない。**
+    if (status !== null) statusCache.set(key, status);
     return status;
 }
 

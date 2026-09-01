@@ -6,9 +6,10 @@
  * 後から別のライセンスを足せる。表示が無いまま配ると、それが言いづらくなる。
  */
 import { environmentRequestOrNull } from './environment.js';
+import { outputImageUrl } from './outputUrl.js';
 // このレシピから生成した出力画像を引く。
 //
-// 紐付けの根拠は画像側の PNG チャンクにあり（py/utils/recipe_pnginfo.py）、
+// 紐付けの根拠は画像側の PNG チャンクにあり（unbake/utils/recipe_pnginfo.py）、
 // サーバ側が出力フォルダを走査して索引にしている。ここはその結果を
 // 画面で使える形に整えるだけ。
 
@@ -22,16 +23,13 @@ import { environmentRequestOrNull } from './environment.js';
 export function buildOutputViewUrl(entry, { thumbnail = false } = {}) {
     if (!entry?.filename) return '';
 
-    const params = new URLSearchParams();
-    params.set('filename', entry.filename);
-    params.set('type', 'output');
-    if (entry.subfolder) {
-        params.set('subfolder', entry.subfolder);
-    }
-    const query = params.toString();
-    // preview は値の中に ; を含むので URLSearchParams へ入れずに直接繋ぐ
-    // （エンコードされると ComfyUI 側が解釈しない）。
-    return thumbnail ? `/view?${query}&preview=jpeg;75` : `/view?${query}`;
+    // **組み立ては `outputUrl.js` の1本だけ**（2026-08-31・監査 I-20260831-21）。
+    //
+    // ここは今どこからも呼ばれていない（`tests/module_reachability_test.mjs` が
+    // そう宣言している）が、**手で組んだままにしない**——復活させた瞬間に
+    // 鮮度の印（`_ub`）の無い URL が戻り、消した絵・前の絵がそのまま出る。
+    // 検出器が `/api/view?` しか見ていなかったので、ここは長く素通りしていた。
+    return outputImageUrl(entry, thumbnail ? { preview: 'jpeg;75' } : {});
 }
 
 /** 表示用に整える。壊れた項目は落とす。 */
@@ -67,13 +65,18 @@ export async function fetchRecipeOutputs(recipeId, deps = {}) {
         return { outputs: [], total: 0, error: '' };
     }
 
-    const query = refresh ? '' : '?refresh=false';
+    // **口はこのパッケージのもの**（`I-20260831-63`）。以前はフォークの
+    // `/api/lm/recipe/{id}/outputs` を叩いていた——**このパッケージのサーバは
+    // `/unbake/` しか出していない**ので 404 になり、黙って空を返していた。
+    //
+    // **数え直しは頼まれたときだけ。** サーバ側の既定は「数え直さない」で、
+    // 全件 `stat` は実測 4,851枚で初回 2,891ms かかる（`routes.py` の注記）。
+    const query = new URLSearchParams({ id: String(recipeId) });
+    if (refresh) query.set('refresh', '1');
     try {
-        const response = await request(
-            `/api/lm/recipe/${encodeURIComponent(recipeId)}/outputs${query}`
-        );
+        const response = await request(`/unbake/outputs?${query.toString()}`);
         const data = await response.json().catch(() => ({}));
-        if (!response.ok || !data.success) {
+        if (!response.ok) {
             return {
                 outputs: [],
                 total: 0,
@@ -82,7 +85,11 @@ export async function fetchRecipeOutputs(recipeId, deps = {}) {
         }
 
         const outputs = normalizeOutputs(data.outputs);
-        return { outputs, total: outputs.length, error: '' };
+        // **サーバが数えた総数を捨てない**（`I-20260831-65`）。
+        // `outputs.length` は `normalizeOutputs` が壊れた項目を落とした後の数で、
+        // 「何枚在るか」ではなく「何枚描けるか」である。両方を返す。
+        const total = Number.isFinite(Number(data.total)) ? Number(data.total) : outputs.length;
+        return { outputs, total, error: '' };
     } catch (error) {
         return { outputs: [], total: 0, error: error?.message || String(error) };
     }

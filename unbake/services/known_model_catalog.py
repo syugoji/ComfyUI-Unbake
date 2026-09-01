@@ -22,8 +22,17 @@ from ..utils.model_file_names import compact_model_name
 
 # Only strip suffixes that are model container formats; a trailing ".190k" in a
 # model name must survive normalization.
-# 拡張子の一覧は py.utils.model_file_names が持つ。ここへ書き戻さないこと
+# 拡張子の一覧は `unbake/utils/model_file_names.py` が持つ。ここへ書き戻さないこと
 # （2026-08-16 実測: 同じ規則が9箇所・5通りに散っていた）。
+
+
+#: **`folder` は `models.ALLOWED_KINDS` の中から選ぶこと**（2026-08-31・3周目）。
+#:
+#: ここへ書いた置き場は `known_model_downloader` が**そのまま**使う——
+#: `download.ALLOWED_KINDS` の関門を通らない。触れる種別に入っていない置き場を
+#: 書くと、**落とせるのに消せないモデル**ができる（実際に `text_encoders` 10件と
+#: `ultralytics_bbox` 1件がその状態だった）。
+#: `tests/test_kinds_and_coercion.py` が突き合わせる。
 
 
 @dataclass(frozen=True)
@@ -443,8 +452,30 @@ DIFFUSION_MODEL_COMPANIONS: Dict[str, Tuple[str, ...]] = {
 }
 
 
+def knows_companions(base_model: Any) -> bool:
+    """この系統について、**表が何か言えるか**（2026-08-31・走査3周目）。
+
+    ``companions_for`` は「表に無い」も「何も要らない」も同じ空の並びで返す。
+    ところが実測では、``civitai.DIFFUSION_MODEL_BASE_MODELS``（＝UNet で読む
+    ＝**本体だけでは動かない**と judged している系統）**42 のうち 26 が
+    この表に無い**——`AuraFlow` / `Hunyuan Video` / `Kolors` / `LTXV` /
+    `Mochi` / `PixArt` / `SVD` / `Wan Video` 系ほか。
+
+    そこへ空の並びを返すと、口は ``missingCount: 0`` を返し、画面は
+    **「何も要りません」**と読む。**「調べたが要らなかった」と「表に無い」は
+    別の話**で、後者は「判らない」と言うべきである。
+    """
+
+    return isinstance(base_model, str) and bool(
+        DIFFUSION_MODEL_COMPANIONS.get(base_model.strip()))
+
+
 def companions_for(base_model: Any) -> List[KnownModel]:
-    """Return the catalog entries a diffusion-model base needs alongside itself."""
+    """Return the catalog entries a diffusion-model base needs alongside itself.
+
+    **空の並びは「要らない」を意味しない。** 表に載っていない系統でも空になる
+    ——見分けるには :func:`knows_companions` を見ること。
+    """
 
     if not isinstance(base_model, str):
         return []

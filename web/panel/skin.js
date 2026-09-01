@@ -11,7 +11,16 @@
  *
  *   1. `node tools/remove-skin.mjs <名前> --apply`（紙・名簿・訳語をまとめて外す）
  *   2. 全部外したら `unbake/settings.py` の `ui_skin` を消す
- *   3. このファイルを消して、呼んでいる2箇所（`panel.js`）を消す
+ *   3. このファイルを消して、**呼んでいる2ファイル**を直す
+ *      ——`panel.js`（`applySkin` / `normalizeSkin`）と
+ *      **`settingsView.js`（`SKINS`）**。
+ *
+ *      **`settingsView.js` を数え落としていた**（2026-08-31・走査3周目）。
+ *      元は「呼んでいる2箇所（`panel.js`）」と書いてあり、
+ *      **2という数は合っているのに、片方のファイル名が抜けていた**。
+ *      手順どおりにやると `settingsView.js:26` が消えたファイルを import して
+ *      **設定面ごと落ちる**。呼び手の実体は
+ *      `tests/skin_test.mjs` が数え上げて、この注記と突き合わせる。
  *
  * **テーマ1（classic）は1行も変えていない。** テーマ2の指定は全部
  * `.unbake-root[data-skin="prism"]` の下に閉じ込めてあり、

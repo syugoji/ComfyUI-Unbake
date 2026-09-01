@@ -11,10 +11,20 @@ Unbake が回収する。だからここが要るのは**一覧**だけで、レ
 
 ## `raindrop_sync_service.py` を配線しなかった理由
 
-同梱の ``unbake/services/raindrop_sync_service.py``（717行）は Raindrop の
-クライアントではなく、**フォーク側の ``civitai_image_download.py`` を別プロセスで
-起動する実行器**だった（``resolve_script_path()`` が
-``civitai_recipe_sync/civitai_image_download.py`` を探す）。配線すると2つ壊れる:
+同梱の ``unbake/services/raindrop_sync_service.py`` は Raindrop の
+クライアントではなく、**同梱スクリプト ``civitai_image_download.py`` を走らせる実行器**
+である（``resolve_script_path()`` が ``civitai_recipe_sync/civitai_image_download.py``
+を探す）。配線すると2つ壊れる:
+
+**「別プロセスで起動する」と書いていたのを直した**（2026-09-01・走査4周目）。
+0.1.2 以降は ``sync_script_runner.py`` が**同一プロセスで import** している。
+``raindrop_sync_service.py`` の冒頭は「**別プロセスだから arm's-length**」という
+論拠が**もう使えない**ことを書き、**将来この境界を読む人がその消えた論拠で
+判断しないため**にわざわざ残してある——ところが「なぜ配線しなかったか」を
+知りたい人が最初に開くのはこちらなので、**注意書きの在る所と、読まれる所が
+違っていた**。同じ主張は NOTICE でも一度嘘になっている（``I-20260831-09``）。
+なお同梱の ``civitai_recipe_sync/README.md`` にも同じ論拠が残っているが、
+あちらは MIT の別配布物で**1文字も変えない**約束なのでここからは直せない。
 
 1. 同梱していない外部スクリプトへ依存する——**独立した拡張ではなくなる**
 2. そのスクリプトは ``.recipe.json`` を書く（実測で書き込み5箇所）——

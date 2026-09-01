@@ -19,7 +19,18 @@ const versionCache = new Map();
 /** 素材が既に持っている情報からサイズ（バイト）を読む。無ければ null。 */
 export function knownSizeOf(resource) {
     // 既知モデル台帳（アップスケーラ等）は台帳が実測値を持っている。
-    if (Number.isFinite(Number(resource?.sizeBytes))) return Number(resource.sizeBytes);
+    //
+    // **`Number(null)` を「判っているサイズ」にしない**（`I-20260831-62`）。
+    // `recipeMissingResources.js` は `size_bytes || null` を作るので、台帳が
+    // サイズを持たない資源は `null` で来る。`Number(null)` は 0 で
+    // `Number.isFinite(0)` は true なので、素直に書くと **0 を「判っている」と
+    // 返し、呼び手の `known !== null` で問い合わせが飛ぶ**。
+    // このファイルの冒頭が言っている「判らない分を 0 として合計しない」は、
+    // まずここで守る必要がある。
+    const declared = resource?.sizeBytes;
+    if (declared !== null && declared !== undefined && Number.isFinite(Number(declared))) {
+        return Number(declared);
+    }
 
     const files = resource?.civitai?.files;
     if (!Array.isArray(files) || files.length === 0) return null;
@@ -37,18 +48,32 @@ export function knownSizeOf(resource) {
     return Number.isFinite(sizeKB) && sizeKB > 0 ? Math.round(sizeKB * 1024) : null;
 }
 
-function endpointPrefix(type) {
-    if (type === 'checkpoint') return 'checkpoints';
-    if (type === 'embedding') return 'embeddings';
-    return 'loras';
+/**
+ * 版IDから素材の種類を表す語。**このパッケージの口が受ける綴り**に揃える
+ * （`I-20260831-63`）。以前はフォークの経路（`/api/lm/{loras|checkpoints|
+ * embeddings}/…`）の一部を組み立てていた。
+ */
+function kindOf(type) {
+    if (type === 'checkpoint') return 'checkpoint';
+    if (type === 'embedding') return 'embedding';
+    return 'lora';
 }
 
-/** Civitai のバージョン情報からサイズを引く（プロセス内で短期キャッシュ）。 */
+/**
+ * Civitai のバージョン情報からサイズを引く（プロセス内で短期キャッシュ）。
+ *
+ * **口はこのパッケージのもの**（`I-20260831-63`）。以前はフォークの
+ * `/api/lm/…` を叩いていたが、**このパッケージのサーバは `/unbake/` しか
+ * 出していない**ので 404 になり、`!response.ok` で黙って `null` を返していた
+ * ——**サイズが引ける相手でも必ず「判らない」になる**。
+ * `modelCompanions.js` は 2026-08-26 に同じ理由で繋ぎ替えてあり、
+ * ここと `recipeOutputs.js` だけ届いていなかった。
+ */
 async function fetchSizeFromCivitai(resource, fetchImpl) {
     const versionId = resource?.id || resource?.modelVersionId;
     if (!versionId) return null;
 
-    const key = `${endpointPrefix(resource?.type)}:${versionId}`;
+    const key = `${kindOf(resource?.type)}:${versionId}`;
     const cached = versionCache.get(key);
     // **結果ではなく Promise を持つ。** 同じ版が複数レシピで不足している
     // ことは普通にあり、結果だけ持つと並列実行では全部キャッシュ登録前に
@@ -57,12 +82,18 @@ async function fetchSizeFromCivitai(resource, fetchImpl) {
 
     const promise = (async () => {
         try {
-            const response = await fetchImpl(
-                `/api/lm/${endpointPrefix(resource?.type)}/civitai/model/version/${versionId}`
-            );
+            const query = new URLSearchParams({
+                id: String(versionId), kind: kindOf(resource?.type),
+            });
+            const response = await fetchImpl(`/unbake/civitai-version?${query.toString()}`);
             if (!response?.ok) return null;
             const data = await response.json();
-            return knownSizeOf({ ...resource, civitai: { files: data?.files } });
+            // **`ok:false` は 200 で返る**（取れなかった理由を載せるため）。
+            // 素直に `data.bytes` を読むと、その形でも `undefined` を数として
+            // 扱いかねないので、旗を先に見る。
+            if (!data?.ok) return null;
+            const bytes = Number(data.bytes);
+            return Number.isFinite(bytes) && bytes > 0 ? bytes : null;
         } catch {
             // サイズが判らないだけで、ダウンロード自体は止めない。
             return null;

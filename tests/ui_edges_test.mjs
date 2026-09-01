@@ -132,8 +132,12 @@ test('絞り込みで対象が消えたら、理由を出す（押しても無�
         // **母集団が揃っている**なら、ここで口ごと消える。
         assert.equal(button.style.display, 'none',
             '対象が0件なのに押せる口が残っている');
-        assert.ok(panel.root.text.includes(t('list.noMatch', { total: 1 }))
-            || button.style.display === 'none');
+        // **`|| button.style.display === 'none'` を落とした**（2026-08-31・
+        // 監査 I-20260831-33）。その右辺は**2行上で既に立証した命題**なので、
+        // OR に置くと左辺（説明文が出ていること）が一度も評価されない
+        // ——実測で、説明文を画面から消す変異を入れても1,534件が緑のままだった。
+        assert.ok(panel.root.text.includes(t('list.noMatch', { total: 1 })),
+            '絞り込みに1件も当たらないことの説明が画面に出ていない');
     } finally { setLocale('en'); }
 });
 

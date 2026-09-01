@@ -124,6 +124,10 @@ export function createDonateView({ documentRef, onCopy = null, onClose = null })
 
     const backdrop = element('div', {
         class: 'unbake-donate-backdrop', role: 'dialog', 'aria-modal': 'true',
+        // **焦点を受け取れる箱にする**（2026-08-31・監査 I-20260831-27）。
+        // 文書側の Esc は張ってあったが、焦点がここへ来ていないと
+        // **開いた直後の Esc が下の面へ届く**（`I-20260830-21` と同じ形）。
+        tabindex: '-1',
     });
     const box = element('div', { class: 'unbake-donate' });
     backdrop.append(box);
@@ -256,6 +260,18 @@ export function createDonateView({ documentRef, onCopy = null, onClose = null })
     backdrop.addEventListener('click', (event) => { if (event?.target === backdrop) destroy(); });
     box.addEventListener('click', (event) => event?.stopPropagation?.());
     doc.addEventListener?.('keydown', onKey);
+    /*
+     * **焦点をこちらへ移す**（2026-08-31・監査 I-20260831-27）。
+     * 移さないと、開いた直後の Esc が下の面へ届く。
+     *
+     * **付いてから移す**（`I-20260830-21` と同じ形）。構築の途中ではこの箱は
+     * まだ文書に付いておらず、外れた要素への `focus()` は何も起きない
+     * ——人形を本物へ寄せた（`I-20260831-17`）ので、ここは検査で捕まる。
+     */
+    setTimeout(() => {
+        if (backdrop.isConnected === false) return;
+        try { backdrop.focus?.(); } catch { /* 焦点を移せない環境でも面は出す */ }
+    }, 0);
 
     return {
         root: backdrop, box, status, destroy,

@@ -163,3 +163,60 @@ test('改行の種類を変えない（外した後の差分が全行になら�
         assert.equal(after, before - 1, '改行を書き換えている（' + before + ' → ' + after + '）');
     }
 });
+
+test('機械で外せない跡を、黙って残さない（`I-20260831-44`）', (t) => {
+    if (!TARGET) { t.skip('テーマ1しか残っていない'); return; }
+    /*
+     * `settings.uiSkin.help` の説明文は**12言語すべてが各テーマの表示名を
+     * 本文に含む**。自由文なので機械が安全に切り取れない——だから
+     * **消せないことを名指しで出す**。黙って残すと「跡を残さない」が嘘になり、
+     * 次にテーマを足す人が古い名前を見る。
+     */
+    const dir = sandbox();
+    const plan = planRemoval(dir, TARGET);
+    assert.equal(plan.ok, true);
+
+    assert.ok(plan.leftovers.length > 0,
+        '説明文に表示名が残っているのに、残ると言っていない');
+    for (const left of plan.leftovers) {
+        assert.equal(left.key, 'settings.uiSkin.help',
+            `思っていない鍵が残ると出ている: ${left.key}`);
+        assert.ok(left.name, '残る名前を出していない');
+    }
+
+    // **本当に残っている**ことを、外したあとの現物で確かめる
+    //（出しているだけで実際は残っていない、では検出器が嘘になる）。
+    applyPlan(plan);
+    for (const left of plan.leftovers) {
+        assert.ok(fs.readFileSync(left.path, 'utf8').includes(left.name),
+            `残ると出したのに残っていない: ${left.path} / ${left.name}`);
+    }
+});
+
+test('[対照] 説明文から名前を消せば、残るものが無くなる', (t) => {
+    if (!TARGET) { t.skip('テーマ1しか残っていない'); return; }
+    const dir = sandbox();
+    const localesDir = path.join(dir, 'web/i18n/locales');
+
+    // **表示名は言語ごとに違う。** 人がやる直しと同じく、その言語の名前を
+    // その言語の説明文からだけ抜く（名前を定義している行は触らない）。
+    for (const file of fs.readdirSync(localesDir)) {
+        const full = path.join(localesDir, file);
+        const lines = fs.readFileSync(full, 'utf8').split(/\r?\n/);
+        const defined = lines.find(
+            line => line.trimStart().startsWith(`"settings.uiSkin.${TARGET}":`));
+        if (!defined) continue;
+        const display = defined.match(/:\s*"((?:[^"\\]|\\.)*)"/)[1].replace(/\\(.)/g, '$1');
+        const next = lines.map(line => (
+            line.trimStart().startsWith('"settings.uiSkin.help":')
+                ? line.split(display).join('…')
+                : line
+        ));
+        fs.writeFileSync(full, next.join('\n'), 'utf8');
+    }
+
+    const plan = planRemoval(dir, TARGET);
+    assert.equal(plan.ok, true);
+    assert.deepEqual(plan.leftovers, [],
+        `残っていないのに残ると言っている: ${JSON.stringify(plan.leftovers)}`);
+});

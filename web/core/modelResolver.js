@@ -33,7 +33,7 @@
  * ——消すと「記録には何と書いてあったか」が辿れなくなる。
  */
 
-import { hashFromModelName } from './modelFileNames.js';
+import { hashFromModelName, modelStem } from './modelFileNames.js';
 
 /** `sha256` 由来の短い hash（Civitai の AutoV2）。**大文字小文字を揃える。** */
 function shortHash(value) {
@@ -43,10 +43,22 @@ function shortHash(value) {
 
 /** 手元の一覧に、この名前がそのまま在るか。**茎で比べる**（拡張子とフォルダを外す）。 */
 function installedHas(installed, name) {
-    const wanted = String(name || '').replace(/\\/g, '/').split('/').pop().replace(/\.[^.]+$/, '').toLowerCase();
+    /*
+     * **茎の取り方は `modelFileNames.js` の1本だけ**（2026-08-31・監査 I-20260831-31）。
+     *
+     * ここは `.replace(/\.[^.]+$/, '')` で**末尾のドット区間を無条件に**落として
+     * いて、「拡張子を落とす規則は唯一ここ」と宣言している
+     * `MODEL_EXTENSION_PATTERN`（既知の拡張子だけを落とす）と食い違っていた。
+     *
+     * **版番号は名前の一部であって拡張子ではない。** 実測でレシピ343件の
+     * LoRA 1,023本のうち **102本（10%）** が `GENESIS_MK0.4` /
+     * `feet_anime_il_v2.5` のような拡張子でない末尾ドットを持ち、
+     * 剥がしすぎて索引側と一致しなくなっていた。
+     * `modelsView.js` の `stemOf` も同じ罠を名指ししている。
+     */
+    const wanted = modelStem(name).toLowerCase();
     if (!wanted) return false;
-    return (installed || []).some(item => String(item)
-        .replace(/\\/g, '/').split('/').pop().replace(/\.[^.]+$/, '').toLowerCase() === wanted);
+    return (installed || []).some(item => modelStem(item).toLowerCase() === wanted);
 }
 
 /**

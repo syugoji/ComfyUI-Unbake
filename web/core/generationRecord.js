@@ -26,12 +26,22 @@
 
 import { t } from '../i18n/index.js';
 import { parseJsonLoose, readPngText } from './pngText.js';
-import { looksLikeExifImage, readExifText } from './exifText.js';
+import { looksLikeExifImage, readExifText, trimTrailingStamp } from './exifText.js';
 import { applyA1111ToSummary, recipeFromA1111 } from './a1111Parameters.js';
 
 /** 書くときの鍵。**外向きなので上流の製品名を含めない。** */
 export const RECORD_STAMP_KEY = 'unbake_generation_record';
-export const SWEEP_STAMP_KEY = 'unbake_sweep_cell';
+/**
+ * Sweep の印の鍵。**書き手（`sweepRunner.js`）と同じ字**（`I-20260830-24`）。
+ *
+ * ここは `unbake_sweep_cell` だった。**その字で焼く書き手はこの repo に1つも無い**
+ * ——`sweepRunner.js` が焼くのは `unbake_sweep` である。読む側だけが幽霊の鍵を
+ * 見ていたので、**Unbake が自分で出した絵から「どのセルから出たか」が読めず**、
+ * フォークが焼いた古い絵（`lora_manager_sweep`）だけが読めていた。
+ *
+ * 書き手はこの定数を輸入して使う。**literal を2箇所に置かない。**
+ */
+export const SWEEP_STAMP_KEY = 'unbake_sweep';
 
 /** 読むときに受ける鍵（**旧い刻印も読む**。過去の出力を捨てないため）。 */
 export const RECORD_STAMP_KEYS = [RECORD_STAMP_KEY, 'lora_manager_recipe'];
@@ -253,7 +263,22 @@ export function buildRecordFromTextChunks(text, origin = {}, unsupported = []) {
     const workflowRaw = firstOf(text, ['workflow']);
     const stampRaw = firstOf(text, RECORD_STAMP_KEYS);
     const sweepRaw = firstOf(text, SWEEP_STAMP_KEYS);
-    const a1111 = firstOf(text, ['parameters']);
+    /*
+     * **刻印の行は、ここでも落とす**（2026-08-31・監査 I-20260831-15）。
+     *
+     * 改造版の LoRA Manager は生成情報の後ろへ `Recipe metadata: {…}` を1行足す。
+     * EXIF 経路は `classifyMetadataText` の中で `trimTrailingStamp` を通していたが、
+     * **PNG 経路はその正規化を一度も通っていなかった**。`a1111Parameters.js` は
+     * 「最後の非空行だけ」を設定行の候補にするので、1行足されているだけで
+     * 候補から外れ、**設定が丸ごと読めなくなる**（実測で同じ画像が
+     * params 0個 対 31個、negative 4,249字 対 1,053字に割れた）。
+     *
+     * 落とすのは末尾側だけなので、本文中に同じ語が在っても切らない。
+     */
+    const a1111Raw = firstOf(text, ['parameters']);
+    const a1111 = a1111Raw
+        ? { ...a1111Raw, value: trimTrailingStamp(a1111Raw.value) }
+        : a1111Raw;
 
     const promptParsed = promptRaw ? parseJsonLoose(promptRaw.value) : { value: null, repaired: false };
     const prompt = promptParsed.value;

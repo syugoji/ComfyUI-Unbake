@@ -69,6 +69,19 @@ const logLines = (panel) => panel.root.allByClass('unbake-log')
     .map(node => String(node.textContent || '').trim())
     .filter(Boolean);
 
+/**
+ * **読み込み直しの模し方**（2026-08-31・監査 I-20260831-12 で直した）。
+ *
+ * 元はここで「面をもう1枚 mount する」だけを読み込み直しに見立てていたが、
+ * **それは「2枚目の面を開いた」と区別が付かない形**だった。実際の読み込み直しは
+ * モジュールごと評価し直すので、**前の面は1つも生きていない**。
+ * 区別しないと、生きている面の行列を2枚目が横取りする欠陥を検査が承認してしまう
+ * （実測でそうなっていた）。前の面を畳んでから起こす。
+ */
+function reload(previous) {
+    previous?.panel?.destroy?.();
+}
+
 test('読み込み直した後、失った行列を戻す口が出る（勝手には走らせない）', async () => {
     resetMemoryStorage();
     const first = heldRunner();
@@ -83,6 +96,7 @@ test('読み込み直した後、失った行列を戻す口が出る（勝手�
     assert.deepEqual(first.started, ['1'], '1件目が走っていない（この検査が空振り）');
 
     // **面ごと作り直す**＝画面の読み込み直しと同じ。
+    reload(a);
     const second = heldRunner();
     const b = mount([rec('1'), rec('2'), rec('3')], { makeSweepRunner: second.makeSweepRunner });
     const said = logLines(b.panel).some(line => line.includes('2 件') && line.includes('順番待ち'));
@@ -106,6 +120,7 @@ test('戻す口を押すと、待っていた分が並び直す', async () => {
     buttons[2].dispatch('click', {});
     await new Promise(r => setTimeout(r, 0));
 
+    reload(a);
     const second = heldRunner();
     const b = mount([rec('1'), rec('2'), rec('3')], { makeSweepRunner: second.makeSweepRunner });
     const resume = b.panel.root.find(node => String(node.textContent || '').includes('並べ直す'));
@@ -129,8 +144,10 @@ test('二度目の読み込みでは、同じ知らせを繰り返さない', as
     buttons[1].dispatch('click', {});
     await new Promise(r => setTimeout(r, 0));
 
+    reload(a);
     const b = mount([rec('1'), rec('2')], { makeSweepRunner: heldRunner().makeSweepRunner });
     assert.ok(logLines(b.panel).some(line => line.includes('順番待ち')), '1度目で知らせていない');
+    reload(b);
     const c = mount([rec('1'), rec('2')], { makeSweepRunner: heldRunner().makeSweepRunner });
     assert.ok(!logLines(c.panel).some(line => line.includes('順番待ち')),
         '控えを消していないので、読み直すたびに同じ知らせが出る');

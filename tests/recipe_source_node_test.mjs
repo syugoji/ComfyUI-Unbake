@@ -29,6 +29,7 @@ import {
     OUTPUT_INDEX,
     OUTPUT_NAMES,
     UNBAKE_NODE_TYPE,
+    alignBundleToGraph,
     planRecipeWiring,
     recipeBundle,
 } from '../web/core/recipeSourceNode.js';
@@ -186,4 +187,113 @@ test('出力の見出しの鍵が、出力の並びと同じ順で書かれて�
 test('出力の番号が名前と対応している', () => {
     assert.equal(OUTPUT_INDEX.prompt, 0);
     assert.equal(OUTPUT_INDEX.checkpoint, OUTPUT_NAMES.length - 1);
+});
+/**
+ * 選択肢（COMBO）の口へ繋ぐ側（`I-20260829-04`）。
+ *
+ * ここで守るのは2つ:
+ *
+ *   1. **流す値はグラフに焼かれている値**であること。記録の生の値
+ *      （`"Euler a"`）を流すと、組み立て側が `resolveSamplerScheduler()` で
+ *      寄せた正しい名前を壊す。**繋ぐまでは害が出ない**ので、繋いだ瞬間に
+ *      退行する形になる。
+ *   2. **値が割れていたら繋がない**こと。出力は1本なので、複数のサンプラーが
+ *      別々の値を持つグラフでは、片方に合わせるともう片方を静かに書き換える。
+ */
+const SAMPLED = {
+    3: {
+        class_type: 'KSampler',
+        inputs: {
+            seed: 1, steps: 28, cfg: 6.5,
+            sampler_name: 'euler_ancestral', scheduler: 'karras',
+            model: ['4', 0], positive: ['6', 0], negative: ['7', 0], latent_image: ['5', 0],
+        },
+    },
+    6: { class_type: 'CLIPTextEncode', inputs: { text: 'a cat', clip: ['4', 1] } },
+};
+
+test('束の sampler / scheduler を、グラフに焼かれている値へ揃える', () => {
+    // 記録側は A1111 の表記。**そのまま流すと選択肢の口に無い値になる。**
+    const raw = { prompt: 'a cat', sampler: 'Euler a', scheduler: 'Karras' };
+    const aligned = alignBundleToGraph(SAMPLED, raw);
+    assert.equal(aligned.sampler, 'euler_ancestral', 'グラフの値へ揃っていない');
+    assert.equal(aligned.scheduler, 'karras', 'グラフの値へ揃っていない');
+    assert.equal(raw.sampler, 'Euler a', '渡された束を書き換えている');
+});
+
+test('グラフに無い項目は束から落とす（既定値での上書きを作らない）', () => {
+    // `SIMPLE` の KSampler は `scheduler` を持たない。
+    const aligned = alignBundleToGraph(SIMPLE, { sampler: 'Euler a', scheduler: 'Karras' });
+    assert.equal(aligned.sampler, 'dpmpp_2m');
+    assert.ok(!('scheduler' in aligned), '無い値を束へ残している');
+});
+
+test('サンプラーが複数在って値が割れていたら繋がない', () => {
+    const split = {
+        ...SAMPLED,
+        30: { class_type: 'KSampler', inputs: { sampler_name: 'dpmpp_2m', scheduler: 'karras' } },
+    };
+    const aligned = alignBundleToGraph(split, { sampler: 'Euler a', scheduler: 'Karras' });
+    assert.ok(!('sampler' in aligned), '割れている値を片方へ寄せている');
+    // scheduler は両方 karras で一致しているので残る（割れているのは sampler だけ）。
+    assert.equal(aligned.scheduler, 'karras', '一致している項目まで落としている');
+});
+
+test('配線済みの口は、揃える判断にも配線にも入れない', () => {
+    const wired = {
+        3: {
+            class_type: 'KSampler',
+            inputs: { sampler_name: ['99', 0], scheduler: 'karras', positive: ['6', 0] },
+        },
+        6: { class_type: 'CLIPTextEncode', inputs: { text: 'a cat', clip: ['4', 1] } },
+    };
+    const aligned = alignBundleToGraph(wired, { sampler: 'Euler a', scheduler: 'Karras' });
+    assert.ok(!('sampler' in aligned), '配線済みの口の値を束へ持ち込んでいる');
+    const plan = planRecipeWiring(wired, aligned);
+    assert.ok(!plan.some(p => p.input === 'sampler_name'), '配線済みの口へ繋ごうとしている');
+});
+
+test('揃えたあとは sampler と scheduler が実際に配線される', () => {
+    const aligned = alignBundleToGraph(SAMPLED, { prompt: 'a cat', sampler: 'Euler a', scheduler: 'Karras' });
+    const plan = planRecipeWiring(SAMPLED, aligned);
+    const pairs = plan.map(p => `${p.node}.${p.input}<-${p.from}`).sort();
+    assert.deepEqual(pairs, ['3.sampler_name<-sampler', '3.scheduler<-scheduler', '6.text<-prompt']);
+});
+
+test('checkpoint は繋がない（出力を選択肢型にできないため）', () => {
+    // 繋げないことを**検査で固定する**。`nodes.py` の `_return_types()` が
+    // `checkpoint` を選択肢から外している理由（一覧の現物を握れない）と対で、
+    // 片方だけ変えると投入不能なグラフを作る。
+    const plan = planRecipeWiring(SIMPLE, { checkpoint: 'x.safetensors' });
+    assert.deepEqual(plan, [], 'モデル名を繋ごうとしている');
+});
+
+test('nodes.py が checkpoint を選択肢に入れていない', () => {
+    const source = fs.readFileSync(path.join(ROOT, 'unbake/nodes.py'), 'utf8');
+    const block = source.match(/^CHOICE_FIELDS = \{([\s\S]*?)^\}/m);
+    assert.ok(block, 'nodes.py の CHOICE_FIELDS が読めない');
+    const names = [...block[1].matchAll(/"([^"]+)":/g)].map(m => m[1]);
+    assert.deepEqual(names, ['sampler', 'scheduler'], '選択肢にする項目が JS 側の前提と違う');
+});
+test('入口が、配線を決める前に束をグラフへ揃えている', () => {
+    // **単体では緑のまま実機だけ壊れる形を塞ぐ。** `alignBundleToGraph()` を
+    // 通さずに `planRecipeWiring()` を呼ぶと、記録の生の値（`"Euler a"`）が
+    // 選択肢の口へ流れて、組み立て側が寄せた正しい名前を上書きする。
+    // その退行はこのファイルのどの単体検査にも当たらない（入口は素通し）。
+    const entry = fs.readFileSync(path.join(ROOT, 'web/unbake.js'), 'utf8');
+    assert.match(entry, /alignBundleToGraph\(\s*prompt\s*,\s*recipeBundle\(/,
+        '入口が束をグラフへ揃えずに配線している');
+});
+test('口が空文字のグラフからは値を採らない', () => {
+    // 手で作ったグラフや、組み立てが途中で止まったグラフには空の口が在る。
+    // 空を「値」として採ると、記録側に正しい値が在っても空で上書きし、
+    // **選択肢に無い値**が KSampler へ流れる（投入が拒否される）。
+    const blank = {
+        3: { class_type: 'KSampler', inputs: { sampler_name: '', scheduler: 'karras' } },
+    };
+    const aligned = alignBundleToGraph(blank, { sampler: 'Euler a', scheduler: 'Karras' });
+    assert.ok(!('sampler' in aligned), '空文字を値として採っている');
+    assert.equal(aligned.scheduler, 'karras');
+    assert.ok(!planRecipeWiring(blank, aligned).some(p => p.input === 'sampler_name'),
+        '空の口へ繋ごうとしている');
 });

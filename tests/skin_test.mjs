@@ -460,3 +460,39 @@ test('知らない値と、器が無い所で落ちない', () => {
     assert.doesNotThrow(() => applySkin(null, 'prism'));
     assert.doesNotThrow(() => applySkin({}, 'prism'));
 });
+
+test('撤去の手順が、呼んでいるファイルを1つも数え落としていない', async () => {
+    /*
+     * **手順書は腐る**——`skin.js` 自身がそう書いている。
+     *
+     * 実際に腐っていた（2026-08-31・走査3周目）: 手順3は「呼んでいる2箇所
+     * （`panel.js`）」と書いていたが、実体は `panel.js` と
+     * **`settingsView.js`** の2ファイルだった。**2という数は合っているのに
+     * ファイル名が片方しか無い**ので、手順どおりにやると `settingsView.js` が
+     * 消えたファイルを import して**設定面ごと落ちる**。
+     *
+     * 綴りではなく**現物の import を数えて**、注記が全部を名指ししているかを見る。
+     *
+     * **見ているのは「この塊のどこかに名前が在るか」**であって、手順の何段目かは
+     * 見ない。手順の中の名前だけを消しても、下の説明が同じ名前を出していれば
+     * 緑のままになる——**それは等価な変異である**（読む人には届いている）。
+     * 反実仮想で確かめた: **手順に載っていない呼び手を1つ足すと赤くなる**
+     * （`confirmView.js` で実測）。守りたいのはそちらである。
+     */
+    const importers = [];
+    for (const name of fs.readdirSync(PANEL)) {
+        if (!name.endsWith('.js') || name === 'skin.js') continue;
+        const text = fs.readFileSync(path.join(PANEL, name), 'utf8');
+        if (/from\s+'\.\/skin\.js'/.test(text)) importers.push(name);
+    }
+    assert.ok(importers.length > 0, '呼び手を数えられていない（当て方が壊れている）');
+
+    // **手順が書いてある塊だけを見る。** 冒頭の著作権表示ではなく、
+    // 最初の `export` より前（＝module の説明）を対象にする。
+    const source = fs.readFileSync(path.join(PANEL, 'skin.js'), 'utf8');
+    const procedure = source.slice(0, source.indexOf('\nexport '));
+    const unnamed = importers.filter(name => !procedure.includes(name));
+    assert.deepEqual(unnamed, [],
+        '撤去の手順が名指ししていない呼び手が在る（消すと、そこが壊れる）: '
+        + unnamed.join(', '));
+});

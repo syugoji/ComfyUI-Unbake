@@ -59,6 +59,36 @@ def _finite_number(value: Any) -> float | None:
     return number if math.isfinite(number) else None
 
 
+def _linked_constant(value: Any, prompt: dict[str, Any]) -> float | None:
+    """配線（``[node_id, slot]``）の先が定数なら、その値を読む。
+
+    読めなければ ``None``（``I-20260831-57``）。`recipeWorkflowBuilder.js` の
+    ``constantNumberOf`` と同じ考え方——**1本しか数を持たないノードだけ**を
+    定数と見なす。2つ以上あるとどれが出口か決められないので読まない。
+    """
+    if not isinstance(value, (list, tuple)) or not value:
+        return None
+    node = prompt.get(str(value[0])) if isinstance(prompt, dict) else None
+    inputs = node.get("inputs") if isinstance(node, dict) and isinstance(node.get("inputs"), dict) else None
+    if not inputs:
+        return None
+    if any(isinstance(item, (list, tuple)) for item in inputs.values()):
+        return None
+    numbers = [
+        float(item) for item in inputs.values()
+        if isinstance(item, (int, float)) and not isinstance(item, bool) and math.isfinite(float(item))
+    ]
+    return numbers[0] if len(numbers) == 1 else None
+
+
+def _strength_of(raw: Any, prompt: dict[str, Any]) -> float | None:
+    """強度を1つ読む。**配線なら繋がっている先も見る。**"""
+    direct = _finite_number(raw)
+    if direct is not None:
+        return direct
+    return _linked_constant(raw, prompt)
+
+
 def _normalized_type(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", "", str(value or "").casefold())
 
@@ -212,6 +242,29 @@ def _parse_prompt_container(value: Any) -> dict[str, Any] | None:
 def _find_embedded_prompt(recipe: dict[str, Any]) -> dict[str, Any] | None:
     metadata = recipe.get("metadata") if isinstance(recipe.get("metadata"), dict) else {}
     raw = recipe.get("raw_metadata") if isinstance(recipe.get("raw_metadata"), dict) else {}
+    generation = (recipe.get("generation_metadata")
+                  if isinstance(recipe.get("generation_metadata"), dict) else {})
+    # **JS 側と同じ並びにする**（2026-09-01・走査12周目）。
+    #
+    # `web/core/recipeWorkflowBuilder.js` の `findEmbeddedPrompt` は候補を
+    # **10個**持つが、ここは**先頭7個しか無かった**——足りないのは、
+    # あちらのコメントが「**利用者の報告で足した**」と書いている当の3つ:
+    #
+    #   `generation_metadata.comfy` … Civitai 取り込みの一部は**ここにだけ**
+    #       グラフを持つ。実測（手元347件）で**この経路だけを持つのが1件**で、
+    #       それは Wan の動画（`WanImageToVideo` → `SaveAnimatedWEBP`）
+    #       ——**動画の記録はこの形で来る**ので母数は増える側。
+    #   `generation_metadata.comfy_prompt` … 同上。
+    #   `prompt` … **こちらが書いた記録**は PNG の `prompt` チャンク
+    #       （API 形式のグラフ）をそのままこの名前で持つ。見ないと
+    #       「ノード13個の完全なグラフを持つ記録」を素通りする。
+    #
+    # 見落とすと `source_kind` が `embedded` にならず、
+    # `_embedded_lora_evidence` が**1件も証拠を出さない**——
+    # 「読めなかった」が「LoRA を使っていない」と同じ顔になる。
+    #
+    # **文字列のプロンプトは通らない**（`_parse_prompt_container` が
+    # 「全部の値が `class_type` を持つ」ことを確かめる）。
     for candidate in (
         recipe.get("comfy"),
         recipe.get("comfy_prompt"),
@@ -220,6 +273,9 @@ def _find_embedded_prompt(recipe: dict[str, Any]) -> dict[str, Any] | None:
         metadata.get("workflow"),
         raw.get("comfy"),
         raw.get("workflow"),
+        generation.get("comfy"),
+        generation.get("comfy_prompt"),
+        recipe.get("prompt"),
     ):
         prompt = _parse_prompt_container(candidate)
         if prompt:
@@ -280,20 +336,37 @@ def _embedded_lora_evidence(prompt: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         inputs = node.get("inputs") if isinstance(node.get("inputs"), dict) else {}
         name = str(inputs.get("lora_name") or "").strip()
-        model_strength = _finite_number(inputs.get("strength_model", inputs.get("strength", 1)))
-        clip_strength = _finite_number(inputs.get("strength_clip", model_strength))
-        if not name or model_strength is None or clip_strength is None:
+        if not name:
             continue
-        evidence.append(
-            {
-                "source": "embedded_reachable_lora",
-                "node_id": str(node_id),
-                "name": name,
-                "strength_model": model_strength,
-                "strength_clip": clip_strength,
-                "priority": 30,
-            }
-        )
+        # **強度が読めなくても、その LoRA を無かったことにしない**（``I-20260831-57``）。
+        #
+        # 以前は `_finite_number` が `None` を返した時点で `continue` していた。
+        # 強度が**配線（``[node_id, slot]``）で来る**のは ComfyUI では普通の形なので、
+        # そのグラフの LoRA は**名前ごと証拠から消えて**いた——落ちるのは強度では
+        # なく「このグラフはこの LoRA を使っている」という事実である。
+        #
+        # 読めるなら読み（繋がっている先が定数のとき）、読めなければ
+        # **鍵を置かない**。`null` を置くと下流の `Number(null)` が **0** になり、
+        # 「強度0で積む」という嘘に化ける（`Number.isFinite(0)` は true）。
+        # 鍵が無ければ `undefined` → `NaN` で、既にある
+        # `LORA_STRENGTH_NON_FINITE` の道が正しく走る。
+        model_strength = _strength_of(inputs.get("strength_model", inputs.get("strength", 1)), prompt)
+        clip_strength = _strength_of(inputs.get("strength_clip", model_strength), prompt)
+        item: dict[str, Any] = {
+            "source": "embedded_reachable_lora",
+            "node_id": str(node_id),
+            "name": name,
+            "priority": 30,
+        }
+        if model_strength is not None and clip_strength is not None:
+            item["strength_model"] = model_strength
+            item["strength_clip"] = clip_strength
+            item["strength_known"] = True
+        else:
+            # **判らないことを名前で言う。** 呼び手が「0」と読めない形にする。
+            item["strength_known"] = False
+            item["strength_source"] = "link"
+        evidence.append(item)
     return evidence
 
 
@@ -326,9 +399,21 @@ def _a1111_resource_evidence(
         resource_type = resource_type or air_type
         if resource_type not in _LORA_TYPES:
             continue
+        # **強度が読めなくても、その LoRA を無かったことにしない**
+        # （`I-20260831-57` を兄弟へも当てた・2026-09-01・走査6周目）。
+        #
+        # ここは `weight` が読めないと `continue` していた——`I-20260831-57` が
+        # `_embedded_lora_evidence` について「**落ちるのは強度ではなく
+        # 『このグラフはこの LoRA を使っている』という事実である**」と直した、
+        # まさにその形が同じファイルの兄弟に残っていた。
+        # A1111 の `Civitai resources` は `weight` を持たない項目を並べうるので、
+        # 落とすと**必須 LoRA が証拠から丸ごと消える**（画面には「無い」としか出ない）。
+        #
+        # 下流は既に強度の無い証拠を扱える——`_strengths_conflict` は
+        # `None` を競合に数えず、`ordered` は強度の判っている方を先頭に置き、
+        # `expected` は鍵ごと落とす。**`null` を置かない**のも同じ理由で、
+        # `Number(null)` が **0** になり「強度0で積む」という嘘に化けるため。
         weight = _finite_number(resource.get("weight"))
-        if weight is None:
-            continue
         air_model_id = air_match.group("model_id") if air_match else None
         air_version_id = air_match.group("version_id") if air_match else None
         direct_model_id = resource.get("modelId")
@@ -356,19 +441,25 @@ def _a1111_resource_evidence(
                 }
             )
             continue
-        evidence.append(
-            {
-                "source": "a1111_civitai_resources",
-                "resource_index": index,
-                "name": resource.get("modelVersionName") or resource.get("modelName") or "",
-                "model_id": direct_model_id or air_model_id,
-                "model_version_id": direct_version_id or air_version_id,
-                "hash": resource.get("hash") or resource.get("sha256") or "",
-                "strength_model": weight,
-                "strength_clip": weight,
-                "priority": 20,
-            }
-        )
+        item: dict[str, Any] = {
+            "source": "a1111_civitai_resources",
+            "resource_index": index,
+            "name": resource.get("modelVersionName") or resource.get("modelName") or "",
+            "model_id": direct_model_id or air_model_id,
+            "model_version_id": direct_version_id or air_version_id,
+            "hash": resource.get("hash") or resource.get("sha256") or "",
+            "priority": 20,
+        }
+        if weight is not None:
+            item["strength_model"] = weight
+            item["strength_clip"] = weight
+            item["strength_known"] = True
+        else:
+            # **判らないことを名前で言う。** 呼び手が「0」と読めない形にする
+            # （`_embedded_lora_evidence` と同じ形）。
+            item["strength_known"] = False
+            item["strength_source"] = "a1111_weight_missing"
+        evidence.append(item)
     return evidence, errors
 
 
@@ -450,12 +541,19 @@ def _matching_resources(
 
 
 def _strengths_conflict(evidence: Iterable[dict[str, Any]]) -> bool:
+    """強度が食い違っているか。**判らないものは食い違いに数えない**（``I-20260831-57``）。
+
+    強度を読めなかった証拠（配線で来たもの）は「別の値」ではなく「値が無い」
+    ので、競合の根拠にしない——数えると、**読めなかっただけで
+    ``LORA_STRENGTH_CONFLICT`` が出る**。
+    """
     strengths = {
         (
             round(float(item["strength_model"]), 8),
             round(float(item["strength_clip"]), 8),
         )
         for item in evidence
+        if item.get("strength_model") is not None and item.get("strength_clip") is not None
     }
     return len(strengths) > 1
 
@@ -466,7 +564,12 @@ class ReplayManifestService:
     def build(self, recipe: dict[str, Any]) -> dict[str, Any]:
         resources = [
             resource
-            for resource in recipe.get("loras", [])
+            # **`or []` にする**（2026-08-31・監査 I-20260831-37）。
+            # `get("loras", [])` は**鍵が在って値が `None`** のとき `None` を返す
+            # ので、そのまま回すと `TypeError`。実データには `"loras": null` を
+            # 持つレシピが在りうる（Civitai の素の形）。このリポジトリの他所は
+            # すべて `get("loras") or []` で書いてあり、ここだけ規則が違っていた。
+            for resource in (recipe.get("loras") or [])
             if isinstance(resource, dict) and not resource.get("exclude")
         ]
         parameters = _find_a1111_parameters(recipe)
@@ -529,7 +632,15 @@ class ReplayManifestService:
 
         required_resources: list[dict[str, Any]] = []
         for key, group in groups.items():
-            ordered = sorted(group["evidence"], key=lambda item: item["priority"], reverse=True)
+            # **強度が判っている証拠を先に置く**（``I-20260831-57``）。
+            # `expected` は先頭から採るので、判らないものが先頭に来ると
+            # 「判っている値が在るのに使わない」ことになる。
+            # 同じ確からしさなら、これまでどおり `priority` の高い順。
+            ordered = sorted(
+                group["evidence"],
+                key=lambda item: (item.get("strength_model") is not None, item["priority"]),
+                reverse=True,
+            )
             if _strengths_conflict(ordered):
                 errors.append(
                     {
@@ -555,9 +666,13 @@ class ReplayManifestService:
                     "required": True,
                     "resource": group["resource"],
                     "resolution": resolution,
+                    # **判らない強度を `null` で置かない**（``I-20260831-57``）。
+                    # 鍵ごと無ければ下流は `NaN` として扱い、
+                    # `LORA_STRENGTH_NON_FINITE` の道が正しく走る。
                     "expected": {
-                        "strength_model": expected["strength_model"],
-                        "strength_clip": expected["strength_clip"],
+                        key_name: expected[key_name]
+                        for key_name in ("strength_model", "strength_clip")
+                        if expected.get(key_name) is not None
                     },
                     "evidence": ordered,
                 }

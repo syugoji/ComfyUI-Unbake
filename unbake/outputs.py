@@ -60,6 +60,11 @@ RAW_KEYS: Tuple[str, ...] = (
     "prompt",
     # 焼いた印（在れば指紋より強い証拠になる）。
     "unbake_sweep",
+    # **試行の印**（2026-09-01・走査8周目）。`recipeTrialRunner` が焼いているのに
+    # ここに無く、**読み手が repo 全体で0件**だった。`STAMP_KEYS` と対で、
+    # `tests/stamp_keys_match_server_test.mjs` と `tests/test_output_raw_reads.py`
+    # が両者の一致を固定している。
+    "unbake_trial",
     "lora_manager_sweep",
     "lora_manager_recipe",
 )
@@ -244,8 +249,22 @@ class OutputScanner:
                 if read is None:
                     continue
                 opened += 1
-                self._cache[path] = (mtime, size, tuple(wanted), read)
-                raw = read
+                # **控えは足す。入れ替えない。**
+                #
+                # 呼び手ごとに欲しい鍵が違う（起動時は印だけ・記録を開いた時は
+                # `prompt`）。入れ替えると、印で控えた直後に `prompt` を頼まれ、
+                # その控えが `prompt` だけになって**次の印がまた読み直しになる**
+                # ——交互に呼ばれるかぎり控えが一度も効かない。
+                # 同じ mtime のあいだ、読めた鍵は積み上げてよい。
+                if cached is not None and cached[0] == mtime:
+                    merged = dict(cached[3])
+                    merged.update(read)
+                    known = tuple(sorted(set(cached[2]) | set(wanted)))
+                else:
+                    merged = dict(read)
+                    known = tuple(sorted(set(wanted)))
+                self._cache[path] = (mtime, size, known, merged)
+                raw = {key: merged[key] for key in wanted if key in merged}
 
             subfolder = ""
             try:
@@ -269,12 +288,43 @@ class OutputScanner:
             "outputs": rows,
             "total": total,
             "offset": start,
+            # **消費した幅**（`I-20260830-14`）。読めなかった PNG は `rows` から
+            # 落ちるので、呼び手が返った件数で進めると**落ちた枚数ぶん次ページが
+            # 手前から始まり、同じ絵を二度数える**。開いた幅はこちらしか知らない。
+            "nextOffset": start + len(window),
             "root": True,
             "keys": list(wanted),
             "opened": opened,
             "elapsedMs": int((time.monotonic() - started) * 1000),
             "unavailable": None,
         }
+
+    def read_raw_cached(self, path: str, keys: Tuple[str, ...]) -> Optional[Dict[str, str]]:
+        """1枚ぶんの生の値を、**控えを通して**読む。
+
+        `page` と同じ控えを使う——別の控えを持つと、同じファイルについて
+        2つの答えが出る。控えは足す（[`page`] と同じ理由）。
+        """
+        try:
+            mtime = os.path.getmtime(path)
+            size = os.path.getsize(path)
+        except OSError:
+            return None
+        cached = self._cache.get(path)
+        if cached is not None and cached[0] == mtime and set(keys) <= set(cached[2]):
+            return {key: cached[3][key] for key in keys if key in cached[3]}
+        read = self._read_raw(path, keys)
+        if read is None:
+            return None
+        if cached is not None and cached[0] == mtime:
+            merged = dict(cached[3])
+            merged.update(read)
+            known = tuple(sorted(set(cached[2]) | set(keys)))
+        else:
+            merged = dict(read)
+            known = tuple(sorted(set(keys)))
+        self._cache[path] = (mtime, size, known, merged)
+        return {key: merged[key] for key in keys if key in merged}
 
     def status(self) -> Dict[str, Any]:
         root = self.root()
@@ -299,6 +349,60 @@ def get_output_scanner(**kwargs: Any) -> OutputScanner:
 def reset_output_scanner() -> None:
     global _instance
     _instance = None
+
+
+def _resolve_inside_output_dir(root: str, subfolder: Any, filename: Any) -> Optional[str]:
+    """出力フォルダの中の1枚を、**実際のパスで**確かめてから返す。
+
+    `delete_output` と同じ守り方をする。ここを緩めると、記録に書かれた文字列を
+    1つ置くだけで任意のファイルを読ませる口になる。
+    """
+    name = str(filename or "").strip()
+    if not name or name in (".", ".."):
+        return None
+    if "/" in name or "\\" in name or os.path.isabs(name):
+        return None
+    relative = str(subfolder or "").strip().replace("\\", "/").strip("/")
+    target = os.path.normpath(os.path.join(root, relative, name))
+    root_real = os.path.realpath(root)
+    target_real = os.path.realpath(target)
+    if target_real != root_real and not target_real.startswith(root_real + os.sep):
+        return None
+    if not os.path.isfile(target_real):
+        return None
+    return target_real
+
+
+def read_raw_for(items: Any, keys: Optional[List[str]] = None) -> Dict[str, Dict[str, str]]:
+    """**名指しした絵だけ**、生の値を読む。
+
+    走査（`page`）は新しい順のページ単位でしか引けないので、「この記録の絵の
+    `prompt` だけ欲しい」が表せない。起動時に `prompt` を取らない形にすると
+    それが要る——**取らない代わりに、開いた時にその記録のぶんだけ取る。**
+
+    返すのは ``"<subfolder>/<filename>" -> {鍵: 値}``。
+    **読めなかった絵は入れない**（空の辞書を入れると「読んだが空だった」と
+    区別できなくなる）。
+    """
+    wanted = tuple(key for key in (keys or []) if key in RAW_KEYS) or RAW_KEYS
+    root = (_default_output_dir() or "").strip()
+    if not root or not os.path.isdir(root):
+        return {}
+    scanner = get_output_scanner()
+    found: Dict[str, Dict[str, str]] = {}
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        subfolder = str(item.get("subfolder") or "")
+        filename = item.get("filename")
+        path = _resolve_inside_output_dir(root, subfolder, filename)
+        if path is None:
+            continue
+        raw = scanner.read_raw_cached(path, wanted)
+        if raw is None:
+            continue
+        found[f"{subfolder}/{filename}"] = raw
+    return found
 
 
 def delete_output(filename: str, subfolder: str = "") -> Dict[str, Any]:

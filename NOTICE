@@ -31,9 +31,19 @@ can mean two very different things.
         civitai_recipe_sync/             (MIT, Copyright (c) 2026 syugoji)
 
     A standalone script that syncs Raindrop bookmarks through Civitai into
-    recipe files, plus its own LICENSE, README and example config. Unbake runs
-    it as a separate Python process; it is not imported, and nothing in
-    `unbake/` or `web/` derives from it.
+    recipe files, plus its own LICENSE, README and example config.
+
+    Since 0.1.2 Unbake imports it into the same process
+    (`unbake/services/sync_script_runner.py`); the script itself is bundled
+    verbatim and nothing in `unbake/` or `web/` derives from it. The wording
+    above used to say "a separate Python process; it is not imported", which
+    was left over from the subprocess era and stopped being true — corrected
+    2026-08-31 (audit I-20260831-09). `pyproject.toml` had already recorded
+    the same correction on 2026-08-27.
+
+    **This directory is not optional.** `resolve_script_path()` looks for it
+    inside the package, so removing it makes Raindrop sync fail outright —
+    the accident the note below already describes.
 
     MIT is compatible with GPL-3.0, and bundling it does not relicense it —
     `civitai_recipe_sync/LICENSE` continues to govern those files. It is
@@ -131,8 +141,18 @@ Third-party material
   ComfyUI-Lora-Manager (GPL-3.0) — `web/core/genParamsMapper.js`, unchanged.
     https://github.com/willmiao/ComfyUI-Lora-Manager
 
-Nothing else. This package bundles no npm dependency and no Python dependency;
-`folder_paths` and `PIL` come from the ComfyUI installation it runs inside.
+Nothing else. This package bundles no npm dependency and declares no Python
+dependency of its own (`pyproject.toml` has `dependencies = []`); everything it
+imports is supplied by the ComfyUI installation it runs inside:
+
+    folder_paths   … ComfyUI itself
+    PIL            … ComfyUI's environment
+    requests       … ComfyUI's `requirements.txt` (measured 2026-08-25, line 27)
+                     — used by the bundled `civitai_recipe_sync/` script, which
+                     now runs in the same process. The earlier wording said
+                     "no Python dependency" without qualification, which read as
+                     "imports nothing third-party" and missed this
+                     (corrected 2026-08-31, audit I-20260831-09).
 
 No licence data obtained from any distributor is included.
 

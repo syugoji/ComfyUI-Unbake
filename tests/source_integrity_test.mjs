@@ -44,7 +44,13 @@ const HOST_MODULE = '../../scripts/app.js';
 // している（実測 2026-08-22・portable の site-packages にも在る）。
 // **`cv2` は足さない。** site-packages には在るが `requirements.txt` に無く、
 // 別の拡張が持ち込んだものかもしれない——名前だけ見て宿主だと思い込まない。
-const HOST_PROVIDED_PYTHON = new Set(['folder_paths', 'PIL', 'server', 'aiohttp', 'av']);
+// `comfy` は ComfyUI 本体そのものの package（pip の依存でも上流フォークでもない）。
+// 実体を2つの導入形態で確かめてある（実測 2026-08-29）:
+// `D:\\Comfy-Desktop\\ComfyUI-Installs\\ComfyUI\\ComfyUI\\comfy\\samplers.py` と
+// portable の `D:\\AI\\ComfyUI_windows_portable\\ComfyUI\\comfy\\samplers.py`。
+// 使うのは `comfy.samplers.KSampler.SAMPLERS` / `.SCHEDULERS` の**現物**だけで、
+// 取れなければ文字列型へ落ちる（`unbake/nodes.py` の `_return_types()`）。
+const HOST_PROVIDED_PYTHON = new Set(['folder_paths', 'PIL', 'server', 'aiohttp', 'av', 'comfy']);
 
 const PY_STDLIB = new Set([
     '__future__', 'asyncio', 'base64', 'collections', 'contextlib', 'copy', 'csv',
@@ -433,11 +439,29 @@ test('ディスクを変える HTTP の口が、宣言した一覧と完全に�
         // **出た絵を消す**（2026-08-25 利用者の指示）。取り消しは面が猶予で持つ
         // ——ここへ着いた時点では戻せないので、置き場の外は必ず断る（下で確かめる）。
         'POST /unbake/output-delete',
+        // **読むだけの口**（`I-20260829-01`）。名指しした絵の生の値を返す。
+        // POST なのは、要る絵の一覧（最大500件）を URL に載せられないからで、
+        // ディスクは1バイトも変えない——**それをこの下で機械に確かめさせる**。
+        // 一覧の意味が「POST の口」へ薄まらないよう、例外を作らず検査を足す。
+        'POST /unbake/output-raw',
         // 記録を残す・消す（`I-20260821-03`）。
         'POST /unbake/record-delete',
         'POST /unbake/record-save',
         'POST /unbake/settings',
     ], `想定していない書き込みの口がある: ${posts.join(' / ')}`);
+
+    // **読むだけの口が、本当に読むだけであること。**
+    // 宣言に足しただけでは「書かない」は守られない（宣言は検査ではない）。
+    const outputsSource = await readFile(join(ROOT, 'unbake/outputs.py'), 'utf8');
+    const readRawAt = outputsSource.indexOf('def read_raw_for(');
+    assert.ok(readRawAt >= 0, 'read_raw_for が見つからない');
+    const afterReadRaw = outputsSource.slice(readRawAt + 1);
+    const nextDefAt = afterReadRaw.search(/^def /m);
+    const readRawBody = nextDefAt < 0 ? afterReadRaw : afterReadRaw.slice(0, nextDefAt);
+    assert.doesNotMatch(readRawBody, new RegExp(PY_WRITE_SOURCE),
+        'read_raw_for が書き込みを持っている（読むだけの口ではない）');
+    assert.match(outputsSource, /def _resolve_inside_output_dir\(/,
+        '名指しの読み口が、置き場の中かを確かめる関数を持っていない');
     // **出た絵を消す口が、置き場の外を断ること。** 断らないと、
     // 「出た絵を消す」口がライブラリを消す口になる。
     const outputs = await readFile(join(ROOT, 'unbake/outputs.py'), 'utf8');

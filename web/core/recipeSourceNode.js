@@ -68,8 +68,9 @@ function num(value) {
  * 使うモデルの名前。**在れば出す、無ければ空。**
  *
  * 形が3通りある（文字列・`{name}`・`{file_name}`）ので、ここで1つへ寄せる。
- * 供給ノードからは文字列として出るだけで、選択肢の口へは繋がない
- * （繋げないので、`nodes.py` の注記を見よ）。
+ * 供給ノードからは**文字列として出るだけ**で、選択肢の口へは繋がない。
+ * 繋げないのは実装をさぼったからではなく、一覧の現物を握れないため
+ * ——理由は `unbake/nodes.py` の `_return_types()` に実測ごと書いてある。
  */
 function checkpointName(recipe) {
     const checkpoint = recipe?.checkpoint;
@@ -114,6 +115,56 @@ export function recipeBundle(recipe, params = {}, origin = {}) {
     put('scheduler', str(gen.scheduler ?? ''));
     put('checkpoint', checkpointName(recipe));
     return bundle;
+}
+
+/**
+ * 束の `sampler` / `scheduler` を、**組み上がったグラフが実際に持っている値**へ揃える。
+ *
+ * `recipeBundle()` が入れるのは記録の生の値で、`"Euler a"` のような A1111 の
+ * 表記が普通に来る。一方で組み立て側は `resolveSamplerScheduler()` を通して
+ * ComfyUI の名前（`euler_ancestral`）へ寄せてから焼いている。
+ * **生の値のまま選択肢の口へ繋ぐと、焼かれていた正しい値を壊す**——
+ * 繋いでいなかった間は害が出なかっただけで、繋いだ瞬間に害へ変わる。
+ *
+ * ここで対応表を引き直さない（`genParamsMapper` を二重に持たない）。
+ * **グラフに在る値を読むだけ。**
+ *
+ * **食い違うなら繋がない。** サンプラーの節が複数在って値が割れている場合、
+ * 1個の出力からは1つの値しか流せないので、揃えずに束から落とす
+ * ——片方に合わせると、もう片方を静かに書き換えることになる。
+ *
+ * @param {object} prompt `buildRecipeWorkflow()` が返した API グラフ
+ * @param {object} bundle `recipeBundle()` が作った値の束
+ * @returns {object} 揃えた束（元の束は変更しない）
+ */
+export function alignBundleToGraph(prompt, bundle = {}) {
+    const aligned = { ...bundle };
+    /** 項目 → グラフ側の口の名前。 */
+    const SLOTS = [['sampler', 'sampler_name'], ['scheduler', 'scheduler']];
+    const seen = new Map(SLOTS.map(([field]) => [field, new Set()]));
+
+    for (const node of Object.values(prompt || {})) {
+        if (!node || typeof node !== 'object') continue;
+        if (!SAMPLER_CLASS.test(str(node.class_type))) continue;
+        const inputs = node.inputs || {};
+        for (const [field, input] of SLOTS) {
+            const value = inputs[input];
+            // **文字列だけを見る。** 配線済みの口の値は配列（`[nodeId, slot]`）
+            // なのでここで落ちる——`planRecipeWiring()` が繋がない口を、
+            // 揃えるかの判断にも入れないことになる。
+            // 配列用の判定を別に置くと、**変異させても赤くならない飾り**が残る
+            // （実測 2026-08-29・その形で1本入れて変異検査に落とされた）。
+            if (typeof value !== 'string' || !value) continue;
+            seen.get(field).add(value);
+        }
+    }
+
+    for (const [field] of SLOTS) {
+        const values = seen.get(field);
+        if (values.size === 1) aligned[field] = [...values][0];
+        else delete aligned[field];
+    }
+    return aligned;
 }
 
 /**
@@ -171,6 +222,17 @@ export function planRecipeWiring(prompt, bundle = {}) {
         }
         if ('steps' in inputs && !isLink(inputs.steps)) add(id, 'steps', 'steps');
         if ('cfg' in inputs && !isLink(inputs.cfg)) add(id, 'cfg', 'cfg');
+
+        // 選択肢（COMBO）の口。**束の値は `alignBundleToGraph()` を通した後の
+        // ものでなければならない**——生の記録の値（`"Euler a"`）を流すと、
+        // 組み立て側が寄せた正しい名前を壊す。`checkpoint` はここに無い
+        // （一覧の現物を握れないので出力を選択肢型にできない・`nodes.py`）。
+        if ('sampler_name' in inputs && !isLink(inputs.sampler_name)) {
+            add(id, 'sampler_name', 'sampler');
+        }
+        if ('scheduler' in inputs && !isLink(inputs.scheduler)) {
+            add(id, 'scheduler', 'scheduler');
+        }
 
         // 本文は条件の側にある。**サンプラーから辿る**——グラフの中に
         // 使われていない `CLIPTextEncode` が残っていることが実際に在り、

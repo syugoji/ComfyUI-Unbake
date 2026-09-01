@@ -147,6 +147,8 @@ class RaindropSyncService:
         self._runner: Optional[SyncScriptRunner] = None
         self._task: Optional[asyncio.Task] = None
         self._cancel_requested = False
+        # 一覧の取得中か（`is_running()` が見る）。I-20260831-38
+        self._listing = False
         self._state: Dict[str, Any] = self._initial_state()
         self._scheduler_task: Optional[asyncio.Task] = None
 
@@ -183,7 +185,15 @@ class RaindropSyncService:
         }
 
     def is_running(self) -> bool:
-        return self._state["status"] == "running"
+        """同梱スクリプトを今このプロセスで回しているか。
+
+        **一覧の取得も数える**（2026-08-31・監査 I-20260831-38）。
+        `list_collections` は `is_running()` を**見るだけで立てていなかった**ので、
+        一覧の取得中に `start()` が通ってしまう。同梱スクリプトは同一プロセスで
+        `importlib.reload` されるため、**走行中の差し込み（`emit_event` の
+        差し替え）が剥がれ**、環境変数も互いに踏み合う。
+        """
+        return self._state["status"] == "running" or self._listing
 
     def get_progress(self) -> Dict[str, Any]:
         """UI へ返す進捗のスナップショット。秘匿値は含めない。"""
@@ -490,6 +500,12 @@ class RaindropSyncService:
 
         script_path = self.resolve_script_path()
         env = self._build_environment(require_sync_targets=False)
+        # **走っている印を立てる**（2026-08-31・監査 I-20260831-38）。
+        # ここは `is_running()` を**見るだけで立てていなかった**ので、
+        # 一覧の取得中に `start()` が通ってしまう。同梱スクリプトは同一プロセスで
+        # `importlib.reload` されるため、**走行中の差し込み（`emit_event` の
+        # 差し替え）が剥がれ**、環境変数も互いに踏み合う。
+        self._listing = True
 
         # **受け皿を先に作る。** 差し込む出口が閉じ込めるので、順序を逆にすると
         # 未定義の名前を掴むラムダができる。
@@ -500,15 +516,39 @@ class RaindropSyncService:
             on_log=lambda line: None,   # 一覧の取得ではログを溜めない
         )
 
+        # **走っている印は、worker が本当に降りるまで降ろさない**
+        # （2026-09-01・走査7周目。`I-20260831-38` の穴）。
+        #
+        # ここは `wait_for` を `finally: self._listing = False` で包んでいた。
+        # ところが**時間切れの経路では worker がまだ走っている**——
+        # `run_list_collections` は `run_in_executor` でスレッドへ流しており、
+        # `request_cancel()` は「次の区切りで降りてくれ」と頼むだけで、
+        # **スレッドを途中で殺す手段は無い**（このファイル自身がそう書いている）。
+        # つまり `finally` は「走っていない」と嘘をつく窓を開けていた。
+        #
+        # その窓で `start()` が通ると、`I-20260831-38` が塞いだはずの事故が
+        # そのまま起きる——同梱スクリプトは同一プロセスで `importlib.reload`
+        # されるので、**走行中の差し込み（`emit_event` の差し替え）が剥がれ**、
+        # 環境変数も互いに踏み合う。
+        task = asyncio.ensure_future(runner.run_list_collections(env))
         try:
-            await asyncio.wait_for(runner.run_list_collections(env), timeout=timeout)
-        except asyncio.TimeoutError as exc:
-            # **止まるよう頼むだけ。** 走っているのは同じプロセスの worker なので、
-            # 途中で殺す手段は無い。次の区切りで自分から降りる。
-            runner.request_cancel()
-            raise RaindropSyncError(
-                f"コレクション一覧の取得が {timeout:.0f} 秒で完了しませんでした。"
-            ) from exc
+            done, _pending = await asyncio.wait({task}, timeout=timeout)
+            if task not in done:
+                # **止まるよう頼むだけ。** 降りたことを確かめてから印を降ろす。
+                runner.request_cancel()
+                task.add_done_callback(self._clear_listing)
+                raise RaindropSyncError(
+                    f"コレクション一覧の取得が {timeout:.0f} 秒で完了しませんでした。"
+                )
+            self._listing = False
+            task.result()   # worker 側の例外をここで浮かせる
+        except RaindropSyncError:
+            raise
+        except BaseException:
+            # 時間切れ以外で抜けるときは worker も終わっているか、
+            # そもそも始まっていない。**印は必ず降ろす**（I-20260831-38）。
+            self._listing = False
+            raise
         except SyncCancelled as exc:   # pragma: no cover - 一覧では起こらない
             raise RaindropSyncError("コレクション一覧の取得を中断しました。") from exc
         except RaindropSyncError:
@@ -534,12 +574,22 @@ class RaindropSyncService:
             # スクリプト側は秘匿値を載せない約束でこのメッセージを作っている。
             raise RaindropSyncConfigError(error_message)
 
-        stderr_text = (stderr_raw or b"").decode("utf-8", errors="replace").strip()
-        detail = f"（終了コード {process.returncode}）"
-        if stderr_text:
-            # 標準エラーは秘匿値を含みうるので、末尾の1行だけに切り詰める。
-            detail += f" {stderr_text.splitlines()[-1][:200]}"
-        raise RaindropSyncError(f"コレクション一覧を取得できませんでした{detail}")
+        # **子プロセス時代の取り残しだった**（2026-08-31・監査 I-20260831-35）。
+        # ここは子プロセスの標準エラーと終了コードを読んでいたが、どちらも
+        # **このファイルのどこにも定義が無い**（同一プロセス化で消えた名前）。
+        # 一覧が1件も拾えなかったときに通る道なので、意図した
+        # `RaindropSyncError` の代わりに `NameError` が出ていた。
+        raise RaindropSyncError(
+            "コレクション一覧を取得できませんでした（スクリプトから結果が返りませんでした）。"
+        )
+
+    def _clear_listing(self, _task: Any = None) -> None:
+        """一覧の worker が本当に降りたときに印を降ろす。
+
+        時間切れで呼び手へ返した後も worker は走り続けるので、
+        **降りたことを見てから**降ろす（`I-20260831-38` の穴・2026-09-01）。
+        """
+        self._listing = False
 
     async def cancel(self) -> Dict[str, Any]:
         """中断を頼む。**即座には止まらない。**

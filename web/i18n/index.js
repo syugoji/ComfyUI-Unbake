@@ -122,9 +122,17 @@ function interpolate(template, params) {
  * @returns {string}
  */
 export function t(code, params) {
+    // **カタログごと無い言語**は既定へ倒す（`setLocale` が解決するので普通は
+    // 起きないが、直に `current` を触られたときの受け皿）。
     const table = CATALOGS[current] || CATALOGS[DEFAULT_LOCALE];
-    const template = table?.[code] ?? CATALOGS[DEFAULT_LOCALE]?.[code];
-    // **未訳を英語へ静かに落とさない。** 落とすと訳の抜けが永久に見えなくなる。
+    // **鍵が無いときは英語へ落とさない**（`I-20260831-64`）。
+    //
+    // ここは長く `?? CATALOGS[DEFAULT_LOCALE]?.[code]` を挟んでおり、
+    // **このファイルが2箇所で宣言していることと逆のことをしていた**——
+    // `[code]` が出るのは「英語にも無いとき」だけで、英語に在れば英語が出る。
+    // `tests/i18n_test.mjs` が鍵集合の一致を固定しているので今は起きないが、
+    // **安全網は2枚あると書いてあって実際は1枚**だった。
+    const template = table?.[code];
     if (template === undefined) return `[${code}]`;
     return interpolate(template, params);
 }

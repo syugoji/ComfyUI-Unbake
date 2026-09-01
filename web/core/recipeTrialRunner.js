@@ -194,7 +194,19 @@ export class RecipeTrialRunner {
         pollIntervalMs = DEFAULT_POLL_MS,
         timeoutMs = DEFAULT_TIMEOUT_MS,
         warn = message => { console.warn(message); },
+        // **保存も注入で受ける**（2026-09-01・走査8周目）。
+        // このファイルの冒頭は「**HTTP と保存を注入で受ける**」と宣言しているが、
+        // **注入されていたのは HTTP だけ**で、保存は module の import を直に使っていた。
+        // そのため**保存に失敗した経路を検査から一度も通せず**、
+        // 「復旧できない状態では投げない」と書いた旗（`storage_persisted`）が
+        // **誰にも読まれていないこと**に誰も気づけなかった。宣言のほうへ合わせる。
+        readStored: readStoredImpl = readStored,
+        writeStored: writeStoredImpl = writeStored,
+        removeStored: removeStoredImpl = removeStored,
     } = {}) {
+        this._readStored = readStoredImpl;
+        this._writeStored = writeStoredImpl;
+        this._removeStored = removeStoredImpl;
         this.objectInfo = objectInfo;
         this.embeddings = embeddings;
         this.knownModelCatalog = knownModelCatalog;
@@ -228,22 +240,22 @@ export class RecipeTrialRunner {
      * いつまでも「未完了があります」と言い続けると、次の試行が永久に始められない。
      */
     readStoredJob(recordId) {
-        const job = readStored(this.storageKey(recordId), null);
+        const job = this._readStored(this.storageKey(recordId), null);
         if (!job || job.schema !== JOB_SCHEMA || job.version !== JOB_VERSION) return null;
         if (Number(job.expires_at) <= this.now()) {
-            removeStored(this.storageKey(recordId));
+            this._removeStored(this.storageKey(recordId));
             return null;
         }
         return job;
     }
 
     persist(job) {
-        return writeStored(this.storageKey(job.record_id), job);
+        return this._writeStored(this.storageKey(job.record_id), job);
     }
 
     /** 保存してある試行を捨てる。 */
     forget(recordId) {
-        return removeStored(this.storageKey(recordId));
+        return this._removeStored(this.storageKey(recordId));
     }
 
     emit(job = this.currentJob) {
@@ -525,8 +537,31 @@ export class RecipeTrialRunner {
         this.currentJob = job;
         // 復旧できない状態では投げない——保存に失敗したまま投げると、
         // 途中で閉じたときに「投げた4件」の行方が完全に判らなくなる。
+        //
+        // **その旗を誰も見ていなかった**（2026-09-01・走査8周目）。
+        // `storage_persisted` は**書かれるだけで読み手が repo 全体で0件**で、
+        // 保存に失敗しても素通りして4件投げていた——上の1行が言っている当のことを
+        // していない。`writeStored` は書けなければ `false` を返す
+        // （容量超過・private mode・保存が塞がれた環境）ので、材料は在った。
+        //
+        // **もう一枚の命綱も同時に外れていた**: 投げた絵に焼く `unbake_trial` の
+        // 印は「落とし直したときに『どの試行の何番目か』が失われないため」に
+        // 在るが、**その印にも読み手が0件**だった（同じ周回で直した）。
+        // つまり保存に失敗すると、4件の生成が**どこからも辿れなくなる**。
         job.storage_persisted = this.persist(job);
         this.emit(job);
+        if (!job.storage_persisted) {
+            this.running = false;
+            // **文言が未訳なのは承知のうえ。** 訳を足すには
+            // `web/i18n/locales/` の12ファイルを触ることになり、
+            // `I-20260901-07` の担当と衝突する（`D-20260901-03` の制約）。
+            // **保護のほうを先に入れ、訳は locales の担当へ回す**
+            // ——「訳が無いから守らない」は順序が逆である。
+            throw new Error(
+                'Unbake: could not save the trial job to browser storage; '
+                + 'refusing to submit so the generations stay traceable.'
+            );
+        }
 
         try {
             await this.requireEmptyQueue();

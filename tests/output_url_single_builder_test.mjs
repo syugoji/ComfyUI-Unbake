@@ -32,8 +32,26 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = fileURLToPath(new URL('../web/', import.meta.url));
 
-/** 出た絵の口を**手で組んでいる**行。`core/outputUrl.js` だけが持ってよい。 */
-const HANDMADE = /`\/api\/view\?/;
+/**
+ * 出た絵の口を**手で組んでいる**行。`core/outputUrl.js` だけが持ってよい。
+ *
+ * **囲いの種類を問わない**（`I-20260830-33`）。元はバッククォート始まりしか
+ * 見ておらず、`'/api/view?…'` と書けば**素通り**した——検査の口が綴り1つぶんしか
+ * 開いていない状態で、「1本だけ」を名乗っていたことになる。
+ */
+/*
+ * **綴りも問わない**（2026-08-31・監査 I-20260831-21）。
+ *
+ * `I-20260830-33` で囲いの種類は広げたが、**経路の綴りは広げていなかった**。
+ * ComfyUI は `/view?` でも `/api/view?` でも同じものを返すので、
+ * `/view?` と書いた行はこの検査を素通りする——実際に
+ * `web/unbake.js` の入力画像を読む口が素通りしていて、鮮度の印が
+ * 載らないまま**上書きされた同名ファイルの古いバイト列**を読んでいた。
+ *
+ * 検査の口を1つ広げるたびに、**広げたこと自体を対照で留める**
+ * （下の [対照] を見よ）。留めないと、次に戻したときに気づけない。
+ */
+const HANDMADE = /['"`](?:\/api)?\/view\?/;
 
 /** この検査から外す。**理由を必ず書く**（黙って外さない）。 */
 const ALLOWED = new Map([
@@ -51,6 +69,23 @@ function jsFiles(dir) {
     }
     return found;
 }
+
+test('[対照] 検査の口が、囲いの種類を問わず開いている', () => {
+    // **広げたこと自体を測る。** 戻しても気づけない形にしない
+    // （i18n の網で同じ授業料を払った）。
+    for (const quote of ['`', "'", '"']) {
+        assert.equal(HANDMADE.test(`${quote}/api/view?filename=x`), true,
+            `${quote} で囲った手組みを見落としている`);
+    }
+    // **綴りの両方を見る**（I-20260831-21）。ComfyUI はどちらでも同じものを返す。
+    for (const quote of ['`', "'", '"']) {
+        assert.equal(HANDMADE.test(`${quote}/view?filename=x`), true,
+            `${quote} で囲った /view? の手組みを見落としている`);
+    }
+    // 別の口は拾わない（`/api/view` を含むだけの文字列で誤爆しない）。
+    assert.equal(HANDMADE.test('/unbake/output-raw'), false, '関係の無い口を拾っている');
+    assert.equal(HANDMADE.test("'/unbake/preview?x'"), false, '関係の無い口を拾っている');
+});
 
 test('出た絵の URL を手で組んでいる所は、組み立て器の1本だけ', () => {
     const offenders = [];

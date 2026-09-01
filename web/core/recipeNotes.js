@@ -18,6 +18,18 @@
 const FIELD_LINE = /^\s*([^:：\r\n]{1,40})[:：]\s*(.*)$/;
 
 /**
+ * **URL の行を項目にしない**（`I-20260831-46`）。
+ *
+ * `https://example.com/x` は `FIELD_LINE` に当たってしまい、**`https` という
+ * 項目名**の行として拾われる。絞り込みの選択肢に `https` が並び、往復すると
+ * `https: //example.com/x` へ書き換わる。
+ *
+ * 外すのは**行そのものが `綴り://` で始まる形だけ**。「参考: https://…」の
+ * ように**値として**書かれた URL は項目のまま残す。
+ */
+const URI_LINE = /^\s*[a-zA-Z][a-zA-Z0-9+.-]*:\/\//;
+
+/**
  * メモ本文を `{fields, freeText}` に分ける。
  *
  * @returns {{fields: Array<{key: string, value: string}>, freeText: string}}
@@ -26,27 +38,53 @@ export function parseNotes(text) {
     const source = typeof text === 'string' ? text : '';
     const fields = [];
     const free = [];
+    // **行の前後関係も返す**（`I-20260831-46`）。`{fields, freeText}` の2つ箱は
+    // **並びを落とす**ので、`formatNotes` が自由記述を必ず末尾へ寄せてしまい、
+    // 往復で本文の順番が入れ替わっていた。
+    const lines = [];
 
     for (const rawLine of source.split(/\r?\n/)) {
-        const match = rawLine.match(FIELD_LINE);
+        const match = URI_LINE.test(rawLine) ? null : rawLine.match(FIELD_LINE);
         if (!match) {
             free.push(rawLine);
+            lines.push({ type: 'free', text: rawLine });
             continue;
         }
         const key = match[1].trim();
         const value = match[2].trim();
         if (!key) {
             free.push(rawLine);
+            lines.push({ type: 'free', text: rawLine });
             continue;
         }
         fields.push({ key, value });
+        lines.push({ type: 'field', key, value });
     }
 
-    return { fields, freeText: free.join('\n').trim() };
+    return { fields, freeText: free.join('\n').trim(), lines };
 }
 
-/** `{fields, freeText}` をメモ本文へ戻す（往復できること）。 */
+/** 並びを持った形を、そのままの順で本文へ戻す。 */
+function renderLines(lines) {
+    return lines
+        .map(line => (line?.type === 'field'
+            ? `${String(line.key).trim()}: ${String(line.value ?? '').trim()}`
+            : String(line?.text ?? '')))
+        .join('\n')
+        .replace(/\s+$/, '');
+}
+
+/**
+ * `{fields, freeText}` をメモ本文へ戻す（往復できること）。
+ *
+ * **`parseNotes` の戻りをそのまま渡すと並びが保たれる**（`I-20260831-46`）。
+ * 昔ながらの `formatNotes(fields, freeText)` も受けるが、その形は
+ * **自由記述が末尾へ寄る**——2つ箱には前後関係が入っていないので復元できない。
+ */
 export function formatNotes(fields, freeText = '') {
+    if (fields && !Array.isArray(fields) && Array.isArray(fields.lines)) {
+        return renderLines(fields.lines);
+    }
     const lines = (Array.isArray(fields) ? fields : [])
         .filter(field => field && typeof field.key === 'string' && field.key.trim())
         .map(field => `${field.key.trim()}: ${String(field.value ?? '').trim()}`);

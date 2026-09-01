@@ -36,8 +36,6 @@
     --unbake-accent-h: 255;
     --unbake-accent: #60a4f9;
     --unbake-accent-dim: rgba(96, 164, 249, 0.16);
-    --unbake-accent: oklch(var(--unbake-accent-l) var(--unbake-accent-c) var(--unbake-accent-h));
-    --unbake-accent-dim: oklch(var(--unbake-accent-l) var(--unbake-accent-c) var(--unbake-accent-h) / 0.16);
     /* --- ボタンの面（2026-08-23 利用者の指示・LoRA Manager を参考に）------
        **押せる四角が、地とほぼ同じ色だった。** 枠だけで押せると分からせる形は、
        並ぶほど「どれが押せるのか」を毎回読ませる。**中を塗ると一目で分かる。**
@@ -168,6 +166,18 @@
    暗い4つ（宿主・琥珀・朱・苔）と明るい1つ（紙）だけ。 */
 
 /* 混色が使える実装でだけ、面を地から持ち上げる（上の後退先を上書きする）。 */
+/* **強調色だけ後退先が働いていなかった**（`I-20260830-22`）。
+   他の10変数は下の `@supports` の中に在るのに、強調色だけ**外で無条件に**
+   `oklch()` へ上書きしていた。読めない実装ではカスタムプロパティの値が
+   *計算時に無効*になり、前の宣言（16進）へは戻らない——**焦点の輪が丸ごと消え、
+   選択状態の枠も落ちる**。素の値を先に置き、使える実装でだけ上書きする。 */
+@supports (color: oklch(71% 0.143 255)) {
+    .unbake-root {
+        --unbake-accent: oklch(var(--unbake-accent-l) var(--unbake-accent-c) var(--unbake-accent-h));
+        --unbake-accent-dim: oklch(var(--unbake-accent-l) var(--unbake-accent-c) var(--unbake-accent-h) / 0.16);
+    }
+}
+
 @supports (color: color-mix(in oklab, white 10%, black)) {
     .unbake-root {
         --unbake-button: color-mix(in oklab, var(--unbake-text) 13%, var(--unbake-panel));
@@ -4430,6 +4440,22 @@ textarea.unbake-detail-input {
 .unbake-detail-was {
     margin: 2px 0 0;
     color: var(--unbake-muted);
+    font-size: var(--unbake-font-sm);
+    /* 長いプロンプトで面を押し広げない。読みたいときだけ中で送る。 */
+    max-block-size: 6em;
+    overflow-y: auto;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+}
+
+/* **実際に描かれる寸法**（`I-20260830-02`）。記録の値と違うときだけ出る。
+   `was`（元の値）と同じ大きさ・同じ位置で、色だけ分ける
+   ——どちらも「欄の値そのものではない補足」なので、形を揃える。 */
+.unbake-detail-effective {
+    margin: 2px 0 0;
+    /* **控えめだが、埋もれない色。** 記録と違う値が出ているという通知なので、
+       元の値（`was`）と同じ灰では見落とす。 */
+    color: var(--unbake-info);
     font-size: var(--unbake-font-sm);
     /* 長いプロンプトで面を押し広げない。読みたいときだけ中で送る。 */
     max-block-size: 6em;

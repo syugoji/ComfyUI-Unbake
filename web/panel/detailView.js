@@ -145,6 +145,18 @@ export { paramsOf };
  */
 export function createDetailView({
     documentRef, record, recipe = null, outputs = [], title = null, originalUrl = null,
+    /**
+     * **実際に描かれる寸法**（`{width, height}` / 無ければ `null`）。
+     *
+     * 記録の `size` は「出力についての報告」で、実際に描かれる寸法とは一致しない。
+     * 実測（2026-08-30・200件）で **一致 129 / 記録が空 49 / 食い違い 12**。
+     * 食い違いは 8の倍数への丸め・画素数の上限・埋め込みグラフ優先・多段の1段目・
+     * 転置補正で、**丸めと上限は今まで画面に何も出ていなかった**。
+     *
+     * **欄の値は差し替えない。** ここは編集でき、そのまま Sweep の軸になる入力なので、
+     * 実効値を入れると「記録を書き換えた」ことになってしまう。添えるだけにする。
+     */
+    effectiveSize = null,
     tabs = [], openTab = null,
     onEnlarge = null, onRun = null, onSwapModel = null, onClose = null,
     /** 強度を動かした本数。**ボタンの字に出すためだけ**に読む。 */
@@ -205,15 +217,52 @@ export function createDetailView({
     const root = element('div', {
         class: 'unbake-detail-backdrop', role: 'dialog', 'aria-modal': 'true',
         'aria-label': t('detail.title', { title: title || record?.title || record?.id || '' }),
+        /*
+         * **焦点を受け取れる箱にする**（`I-20260830-21`）。
+         *
+         * `keydown` は**焦点から上へしか伝わらない**。この箱は `tabindex` を
+         * 持たず `.focus()` も呼ばれていなかったので、開いた直後の Esc は
+         * **完全に無反応**だった（× と外側クリックは効く）。詳細の中を一度
+         * 押すと以後は効くので、「さっきは閉じたのに」という形になる。
+         *
+         * 確認の面（`confirmView.js`）は同じ対を既に持っている。**片方だけ
+         * 持っている状態を残さない。**
+         */
+        tabindex: '-1',
     });
     const box = element('div', { class: 'unbake-detail' });
     root.append(box);
 
     // **周りを押すと閉じる。** 中を押しても閉じない（読んでいる最中に消えない）。
     root.addEventListener('click', (event) => { if (event?.target === root) onClose?.(); });
-    root.addEventListener('keydown', (event) => {
-        if (event?.key === 'Escape') { event.stopPropagation?.(); onClose?.(); }
-    });
+    const onEscape = (event) => {
+        if (event?.key !== 'Escape') return;
+        event.stopPropagation?.();
+        onClose?.();
+    };
+    root.addEventListener('keydown', onEscape);
+    // **焦点がこの箱の外に在っても効く。** 面の別の場所を押すと焦点は出ていく
+    // ——そこで Esc が死ぬと「さっきは閉じたのに閉じない」になる。
+    doc.addEventListener?.('keydown', onEscape);
+
+    /*
+     * **付いてから移す**（`I-20260830-21`・2026-08-30 実機で発覚）。
+     *
+     * ここは構築の途中で、この箱はまだ文書に付いていない——呼び手
+     * （`panel.js` の `root.append(detailView.root)`）が**返り値を受け取ってから**
+     * 付ける。外れた要素への `focus()` は**何も起きない**ので、実機では焦点が
+     * litegraph のキャンバスに残ったままだった。**検査は「原文に `focus()` が
+     * 在ること」しか見ておらず、効いていないことを一度も測っていなかった。**
+     *
+     * Esc 自体は文書側の受け口が拾うので閉じる（実機で確認済み）。それでも
+     * 焦点を移すのは、**鍵盤の操作がこの面から始まるようにする**ため——
+     * 移さないと矢印や Tab が後ろの一覧へ行く。
+     */
+    const focusWhenAttached = () => {
+        if (root.isConnected === false) return;
+        try { root.focus?.(); } catch { /* 焦点を移せない環境でも面は出す */ }
+    };
+    setTimeout(focusWhenAttached, 0);
 
     const close = element('button', {
         class: 'unbake-detail-close', type: 'button',
@@ -381,10 +430,32 @@ export function createDetailView({
         // 欄を書き換えると元が消えるので、「何から何へ変えたのか」が
         // 画面から読めなくなっていた。
         const was = element('p', { class: 'unbake-detail-was' });
+        // **実際に描かれる寸法を添える**（`I-20260830-02`・`size` の欄だけ）。
+        // 記録が空のときも出す——空欄でも寸法は決まっているので、
+        // 「何も決まっていない」と読ませない。
+        const effective = element('p', { class: 'unbake-detail-effective' });
+        /**
+         * 実効値の1行を当てる。**開いた直後にも当てる**——`sync()` は入力が
+         * 起きて初めて走るので、そこだけに置くと**触るまで出ない**
+         * （検査が捕まえた。「出ない」は「無い」と見分けが付かない）。
+         *
+         * @param {boolean} changed 欄を書き換えたか。書き換えた後は出さない
+         *   ——実効値は「記録のまま出したらどうなるか」の話なので、
+         *   欄を触った時点でその話ではなくなる。
+         */
+        const renderEffective = (changed) => {
+            if (field.key !== 'size') return;
+            const before = value === null || value === undefined ? '' : String(value);
+            const drawn = effectiveSize ? `${effectiveSize.width}x${effectiveSize.height}` : '';
+            effective.textContent = (!changed && drawn && drawn !== before)
+                ? t('detail.size.effective', { p1: drawn }) : '';
+        };
+        renderEffective(false);
         const group = element('div', { class: 'unbake-detail-field', 'data-changed': 'false' }, [
             element('label', { class: 'unbake-detail-label', text: t(field.label) }),
             row,
             was,
+            ...(field.key === 'size' ? [effective] : []),
         ]);
 
         const sync = () => {
@@ -396,6 +467,7 @@ export function createDetailView({
             revert.disabled = !changed;
             // 変えていないときは出さない（同じ値を2度読ませない）。
             was.textContent = changed ? t('detail.was', { value: before || '—' }) : '';
+            renderEffective(changed);
             if (changed) changes[field.key] = now;
             else delete changes[field.key];
             if (field.key === 'prompt') syncPlaceholders();
@@ -820,10 +892,30 @@ export function createDetailView({
             // **理由を字で出す。** 押せないボタンだけでは何を直せばいいか判らない。
             run.textContent = t('detail.run.same');
             status.textContent = error || '';
+            /*
+             * **ここで印を付ける**（2026-09-01・走査14周目）。
+             *
+             * 印は「いま出ている文言は計画の失敗だから、直ったら消してよい」という
+             * 意味で、消す側は下の1行に在る。ところが**印を立てる場所がここに
+             * 無かった**——下の `Boolean(error)` は `plan` が在るときにしか
+             * 通らず、`plan` が在るなら `error` は必ず `null` なので、
+             * **この変数は生涯 `false` のまま**だった（宣言・投入後・読み取り後の
+             * 3箇所も `false` を入れている）。つまり消す側は**一度も走らない**。
+             *
+             * 実測（同じ面で数の欄だけ動かした）:
+             *
+             *   [64枚] status='That would be 64 images (limit 24)…'  run='Run again…'   disabled=true
+             *   [8枚]  status='That would be 64 images (limit 24)…'  run='Run 8 images' disabled=false
+             *
+             * **ボタンは「8枚出す」と言い、字は「減らせ」と言っている。**
+             * 直したのに叱られ続けるので、何を直せばいいのか判らなくなる。
+             */
+            lastStatusWasPlanError = true;
             return;
         }
         if (status.textContent && !busy && lastStatusWasPlanError) status.textContent = '';
-        lastStatusWasPlanError = Boolean(error);
+        // ここへ来た時点で `error` は必ず `null`（`plan` と `error` は排他）。
+        lastStatusWasPlanError = false;
         run.textContent = plan.cellCount > 1
             ? t('detail.run.images', { count: plan.cellCount })
             : (count ? t('detail.run', { count }) : t('detail.run.same'));
@@ -1000,25 +1092,28 @@ export function createDetailView({
          */
         refresh: updateRun,
         /**
-         * 取り出した値を欄へ流し込む。**呼び手からも押せるようにしておく**
-         * ——升目から直接戻す口を後で足すときに、面の中のボタンを模して
-         * 叩くのではなく、この1本を呼べば済む。
-         */
-        applyParams,
-        get index() { return index; },
-        get sequence() { return sequence; },
-        /**
          * 取り出した値を欄へ流し込む（2026-08-24 に外へ出した）。
          *
          * **「出た絵」の面からも呼ぶ**ので、面の中だけの関数にしておけない
          * ——あちらは差してあるだけで、欄を持っているのはこちら。
+         * 升目から直接戻す口を後で足すときも、面の中のボタンを模して叩くのではなく
+         * この1本を呼べば済む。
          * **流し込みを2箇所に書かない**（空を弾く規則も `sync()` を通す約束も1本で持つ）。
+         *
+         * ——と書いておきながら、**この鍵自体が2回書かれていた**（2026-09-01・
+         * 走査14周目）。後の1つが前を上書きするので挙動は同じだが、注記が2枚に割れ、
+         * 片方（前の1枚）は**誰も読めない場所**に居た。2箇所に書かない、はここにも掛かる。
          */
         applyParams,
+        get index() { return index; },
+        get sequence() { return sequence; },
         get changes() { return { ...changes }; },
         get tab() { return current; },
         get modelsPane() { return modelsPane; },
         destroy() {
+            // **文書へ張った受け口を外す**（`I-20260830-21`）。外さないと
+            // 開くたびに積み上がり、閉じた面の `onClose` まで走る。
+            doc.removeEventListener?.('keydown', onEscape);
             // **差した面も畳む。** 置き去りにすると、Sweep の待ちや監視が生き残る。
             for (const { handle } of mounted.values()) handle?.destroy?.();
             mounted.clear();

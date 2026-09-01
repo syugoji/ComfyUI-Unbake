@@ -898,9 +898,13 @@ test('Civitai 以外のホストからは落とさない', (t) => {
 // いないので、その場でブックマークだけして後で回収する。だから要るのは**一覧**だけ。
 //
 // **同梱の `raindrop_sync_service.py` は配線しなかった。** あれは Raindrop の
-// クライアントではなく、フォーク側の `civitai_image_download.py` を別プロセスで
-// 起動する実行器で、そのスクリプトは `.recipe.json` を書く（実測で書き込み5箇所）
+// クライアントではなく、同梱スクリプト `civitai_image_download.py` を走らせる
+// 実行器で、そのスクリプトは `.recipe.json` を書く（実測で書き込み5箇所）
 // ——**Unbake は書き戻さない**という決めごとに正面から反する。
+//
+// **「別プロセスで」と書いていたのを直した**（2026-09-01・走査4周目）。0.1.2 以降は
+// `sync_script_runner.py` が**同一プロセスで import** している。同じ消えた論拠が
+// NOTICE（`I-20260831-09`）・`unbake/raindrop.py`・同梱 README の3箇所に残っていた。
 
 test('鍵が無いことと、0件だったことを混ぜない', (t) => {
     if (!havePython) { t.skip('python が見つからない'); return; }

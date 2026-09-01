@@ -293,8 +293,16 @@ export function createSettingsView({
             element('p', { class: 'unbake-settings-help', text: t(field.help) }),
         ]));
     }
-    // `TEXT_FIELDS` の先頭（コレクションID）は鍵の直後、残りはその下。
-    const collectionField = fields.shift();
+    // **置き場の設定は「置き場」の群へ**（2026-08-31・走査3周目）。
+    //
+    // 元は `fields.shift()` で**先頭（コレクションID）だけ**を抜いており、
+    // 残る `record_output_dir`（記録の置き場）と `download_root`（落とし先）は
+    // `fields` に残ったまま「見せ方」の群へ流れていた
+    // ——**フォルダの設定が2つとも見た目の設定に混ざる**。
+    // 抜くのは `TEXT_FIELDS` のぶん全部にして、行き先を明示的に決める。
+    const textFields = fields.splice(0, TEXT_FIELDS.length);
+    const collectionField = textFields[0];
+    const folderFields = textFields.slice(1);
 
     // --- 表示の項目 ---------------------------------------------------
     const displayInputs = new Map();
@@ -524,7 +532,8 @@ export function createSettingsView({
         // **鍵 → 取り込み → 表示。** 並びは今まで通り（使う順）で、
         // **境目に見出しを置いただけ**——並べ替えると、覚えた場所が動く。
         group('settings.group.keys', secretFields),
-        group('settings.group.library', [collectionField, sourceDirsField]),
+        group('settings.group.library',
+              [collectionField, sourceDirsField, ...folderFields].filter(Boolean)),
         group('settings.group.display', fields),
         element('div', { class: 'unbake-settings-actions' },
             [rescanButton, refreshButton, refreshStop].filter(Boolean)),
@@ -540,7 +549,24 @@ export function createSettingsView({
         // **打っている欄には当て直さない。** 保存が終わると値を読み直して当て直す
         // ので、打ち終える前に当てるとカーソルが飛ぶ——押した瞬間にしか保存
         // しなかった間は起きなかった問題で、自動保存にした今日から要る。
-        const active = documentRef?.activeElement ?? null;
+        /*
+         * **解決済みの `doc` を見る**（2026-09-01・走査15周目）。
+         *
+         * ここだけ生の `documentRef` を読んでいた。この面は
+         * `const doc = documentRef || globalThis.document` で**省略を認めている**
+         * ので、省いて作ると `documentRef` は `undefined` ↓
+         * `active` が `null` ↓ `settable()` が常に真になり、
+         * **「打っている欄には当て直さない」という約束だけが黙って消える。**
+         *
+         * 実測（面を付けてから欄に焦点を置き、`apply()` を呼んだ）:
+         *
+         *   documentRef を渡した: "打っている途中"  ← 守られている
+         *   documentRef を省いた: "saved"          ← 打った字が消える
+         *
+         * `panel.js` の同じ処理は `doc?.activeElement` と書いてある。
+         * **片方だけ生を読んでいた**（走査14周目に見つけたのと同じ形）。
+         */
+        const active = doc?.activeElement ?? null;
         const settable = (node) => node !== active;
         if (settable(sourceDirs)) {
             sourceDirs.value = (values.record_source_dirs || []).join('\n');

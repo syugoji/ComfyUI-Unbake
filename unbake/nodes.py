@@ -49,11 +49,9 @@ from typing import Any
 
 #: 供給する値。**並びが出力の並び**（`RETURN_NAMES` と1対1）。
 #:
-#: `sampler` / `scheduler` / `checkpoint` は文字列で出す。ComfyUI 側の
-#: 受け口は選択肢（COMBO）なので直結はできないが、**値としては下流の
-#: 別のノードやメモ書きから読める**。ここを選択肢型にすると、
-#: 選択肢の中身を輸入時に取りに行くことになり（`folder_paths` の一覧を
-#: クラス定義の時点で確定させる形）、**起動順によっては空で固まる**。
+#: ここの `kind` は**実行時に値を寄せる型**（`_coerce` が見る）であって、
+#: 出力の型そのものではない。出力の型は下の `_return_types()` が決める
+#: ——選択肢（COMBO）の口へ繋ぐ項目だけ、型が一覧そのものになる。
 FIELDS = (
     ("prompt", "STRING", ""),
     ("negative", "STRING", ""),
@@ -64,6 +62,88 @@ FIELDS = (
     ("scheduler", "STRING", ""),
     ("checkpoint", "STRING", ""),
 )
+
+
+def _sampler_choices():
+    """`sampler_name` の口が持っている選択肢の**現物**。
+
+    **複製を返さない。** `comfy.samplers.KSampler.SAMPLERS` の list を
+    そのまま返す。サーバ側の型検査（`comfy_execution/validation.py` の
+    `validate_node_input`）は、受け側が旧形式（`input_type` が list そのもの）
+    のとき**内容が等しいこと**を要求する。同じ物を握っていれば、他の拡張が
+    `SAMPLERS.append(...)` で足しても食い違わない。**複製を持つと、その瞬間から
+    黙って古くなる。**
+
+    取れなければ `None`。ComfyUI の外（検査・道具）から読み込まれたときに
+    ここで例外を出して全部を止めない——この方針はこの module 全体で同じ。
+    """
+    try:
+        import comfy.samplers  # ComfyUI 本体。pip の依存ではない。
+    except Exception:
+        return None
+    try:
+        choices = comfy.samplers.KSampler.SAMPLERS
+    except Exception:
+        return None
+    return choices if isinstance(choices, list) else None
+
+
+def _scheduler_choices():
+    """`scheduler` の口が持っている選択肢の**現物**。`_sampler_choices` と同じ理由。"""
+    try:
+        import comfy.samplers
+    except Exception:
+        return None
+    try:
+        choices = comfy.samplers.KSampler.SCHEDULERS
+    except Exception:
+        return None
+    return choices if isinstance(choices, list) else None
+
+
+#: 出力を選択肢（COMBO）にする項目 → 一覧の取り方。
+#:
+#: **`checkpoint` はここに入れない**（理由は `_return_types()`）。
+CHOICE_FIELDS = {
+    "sampler": _sampler_choices,
+    "scheduler": _scheduler_choices,
+}
+
+
+def _return_types() -> tuple:
+    """出力の型。**一覧が現物で取れた項目だけ COMBO にする。**
+
+    ## 文字列のままでは繋がらない（実測 2026-08-29・frontend 1.49.6）
+
+    フロントは出力の型を `type: Array.isArray(t) ? "COMBO" : t` で決め、
+    配列なら `options` を持つ COMBO の口になる（`static/assets/settingStore-*.js`）。
+    サーバ側の `validate_node_input` も、`"STRING"` と list を突き合わせて
+    **不一致で弾く**（`received_type` が str でない場合の分岐へ落ちない）。
+    **どちらの層でも、文字列型の出力は選択肢の口へ繋げない。**
+    「値としては読める」だけでは、画像を差し替えてもサンプラーは追従しない。
+
+    ## なぜ `checkpoint` を選択肢にしないか
+
+    一覧の出所 `folder_paths.get_filename_list` は `return list(out[0])` で
+    **毎回コピーを返す**ので、`sampler` のように現物を握れない。握れない以上
+    `RETURN_TYPES` はクラス定義の時点で固まり、**利用者がモデルを1つ足した
+    瞬間に受け側の一覧とずれる**。ずれると壊れるのはこの1本の線ではなく、
+    `Return type mismatch` で**グラフ全体が投入不能**になる。
+
+    **読み込みを遅らせる逃げ道も無い。** クラス属性を metaclass の property に
+    すれば `/object_info` と検証には追随するが、`execution.py` は
+    `len(obj.RETURN_TYPES)` を**インスタンス経由**でも読む（5箇所）。
+    インスタンスの属性探索は metaclass を通らないので `AttributeError` になる。
+
+    したがって `checkpoint` は文字列のまま据え置く。**繋がらないことが分かって
+    いる線を、繋がるように見せかけない。**
+    """
+    types = []
+    for name, kind, _default in FIELDS:
+        getter = CHOICE_FIELDS.get(name)
+        choices = getter() if getter is not None else None
+        types.append(choices if choices else kind)
+    return tuple(types)
 
 
 def _input_images() -> list:
@@ -122,7 +202,7 @@ class UnbakeRecipeSource:
 
     CATEGORY = "Unbake"
     FUNCTION = "supply"
-    RETURN_TYPES = tuple(kind for _name, kind, _default in FIELDS)
+    RETURN_TYPES = _return_types()
     RETURN_NAMES = tuple(name for name, _kind, _default in FIELDS)
     DESCRIPTION = (
         "Reads how a picture was made and feeds those settings into the graph. "
@@ -191,6 +271,7 @@ NODE_DISPLAY_NAME_MAPPINGS: dict[str, str] = {
 }
 
 __all__ = [
+    "CHOICE_FIELDS",
     "FIELDS",
     "NODE_CLASS_MAPPINGS",
     "NODE_DISPLAY_NAME_MAPPINGS",

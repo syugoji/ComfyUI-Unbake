@@ -52,7 +52,7 @@ SCHEMA_VERSION = 1
 #: 種別を増やすたびに、取れるモデルを黙って遮断する。** 判定の誤りは
 #: 「手段を奪う側」へ倒れてはいけないので、黒リストへ反転させた。
 #:
-#: `static/js/utils/recipeMissingModels.js` の `NON_LOADABLE_FILE_TYPES` と
+#: `web/core/recipeMissingModels.js` の `NON_LOADABLE_FILE_TYPES` と
 #: 同一集合であることを `tests/declared_tests_exist_test.mjs` が
 #: 両ファイルを読んで固定する（2026-08-28: それまでは**存在しない検査**を
 #: 名指ししていた。名前が在ると読んだ人はそこで確かめるのをやめる）。
@@ -258,6 +258,28 @@ class ResourceAvailabilityService:
     async def _resolve_one(self, model_id: int | None, version_id: int | None) -> dict[str, Any]:
         try:
             verdict, reason = await self._probe(model_id, version_id)
+        except NotImplementedError:
+            # **`_probe` の宣言を、ここで取り消さない**（2026-09-01・走査6周目）。
+            #
+            # `_probe` は「**口が無いなら、無いと言う。`except Exception` に
+            # 飲ませると『問い合わせできませんでした』と区別が付かなくなる**」と
+            # 書いて `NotImplementedError` を投げる（`I-20260831-36`）。
+            # ところが `NotImplementedError` も `Exception` なので、
+            # **すぐ下の `except Exception` が飲んで `unknown` へ潰していた**
+            # ——`_probe` が分けた2つが、呼び手から見ると同じ `verdict` に戻る。
+            #
+            # **文言だけ違っても分けたことにならない。** このリポジトリは
+            # 何度も「文言は訳されると当たらない。画面は `code` で分類する」と
+            # 書いている（`routes.start_download`）。呼び手が枝を切るのは
+            # `verdict` なので、そこが同じなら区別は失われている。
+            #
+            # 既存の検査は `_probe` を**直接**呼んでいたので、この経路を
+            # 一度も通っていなかった（`tests/test_service_layer_defects.py`）。
+            #
+            # 配線前の欠落は利用者の環境の話ではなく**組み立ての誤り**なので、
+            # そのまま浮かせる——`test_python_reachability.py` の方針
+            # 「配線した人が最初の1回で踏む」と同じ扱いにする。
+            raise
         except Exception as exc:  # noqa: BLE001 - 判定不能はそのまま「不明」
             verdict, reason = UNKNOWN, f"判定できませんでした: {exc}"
         return {
@@ -285,7 +307,34 @@ class ResourceAvailabilityService:
         return client
 
     async def _probe(self, model_id: int | None, version_id: int | None) -> tuple[str, str]:
+        """
+        **この関数が呼ぶ口は、このリポジトリに存在しない**
+        （2026-08-31・監査 I-20260831-36）。
+
+        下で `client.probe_model` / `client.probe_model_version` を呼んでいるが、
+        `grep -rn "def probe_model"` は**0件**で、`ResourceAvailabilityService` を
+        組み立てる呼び手も**0件**（`tests/test_python_reachability.py` が
+        「入口から到達しない」と宣言している通り）。
+
+        **落ち方が静かなので、実装したつもりで放置されやすい。**
+        `_resolve_one` の `except Exception` が `AttributeError` を飲むので、
+        配線した瞬間に**全件が「判定できませんでした」（unknown）**になり、
+        エラーは1行も出ない。「Civitai へ問い合わせられなかった」と
+        「呼ぶ相手が居ない」が同じ顔で出る。
+
+        **配線する前に `probe_model` / `probe_model_version` を実装すること。**
+        返す形は `(status, data)` で、`status` は `"ok"` / `"not_found"` /
+        それ以外（問い合わせ失敗）。
+        """
         client = await self._resolve_client()
+        # **口が無いなら、無いと言う。** `except Exception` に飲ませると
+        # 「問い合わせできませんでした」と区別が付かなくなる。
+        for name in ("probe_model", "probe_model_version"):
+            if not callable(getattr(client, name, None)):
+                raise NotImplementedError(
+                    f"civitai client に {name}() がありません"
+                    "（この判定は配線前です。I-20260831-36）"
+                )
 
         if model_id is not None:
             status, model_data = await client.probe_model(model_id)

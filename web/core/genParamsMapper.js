@@ -188,30 +188,32 @@ function parseCombinedSamplerName(rawValue) {
     const trimmed = rawValue.trim();
     if (!trimmed) return null;
 
-    // Try space-separated first: split on last space
-    const spaceIdx = trimmed.lastIndexOf(' ');
-    if (spaceIdx > 0) {
-        const candidateScheduler = trimmed.slice(spaceIdx + 1).trim().toLowerCase();
-        if (SCHEDULER_SUFFIXES.includes(candidateScheduler)) {
-            const samplerPart = trimmed.slice(0, spaceIdx).trim();
-            const internalSampler = SAMPLER_DISPLAY_TO_INTERNAL[samplerPart];
+    /*
+     * **表が宣言している最長一致を、実際にやる**（2026-08-31・監査 I-20260831-16）。
+     *
+     * 元は `lastIndexOf(' ')` と `lastIndexOf('_')` で**1回しか切っていなかった**
+     * ので、`SCHEDULER_SUFFIXES` の複数語の4つ（`sgm_uniform` / `ddim_uniform` /
+     * `linear_quadratic` / `kl_optimal`）は候補が常に `uniform` / `quadratic` /
+     * `optimal` になり、**絶対に一致しなかった**——表の半分が死んでいた。
+     * `SCHEDULER_SUFFIXES` は長さ降順に並べてあるので、上から当てれば最長一致になる。
+     *
+     * 外したときの壊れ方が悪い。落ちた値は後段の緩い判定に拾われ、
+     * **存在しないサンプラー名としてそのまま返る**うえ、scheduler は null なので
+     * **ノードの既定値が据え置かれ、記録に書いてあるスケジューラが黙って別物になる。**
+     */
+    for (const suffix of SCHEDULER_SUFFIXES) {
+        for (const separator of ['_', ' ']) {
+            const tail = separator + suffix;
+            // 大小を無視して末尾を見る（表示名は `SGM Uniform` のように来る）。
+            const lower = trimmed.toLowerCase();
+            if (!lower.endsWith(tail)) continue;
+            const samplerPart = trimmed.slice(0, trimmed.length - tail.length).trim();
+            // **サンプラー側が空になる切り方はしない**（`beta` 単体などを潰さない）。
+            if (!samplerPart) continue;
+            const internalSampler = SAMPLER_DISPLAY_TO_INTERNAL[samplerPart]
+                || SAMPLER_DISPLAY_TO_INTERNAL[samplerPart.toLowerCase()];
             if (internalSampler) {
-                return { sampler: internalSampler, scheduler: candidateScheduler };
-            }
-            // samplerPart might be a combined name itself (e.g., "DPM++ 2M SDE")
-            // Try recursing (one level max) — already handled since we split at last space
-        }
-    }
-
-    // Try underscore-separated: e.g., "er_sde_beta"
-    const underIdx = trimmed.lastIndexOf('_');
-    if (underIdx > 0) {
-        const candidateScheduler = trimmed.slice(underIdx + 1).trim().toLowerCase();
-        if (SCHEDULER_SUFFIXES.includes(candidateScheduler)) {
-            const samplerPart = trimmed.slice(0, underIdx).trim();
-            const internalSampler = SAMPLER_DISPLAY_TO_INTERNAL[samplerPart] || SAMPLER_DISPLAY_TO_INTERNAL[samplerPart.toLowerCase()];
-            if (internalSampler) {
-                return { sampler: internalSampler, scheduler: candidateScheduler };
+                return { sampler: internalSampler, scheduler: suffix };
             }
         }
     }

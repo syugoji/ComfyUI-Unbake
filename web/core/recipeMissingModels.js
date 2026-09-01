@@ -21,8 +21,26 @@ import { t } from '../i18n/index.js';
 import { compactModelName } from './modelFileNames.js';
 import { environmentRequestOrNull } from './environment.js';
 
-const CATALOG_ENDPOINT = '/api/lm/known-models';
-const AVAILABILITY_ENDPOINT = '/api/lm/recipes/resource-availability';
+/**
+ * **このパッケージには、台帳と配布可否の口が無い**（`I-20260831-63`）。
+ *
+ * ここは長くフォークの `/api/lm/known-models` と
+ * `/api/lm/recipes/resource-availability` を綴りで持っていた。
+ * **このパッケージのサーバは `/unbake/` しか出していない**ので、叩けば必ず
+ * 404 になる——台帳の側は `http-404` を理由として返し、配布可否の側は
+ * `if (!response?.ok) return;` で**黙って捨てて**いた。
+ * どちらも「相手のサーバが古い」ように見えるが、**実際は口が存在しない。**
+ *
+ * だから**叩かない**。台帳は呼び手が渡す（`knownModelCatalog`）。
+ * 渡されなければ「口が無い」と正直に言う——`http-404` より正確で、
+ * 無駄な往復も1つ減る。
+ *
+ * **口を生やすのは別の仕事**（`I-20260831-67`）。中身は
+ * `unbake/services/known_model_catalog.py` と
+ * `unbake/services/recipes/resource_availability_service.py` に在るのに、
+ * `routes.py` から届いていない。
+ */
+const CATALOG_UNAVAILABLE_REASON = 'no-endpoint';
 
 let catalogPromise = null;
 
@@ -58,26 +76,11 @@ export async function getKnownModelCatalog({ force = false, fetchImpl = null } =
     if (!catalogPromise) {
         // **環境は呼び手が据える。** 元は大域の HTTP 呼び出しへ直接落ちていたので、
         // ブラウザで LoRA Manager のページを開いている状態にしか置けなかった。
-        const doFetch = fetchImpl || environmentRequestOrNull();
         const unavailable = (reason) => ({ models: [], installed: [], unavailable: reason });
-        catalogPromise = (async () => {
-            if (!doFetch) return unavailable('no-request');
-            try {
-                const response = await doFetch(CATALOG_ENDPOINT);
-                if (!response?.ok) return unavailable(`http-${response?.status ?? 'error'}`);
-                const data = await response.json();
-                if (!data?.success || !Array.isArray(data.models)) {
-                    return unavailable('malformed');
-                }
-                return {
-                    models: data.models,
-                    installed: Array.isArray(data.installed) ? data.installed : [],
-                    unavailable: null,
-                };
-            } catch {
-                return unavailable('exception');
-            }
-        })();
+        // **叩く先が無いので、叩かずに理由を返す**（`I-20260831-63`）。
+        // 呼び手が台帳を持っているなら、そちらを渡すこと
+        // （`collectMissingKnownModels({ knownModelCatalog })`）。
+        catalogPromise = Promise.resolve(unavailable(CATALOG_UNAVAILABLE_REASON));
     }
     return catalogPromise;
 }
@@ -175,33 +178,16 @@ export async function fetchResourceAvailability(items, { fetchImpl = null, refre
         }
     }
 
-    if (doFetch && wanted.size > 0) {
-        const request = (async () => {
-            try {
-                const response = await doFetch(AVAILABILITY_ENDPOINT, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ resources: [...wanted.values()], refresh }),
-                });
-                if (!response?.ok) return;
-                const data = await response.json();
-                if (!data?.success || !data.results) return;
-                for (const [key, verdict] of Object.entries(data.results)) {
-                    if (verdict?.verdict) availabilityCache.set(key, verdict);
-                }
-            } catch {
-                // 判定が取れないことは再現の可否を変えない。従来どおりDL導線へ委ねる。
-            }
-        })();
-        for (const key of wanted.keys()) availabilityInFlight.set(key, request);
-        try {
-            await request;
-        } finally {
-            for (const key of wanted.keys()) availabilityInFlight.delete(key);
-        }
-    } else {
-        await Promise.all([...new Set(availabilityInFlight.values())]);
-    }
+    // **配布可否の口も、このパッケージには無い**（`I-20260831-63`）。
+    //
+    // ここはフォークの `/api/lm/recipes/resource-availability` を叩いており、
+    // 404 を `if (!response?.ok) return;` で**黙って捨てて**いた。
+    // 叩かないことで結果は変わらない（どちらも判定が増えない）が、
+    // **「口が無い」ことがコードから読めるようになる**。
+    // 口を生やすのは `I-20260831-67`。
+    //
+    // 飛行中のものは待つ——呼び手が入れた判定が在れば、それは使う。
+    await Promise.all([...new Set(availabilityInFlight.values())]);
 
     const resolved = {};
     for (const item of items || []) {

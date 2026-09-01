@@ -509,6 +509,15 @@
         --vinyl-label: var(--unbake-warn);
         --vinyl-label-dim: var(--unbake-accent-dim);
         --vinyl-sleeve: var(--unbake-panel);
+        /* **盤の面**（`I-20260830-25`）。ここだけ後退先が無かった。
+           読めない実装ではこの変数が無効になり、**それを使う `background` の
+           宣言が丸ごと捨てられる**——盤面だけでなく中心の札も溝も消えて
+           1px の輪になる（実寸 20px なので点に見える）。
+           今の値は「文字 32% ＋ 地」で明度 45.0%。`--unbake-line` が
+           `oklch(45% 0.006 286)` で**明度がそのまま一致する**ので、
+           新しい色を選ぶ必要は無い。**`--unbake-bg` は選べない**
+           ——盤が地に溶けるのが、この変数が足された理由そのものだから。 */
+        --vinyl-disc-face: var(--unbake-line);
     }
 }
 

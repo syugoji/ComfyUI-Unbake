@@ -52,9 +52,16 @@ test('「止める」は落としている間だけ見える', () => {
 });
 
 test('進み具合はバーと数字で出て、走り終わると畳まれる', async () => {
+    // **サーバが実際に返す鍵で作る**（`I-20260830-15`）。合計は `totalBytesAll`、
+    // `totalBytes` は**1本ぶん**。同じ名前にしていたので、1本の済みバイトを
+    // 全体の合計で割る取り違えを検査が一度も観測できなかった。
     const states = [
-        { state: 'running', running: [{ versionId: '1', bytes: 50 }, { versionId: '2', bytes: 30 }],
-          runningCount: 2, doneBytes: 80, totalBytes: 200 },
+        { state: 'running',
+          running: [
+              { versionId: '1', name: 'a.safetensors', bytes: 50, totalBytes: 100 },
+              { versionId: '2', name: 'b.safetensors', bytes: 30, totalBytes: 100 },
+          ],
+          runningCount: 2, doneBytes: 80, totalBytesAll: 200, unknownTotals: 0 },
     ];
     const panel = mount([withMissing('a', '111')], {
         downloadIo: {
@@ -90,8 +97,10 @@ test('総量が判らないときは、バーを動かさない', async () => {
             },
             plan: async () => ({ ok: true, unknown: 1, bytes: 0, items: [] }),
             // **`Content-Length` を返さない相手が居る。**
-            state: async () => ({ state: 'running', running: [{ versionId: '1', bytes: 10 }],
-                                  runningCount: 1, doneBytes: 10, totalBytes: null }),
+            state: async () => ({
+                state: 'running',
+                running: [{ versionId: '1', name: 'a.safetensors', bytes: 10, totalBytes: null }],
+                runningCount: 1, doneBytes: 10, totalBytesAll: null, unknownTotals: 1 }),
         },
     });
     await panel.downloadMissing();
@@ -224,4 +233,112 @@ ${selector} {`;
         '進捗文が1行のままだと、折り返しても意味が無い');
     // **桁は揃えたまま。** 数字が動くと、目で追えなくなる。
     assert.match(text, /font-variant-numeric:\s*tabular-nums/, '桁揃えを落としている');
+});
+test('トーストは、走っている1本ぶんの割合を出す（全体の合計で割らない）', async () => {
+    // 既定は3本並列。1本ぶんの済みバイトを**全体の合計**で割ると、毎回ずれる
+    // （実測「2.0GB / 12.0GB（16%）」・本当は50%）。
+    const panel = mount([withMissing('a', '111')], {
+        downloadIo: {
+            start: async () => {
+                await new Promise(resolve => setTimeout(resolve, 40));
+                return { ok: true, path: 'x' };
+            },
+            plan: async () => ({ ok: true, unknown: 0, bytes: 1200, items: [] }),
+            state: async () => ({
+                state: 'running',
+                running: [
+                    { versionId: '1', name: 'a.safetensors', bytes: 200, totalBytes: 400 },
+                    { versionId: '2', name: 'b.safetensors', bytes: 100, totalBytes: 800 },
+                ],
+                runningCount: 2, doneBytes: 300, totalBytesAll: 1200, unknownTotals: 0 }),
+        },
+    });
+    await panel.downloadMissing();
+    const run = confirmPick(panel);
+    await new Promise(resolve => setTimeout(resolve, 15));
+    const toast = panel.root.byClass('unbake-toast');
+    const text = String(toast?.text || toast?.textContent || '');
+    // 1本目は 200/400 = 50%。全体で割ると 200/1200 = 16%。
+    assert.match(text, /50\s*%/, `1本ぶんの割合になっていない: ${JSON.stringify(text)}`);
+    assert.doesNotMatch(text, /16\s*%/, '全体の合計で割っている');
+    await run;
+});
+
+test('総量の判らない相手が混ざったら、100%と言い切らない', async () => {
+    // 合計は「判っている分」だけの和なので、判らない相手が混ざると分子が分母を
+    // 超える。頭を押さえるだけだと **`670 B / 200 B（100%）`** と言い切って固まる。
+    const panel = mount([withMissing('a', '111')], {
+        downloadIo: {
+            start: async () => {
+                await new Promise(resolve => setTimeout(resolve, 40));
+                return { ok: true, path: 'x' };
+            },
+            plan: async () => ({ ok: true, unknown: 1, bytes: 200, items: [] }),
+            state: async () => ({
+                state: 'running',
+                running: [
+                    { versionId: '1', name: 'a.safetensors', bytes: 470, totalBytes: 200 },
+                    { versionId: '2', name: 'b.safetensors', bytes: 200, totalBytes: null },
+                ],
+                runningCount: 2, doneBytes: 670, totalBytesAll: 200, unknownTotals: 1 }),
+        },
+    });
+    await panel.downloadMissing();
+    const run = confirmPick(panel);
+    await new Promise(resolve => setTimeout(resolve, 15));
+    const bar = panel.root.byClass('unbake-download-bar');
+    assert.equal(bar.getAttribute('data-unknown'), 'true',
+        '判らない相手が居るのに「判っている」と言っている');
+    const fill = panel.root.byClass('unbake-download-fill');
+    assert.equal(fill.style.width, '0%', `割合を出している: ${fill.style.width}`);
+    await run;
+});
+test('1本目が終わっても、残りが走っている間は数字が出続ける', async () => {
+    // `_download`（旧い1本ぶんの状態）は 1 本目が終わると `running` から外れる。
+    // それで走行判定をしていたので、**残り2本が走っている最中に表示が空文字**に
+    // なっていた。判定は `running[]` が空かどうかで見る。
+    const panel = mount([withMissing('a', '111')], {
+        downloadIo: {
+            start: async () => {
+                await new Promise(resolve => setTimeout(resolve, 40));
+                return { ok: true, path: 'x' };
+            },
+            plan: async () => ({ ok: true, unknown: 0, bytes: 800, items: [] }),
+            state: async () => ({
+                // **1本目は終わっている**（旧い状態は running ではない）。
+                state: 'done',
+                running: [{ versionId: '2', name: 'b.safetensors', bytes: 100, totalBytes: 400 }],
+                runningCount: 1, doneBytes: 500, totalBytesAll: 800, unknownTotals: 0 }),
+        },
+    });
+    await panel.downloadMissing();
+    const run = confirmPick(panel);
+    await new Promise(resolve => setTimeout(resolve, 15));
+    const toast = panel.root.byClass('unbake-toast');
+    const text = String(toast?.text || toast?.textContent || '');
+    assert.notEqual(text.trim(), '', 'まだ走っているのに数字が消えている');
+    assert.match(text, /25\s*%/, `残っている1本の割合が出ていない: ${JSON.stringify(text)}`);
+    await run;
+});
+
+test('サーバが返す合計の鍵と、画面が読む鍵が一致する', async () => {
+    /*
+     * **ダブルでは測れない。** ダブルは検査が書いた形をそのまま返すので、
+     * サーバ側の名前を変えても緑のままになる（実際そうなった）。
+     * 尺度の違う2つが同じ名前で並ぶのを避けた変更なので、対で固定する。
+     */
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const { fileURLToPath } = await import('node:url');
+    const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+    const routes = fs.readFileSync(path.join(root, 'unbake/routes.py'), 'utf8');
+    const panelSource = fs.readFileSync(path.join(root, 'web/panel/panel.js'), 'utf8');
+
+    assert.match(routes, /"totalBytesAll":\s*total_bytes/,
+        'サーバが合計を別の名前で返していない');
+    assert.match(panelSource, /state\?\.totalBytesAll/,
+        '画面が合計の鍵を読んでいない');
+    // **1本ぶんの `totalBytes` は残る**（`running[]` の中）。合計と混ぜない。
+    assert.match(routes, /"totalBytes":\s*int\(item/,
+        '1本ぶんの総量が消えている');
 });

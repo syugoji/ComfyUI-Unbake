@@ -43,6 +43,24 @@ async function* sourceFiles(dir) {
     }
 }
 
+/*
+ * 集合リテラルの中身を読む。**綴りを狭めない**（`I-20260831-54`）。
+ *
+ * 以前は `/['"]([a-z ]+)['"]/` で、**大文字や数字を含む種別を黙って落として**
+ * いた。落ちた分は「宣言されていない」とは読まれず素通りするので、
+ * **両側から同じ値が落ちれば食い違ったまま緑になる**——検査器そのものの穴。
+ *
+ * 綴りを広げるだけでは「次に落ちる形」を防げないので、
+ * **拾った数と区切りで書かれている数が合うこと**も同時に見る。
+ */
+export function setOf(text, label) {
+    const found = [...text.matchAll(/['"]([^'"\r\n]*)['"]/g)].map(match => match[1]);
+    const written = text.split(',').map(part => part.trim()).filter(Boolean).length;
+    assert.equal(found.length, written,
+        `${label}: 引用符で拾えた数 ${found.length} が、書かれている数 ${written} と合わない`);
+    return found.sort();
+}
+
 const exists = async (path) => {
     try { await stat(path); return true; } catch { return false; }
 };
@@ -100,11 +118,24 @@ test('「積めない種別」の集合が JavaScript と Python で同じ', asy
      * 「積めない」に分類され、再現できるレシピが再現不可になる。
      * （こちらも長らく存在しない検査を名指ししていた。）
      */
-    const setOf = (text) => [...text.matchAll(/['"]([a-z ]+)['"]/g)].map(match => match[1]).sort();
     const js = await readFile(join(ROOT, 'web/core/recipeMissingModels.js'), 'utf8');
     const py = await readFile(join(ROOT, 'unbake/services/recipes/resource_availability_service.py'), 'utf8');
-    const fromJs = setOf(/NON_LOADABLE_FILE_TYPES = new Set\(\[([^\]]*)\]/.exec(js)?.[1] || '');
-    const fromPy = setOf(/NON_LOADABLE_FILE_TYPES = frozenset\(\{([^}]*)\}/.exec(py)?.[1] || '');
+    const fromJs = setOf(/NON_LOADABLE_FILE_TYPES = new Set\(\[([^\]]*)\]/.exec(js)?.[1] || '', 'JS');
+    const fromPy = setOf(/NON_LOADABLE_FILE_TYPES = frozenset\(\{([^}]*)\}/.exec(py)?.[1] || '', 'Python');
     assert.ok(fromJs.length > 0, `JS 側を読めていない: ${fromJs}`);
     assert.deepEqual(fromJs, fromPy, '積めない種別が両言語で食い違っている');
+});
+
+test('集合の読み取りが、大文字や数字を含む種別を落とさない（`I-20260831-54`）', () => {
+    /*
+     * **検査器の穴は、製品の欠陥より見つけにくい。** 落ちたことが
+     * 「宣言されていない」ではなく**何事もなかったこと**として通るからである。
+     * ここは現物に大文字が無いうちから、読み取りの側を固定しておく。
+     */
+    assert.deepEqual(setOf(`'training data', 'config'`, 'x'), ['config', 'training data']);
+    assert.deepEqual(setOf(`'Pose', 'ControlNet2', 'vae-approx'`, 'x'),
+        ['ControlNet2', 'Pose', 'vae-approx']);
+
+    // 拾えなかったものが在れば、黙って通さない。
+    assert.throws(() => setOf(`'ok', notQuoted`, 'x'), /合わない/);
 });
